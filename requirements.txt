@@ -1,7 +1,8 @@
 streamlit
 pandas
 numpy
-lightgbm
+lightgbm==4.6.0
 requests
 beautifulsoup4
+
 pytz
