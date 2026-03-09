@@ -1,0 +1,7 @@
+streamlit
+pandas
+numpy
+lightgbm
+requests
+beautifulsoup4
+pytz
