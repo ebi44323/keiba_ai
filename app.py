@@ -75,6 +75,8 @@ def prepare_model_and_data():
     df['前走騎手ID'] = df.groupby('馬ID')['騎手ID'].shift(1)
     df['前走斤量'] = df.groupby('馬ID')['斤量'].shift(1)
     df['斤量増減'] = (df['斤量'] - df['前走斤量']).fillna(0)
+    df['前走上がり順位'] = df.groupby('馬ID')['上がり順位'].shift(1).fillna(9.0)
+    df['前走上りレース差'] = df.groupby('馬ID')['上りレース差'].shift(1).fillna(0.0)
 
     def calc_race_diff(df, col_name):
         return df[col_name] - df.groupby('レースID')[col_name].transform('mean')
@@ -558,4 +560,5 @@ elif action == "📈 AI精度評価 (AUCスコア)":
     
     st.markdown("##### 📉 ROC曲線")
     roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
+
     st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
