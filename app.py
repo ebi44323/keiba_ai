@@ -19,7 +19,7 @@ st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("独自のデータアナリティクスとAI (ebi × AI × Eye) が、期待値に隠されたお宝馬を暴き出します。")
 
 # ==========================================
-# 1. 本格AIエンジンの学習とデータ準備 (キャッシュ化で高速化)
+# 1. 本格AIエンジンの学習とデータ準備
 # ==========================================
 @st.cache_resource
 def prepare_model_and_data():
@@ -36,7 +36,6 @@ def prepare_model_and_data():
         df['最初のコーナー順位'] = df['通過'].astype(str).str.split('-').str[0]
     df['最初のコーナー順位'] = pd.to_numeric(df['最初のコーナー順位'], errors='coerce')
 
-    # 💡 【超進化】 脚質ロジック：大敗を除外し、好走時の近走5走から「真の脚質」を見抜く！
     df['大敗フラグ'] = ((df['着順パーセント'] > 0.5) & (df['距離補正タイム差'] > 1.0)).astype(bool)
     good_runs = df[~df['大敗フラグ']].copy()
     recent_good_runs = good_runs.groupby('馬ID').tail(5)
@@ -261,6 +260,28 @@ def get_odds_from_soup(s_soup):
     except: pass
     return o_dict
 
+# 💡 【新規】TXTレポート生成関数
+def generate_txt_report(results_list):
+    txt = "=== 🏇 keiba-ebye 予想レポート ===\n\n"
+    for r in results_list:
+        txt += "="*50 + "\n"
+        txt += f"■ {r['date']} | {r['place']} {r['num']}R ({r['track']}{r['dist']}m) ■\n"
+        txt += f"🐎 【展開予想】\n{r['pace']}\n"
+        txt += "-"*50 + "\n"
+        for rank, row in r['df'].iterrows():
+            if rank >= 5: break
+            ev_str = f" 📈期待値:{row['期待値']:.2f}" if row['期待値'] >= 1.5 else ""
+            txt += f" {row['印']} {rank+1}位: [{row['枠番']}枠{row['馬番']}番] {row['馬名']} ({row['脚質カテゴリ']}) - 勝率 {row['勝率(AI予測)']*100:.1f}% (オッズ {row['単勝オッズ']}倍){ev_str}\n"
+        txt += "-"*50 + "\n"
+        if r['topics']:
+            txt += "📝 要注目トピック馬:\n"
+            for t in r['topics']:
+                txt += f"  {t}\n"
+            txt += "-"*50 + "\n"
+        txt += f"🤖 AI推奨買い目:\n  {r['reco']}\n"
+        txt += "="*50 + "\n\n"
+    return txt
+
 # ==========================================
 # 3. 本格AI予測関数
 # ==========================================
@@ -276,10 +297,10 @@ def run_real_prediction(race_id, race_date_str):
     try:
         res = requests.get(f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}', headers=headers); res.encoding = 'euc-jp'
         soup = BeautifulSoup(res.text, 'html.parser')
-    except: return None, None, None, None, None, None
+    except: return None, None, None, None, None, None, None
 
     race_data_box = soup.find('div', class_='RaceData01')
-    if not race_data_box: return None, None, None, None, None, None
+    if not race_data_box: return None, None, None, None, None, None, None
     race_text = race_data_box.text.replace('\n', '')
     
     baba_match = re.search(r'馬場:([良稍重不良]+)', race_text)
@@ -295,7 +316,7 @@ def run_real_prediction(race_id, race_date_str):
 
     horses = []
     table = soup.select_one('.Shutuba_Table') or soup.find('table')
-    if not table: return None, None, None, None, None, None
+    if not table: return None, None, None, None, None, None, None
 
     for tr in table.find_all('tr'):
         tds = tr.find_all('td')
@@ -316,7 +337,7 @@ def run_real_prediction(race_id, race_date_str):
             horses.append({'枠番': waku, '馬番': umaban, '馬名': horse_a.text.strip(), '馬ID': horse_id, '斤量': kinryo, '騎手ID': jockey_id, '調教師': trainer_id, '距離': distance, '競馬場': place, '芝/ダート': track_type, '回り': mawari, 'コース地形': course_slope, '馬場': todays_baba, '馬体重_数値': weight_val, '単勝オッズ': odds_val})
         except: continue
 
-    if not horses: return None, None, None, None, None, None
+    if not horses: return None, None, None, None, None, None, None
     df_test = pd.DataFrame(horses)
     df_test = pd.merge(df_test, df_latest_clean, on='馬ID', how='left')
 
@@ -352,7 +373,6 @@ def run_real_prediction(race_id, race_date_str):
     for col in num_features + ana_flags: df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
     for col in cat_features: df_test[col] = pd.Categorical(df_test[col], categories=cat_categories_dict[col])
 
-    # 💡 【進化】展開（ペース）予想ロジック！
     nige_count = sum(df_test['脚質カテゴリ'] == '逃げ')
     senko_count = sum(df_test['脚質カテゴリ'] == '先行')
     if nige_count >= 3: pace_text = f"🔥 【ハイペース濃厚】 逃げ馬が{nige_count}頭もおり先行争いが激化。差し・追込馬の台頭に警戒！"
@@ -389,7 +409,7 @@ def run_real_prediction(race_id, race_date_str):
     elif p1 >= 0.12 and (p1 - p2) >= 0.03: reco = f"🎯 馬連・ワイド: ◎から穴馬({ana_str})への流しで高配当狙い"
     else: reco = f"⚠️ 上位評価割れ。印馬と穴馬({ana_str})のボックス推奨"
 
-    return df_test, topics_list, reco, pace_text, track_type, place
+    return df_test, topics_list, reco, pace_text, track_type, place, distance
 
 # ==========================================
 # 4. メインUI構成 (サイドバー)
@@ -407,7 +427,6 @@ action = st.sidebar.radio("機能を選択", [
 tokyo_tz = pytz.timezone('Asia/Tokyo')
 now = datetime.datetime.now(tokyo_tz)
 
-# 💡 【神UI】 スマホ縦持ちに特化！行番号を消し(hide_index=True)、列名をスリム化！
 def display_result(df_res, topics, reco, pace_text):
     tab1, tab2 = st.tabs(["📊 予想一覧", "💡 買い目・展開"])
     
@@ -415,12 +434,11 @@ def display_result(df_res, topics, reco, pace_text):
         def highlight_ev(row):
             return ['background-color: rgba(255, 99, 71, 0.3)' if row['期待値'] >= 1.5 else '' for _ in row]
         show_df = df_res[['印', '馬番', '馬名', '脚質カテゴリ', '単勝オッズ', '勝率(AI予測)', '期待値']].copy()
-        # カラム名を短縮してスマホの横幅を節約
         show_df = show_df.rename(columns={'勝率(AI予測)': '勝率', '脚質カテゴリ': '脚質', '単勝オッズ': 'オッズ'})
         show_df['勝率'] = (show_df['勝率'] * 100).map('{:.1f}%'.format)
         
-        # 💡 最新のStreamlit仕様に合わせて width='stretch' を使用！
-        st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), width='stretch', hide_index=True)
+        # 💡 Streamlit警告対策：width='stretch'を使用
+        st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), width=None, hide_index=True)
     
     with tab2:
         st.info(f"**🏇 展開予想:**\n{pace_text}")
@@ -447,19 +465,32 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                 st.info(f"👉 **{next_race['place']} {next_race['num']}R** 「{next_race['title']}」 (あと **{mins_left}** 分)")
                 if st.button("🚀 keiba-ebye 予想起動！", type="primary"):
                     with st.spinner('AIが推論中...'):
-                        res_df, topics, reco, pace_text, _, _ = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'))
-                        display_result(res_df, topics, reco, pace_text)
+                        res_df, topics, reco, pace_text, _, _, _ = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'))
+                        if res_df is not None: display_result(res_df, topics, reco, pace_text)
+                        else: st.error("⚠️ 予想データの取得に失敗しました。アクセス制限の可能性があります。")
             else: st.success("🏁 本日の全レースは終了しました。")
 
         elif action == "📜 本日の全レース予想":
             st.subheader(f"📅 本日の全レース一覧")
             if st.button("🚀 全レース一括予想", type="primary"):
                 my_bar = st.progress(0, text="推論中...")
+                results_for_txt = []
                 for i, r in enumerate(todays_races):
                     st.markdown(f"#### ■ {r['place']} {r['num']}R")
-                    res_df, topics, reco, pace_text, _, _ = run_real_prediction(r['id'], now.strftime('%Y-%m-%d'))
-                    if res_df is not None: display_result(res_df.head(5), topics, reco, pace_text)
+                    res_df, topics, reco, pace_text, track_type, place, dist = run_real_prediction(r['id'], now.strftime('%Y-%m-%d'))
+                    if res_df is not None:
+                        display_result(res_df.head(5), topics, reco, pace_text)
+                        results_for_txt.append({
+                            'date': now.strftime('%Y年%m月%d日'), 'place': place, 'num': r['num'],
+                            'track': track_type, 'dist': dist, 'pace': pace_text, 'df': res_df, 'topics': topics, 'reco': reco
+                        })
+                    else: st.error("⚠️ データ取得失敗。アクセス制限の可能性があります。")
                     my_bar.progress((i + 1) / len(todays_races))
+                
+                # 💡 TXTダウンロードボタン！
+                if results_for_txt:
+                    report_txt = generate_txt_report(results_for_txt)
+                    st.download_button("📥 予想レポートをダウンロード (.txt)", data=report_txt, file_name=f"keiba_ebye_{now.strftime('%Y%m%d')}.txt", mime="text/plain")
 
         elif action == "🔍 レースを指定して予想":
             st.subheader("🎯 レースを指定")
@@ -468,8 +499,9 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
             target_race = todays_races[options.index(selected)]
             if st.button("🚀 予想開始", type="primary"):
                 with st.spinner('推論中...'):
-                    res_df, topics, reco, pace_text, _, _ = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'))
+                    res_df, topics, reco, pace_text, _, _, _ = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'))
                     if res_df is not None: display_result(res_df, topics, reco, pace_text)
+                    else: st.error("⚠️ データ取得失敗。アクセス制限の可能性があります。")
 
 elif action == "📅 今週末の全レース予想":
     st.subheader("📅 今週末 (土・日) の先取り予想")
@@ -478,23 +510,32 @@ elif action == "📅 今週末の全レース予想":
     
     if st.button("🚀 週末の出馬表を取得・予想", type="primary"):
         with st.spinner('週末のレースを収集中...'):
-            sat_races = get_todays_races(sat_str)
-            sun_races = get_todays_races(sun_str)
-            all_weekend_races = sat_races + sun_races
+            all_weekend_races = get_todays_races(sat_str) + get_todays_races(sun_str)
             
         if not all_weekend_races: st.error("まだ今週末の出馬表が発表されていません。")
         else:
             my_bar = st.progress(0, text="週末のレースを推論中...")
+            results_for_txt = []
             for i, r in enumerate(all_weekend_races):
-                r_date = sat_str if r in sat_races else sun_str
+                r_date = sat_str if r['id'].startswith(sat_str) else sun_str # 日付判定を少し簡略化
                 with st.expander(f"🏁 {r_date[:4]}/{r_date[4:6]}/{r_date[6:]} - {r['place']} {r['num']}R"):
-                    res_df, topics, reco, pace_text, _, _ = run_real_prediction(r['id'], f"{r_date[:4]}-{r_date[4:6]}-{r_date[6:]}")
-                    if res_df is not None: display_result(res_df.head(5), topics, reco, pace_text)
+                    res_df, topics, reco, pace_text, track_type, place, dist = run_real_prediction(r['id'], f"{r_date[:4]}-{r_date[4:6]}-{r_date[6:]}")
+                    if res_df is not None:
+                        display_result(res_df.head(5), topics, reco, pace_text)
+                        results_for_txt.append({
+                            'date': f"{r_date[:4]}年{r_date[4:6]}月{r_date[6:]}日", 'place': place, 'num': r['num'],
+                            'track': track_type, 'dist': dist, 'pace': pace_text, 'df': res_df, 'topics': topics, 'reco': reco
+                        })
+                    else: st.error("⚠️ データ取得失敗。")
                 my_bar.progress((i + 1) / len(all_weekend_races))
+                
+            if results_for_txt:
+                report_txt = generate_txt_report(results_for_txt)
+                st.download_button("📥 週末予想レポートをダウンロード (.txt)", data=report_txt, file_name=f"keiba_weekend_forecast.txt", mime="text/plain")
 
 elif action == "🧪 性能試験 (バックテスト)":
     st.subheader("🧪 keiba-ebye 性能試験 (詳細レポート付き)")
-    test_date = st.date_input("テストする日付を選択（学習システムの都合直近1.2週前を推奨）", datetime.date.today() - datetime.timedelta(days=3))
+    test_date = st.date_input("テストする日付を選択", datetime.date.today() - datetime.timedelta(days=3))
     date_str = test_date.strftime('%Y%m%d')
     
     if st.button("🔥 バックテスト実行！", type="primary"):
@@ -504,12 +545,17 @@ elif action == "🧪 性能試験 (バックテスト)":
             else:
                 my_bar = st.progress(0, text="推論＆集計中...")
                 total_invest, total_return_t, total_return_f, ev_hits = 0, 0, 0, 0
+                results_for_txt = []
                 for i, r in enumerate(test_races):
                     with st.expander(f"🏁 {r['place']} {r['num']}R 予想詳細を見る"):
-                        res_df, topics, reco, pace_text, _, _ = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d'))
+                        res_df, topics, reco, pace_text, track_type, place, dist = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d'))
                         t_dict, f_dict = get_payouts(r['id'])
                         if res_df is not None and t_dict:
                             display_result(res_df, topics, reco, pace_text)
+                            results_for_txt.append({
+                                'date': test_date.strftime('%Y年%m月%d日'), 'place': place, 'num': r['num'],
+                                'track': track_type, 'dist': dist, 'pace': pace_text, 'df': res_df, 'topics': topics, 'reco': reco
+                            })
                             ev_horses = res_df[(res_df.index < 5) & (res_df['期待値'] >= 1.5)]
                             for _, horse in ev_horses.iterrows():
                                 umaban = horse['馬番']
@@ -518,6 +564,7 @@ elif action == "🧪 性能試験 (バックテスト)":
                                 if umaban in f_dict: 
                                     total_return_f += f_dict[umaban]
                                     ev_hits += 1
+                        else: st.error("⚠️ 予想データまたは結果の取得に失敗しました。")
                     my_bar.progress((i + 1) / len(test_races))
                 
                 st.markdown("---")
@@ -528,10 +575,14 @@ elif action == "🧪 性能試験 (バックテスト)":
                     col2.metric("単勝 回収率", f"{(total_return_t / total_invest * 100):.1f}%", f"¥{total_return_t:,}")
                     col3.metric("複勝 回収率", f"{(total_return_f / total_invest * 100):.1f}%", f"的中 {ev_hits}回")
                 else: st.warning("この日は「期待値1.5超え」の推奨対象馬がいませんでした。")
+                
+                if results_for_txt:
+                    report_txt = generate_txt_report(results_for_txt)
+                    st.download_button("📥 バックテスト結果をダウンロード (.txt)", data=report_txt, file_name=f"keiba_backtest_{date_str}.txt", mime="text/plain")
 
 elif action == "📈 AI精度評価 (AUCスコア)":
     st.subheader("📈 keiba-ebye AI精度評価 (ROC-AUC)")
-    st.markdown("現在の学習データに基づく、AIの「馬券内に入りうる馬の識別能力」を評価します。あくまで参考程度に")
+    st.markdown("現在の学習データに基づく、AIの「馬券内に入りうる馬の識別能力」を評価します。")
     
     st.metric(label="📊 総合AUCスコア (1.0に近いほど優秀)", value=f"{val_auc:.4f}")
     if val_auc > 0.7: st.success("🔥 素晴らしい精度です！AIは強い馬と弱い馬を高い精度で見分けています。")
@@ -541,4 +592,3 @@ elif action == "📈 AI精度評価 (AUCスコア)":
     st.markdown("##### 📉 ROC曲線")
     roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
     st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
-
