@@ -399,7 +399,11 @@ now = datetime.datetime.now(tokyo_tz)
 def display_result(df_res, topics, reco):
     def highlight_ev(row):
         return ['background-color: rgba(255, 99, 71, 0.3)' if row['期待値'] >= 1.5 else '' for _ in row]
-    show_df = df_res[['印', '枠番', '馬番', '馬名', '脚質カテゴリ', '単勝オッズ', 'AI勝率', '期待値']].copy()
+    
+    # 💡 【完全修正】内部データの「勝率(AI予測)」を引っ張ってきてから、「AI勝率」にリネームして表示する！
+    show_df = df_res[['印', '枠番', '馬番', '馬名', '脚質カテゴリ', '単勝オッズ', '勝率(AI予測)', '期待値']].copy()
+    show_df = show_df.rename(columns={'勝率(AI予測)': 'AI勝率'})
+    
     show_df['AI勝率'] = (show_df['AI勝率'] * 100).map('{:.1f}%'.format)
     st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), use_container_width=True)
     
