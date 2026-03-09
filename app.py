@@ -37,36 +37,64 @@ headers = {"User-Agent": "Mozilla/5.0"}
 # ==========================================
 # 2. 汎用スクレイピング関数群
 # ==========================================
+# ==========================================
+# 2. 汎用スクレイピング関数群
+# ==========================================
 def get_todays_races(date_str=None):
-    if not date_str:
-        tokyo_tz = pytz.timezone('Asia/Tokyo')
-        date_str = datetime.datetime.now(tokyo_tz).strftime('%Y%m%d')
-        
-    url = f'https://race.netkeiba.com/top/race_list.html?kaisai_date={date_str}'
+    headers = {"User-Agent": "Mozilla/5.0"}
     races = []
-    try:
-        res = requests.get(url, headers=headers)
-        res.encoding = 'euc-jp'
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for item in soup.find_all('li', class_='RaceList_DataItem'):
-            a_tag = item.find('a')
-            if not a_tag: continue
-            m_id = re.search(r'race_id=(\d{12})', a_tag.get('href', ''))
-            if not m_id: continue
-            r_id = m_id.group(1)
-            if not (1 <= int(r_id[4:6]) <= 10): continue # JRAのみ
-            
-            time_span = item.find('span', class_='RaceList_Itemtime')
-            title_span = item.find('span', class_='ItemTitle')
-            if time_span and title_span:
-                start_dt = datetime.datetime.strptime(f"{date_str} {time_span.text.strip()}", "%Y%m%d %H:%M")
-                place_dict = {'01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'}
+    tokyo_tz = pytz.timezone('Asia/Tokyo')
+    now = datetime.datetime.now(tokyo_tz)
+    
+    if not date_str:
+        # 💡 当日用：出馬表ページから「時間」と「タイトル」を取得
+        today_str = now.strftime('%Y%m%d')
+        url = f'https://race.netkeiba.com/top/race_list.html?kaisai_date={today_str}'
+        try:
+            res = requests.get(url, headers=headers)
+            res.encoding = 'euc-jp'
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for item in soup.find_all('li', class_='RaceList_DataItem'):
+                a_tag = item.find('a')
+                if not a_tag: continue
+                m_id = re.search(r'race_id=(\d{12})', a_tag.get('href', ''))
+                if not m_id: continue
+                r_id = m_id.group(1)
+                if not (1 <= int(r_id[4:6]) <= 10): continue
+                
+                time_span = item.find('span', class_='RaceList_Itemtime')
+                title_span = item.find('span', class_='ItemTitle')
+                if time_span and title_span:
+                    start_dt = tokyo_tz.localize(datetime.datetime.strptime(f"{today_str} {time_span.text.strip()}", "%Y%m%d %H:%M"))
+                    place_dict = {'01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'}
+                    races.append({
+                        'id': r_id, 'place': place_dict.get(r_id[4:6], '不明'),
+                        'num': int(r_id[10:12]), 'title': title_span.text.strip(), 'time': start_dt
+                    })
+        except: pass
+        return sorted(races, key=lambda x: x['time'])
+    
+    else:
+        # 💡 過去用(バックテスト)：結果一覧ページから「レースID」だけを確実に抜き出す
+        url = f'https://race.netkeiba.com/top/race_list_sub.html?kaisai_date={date_str}'
+        try:
+            res = requests.get(url, headers=headers)
+            res.encoding = 'euc-jp'
+            ids = set(re.findall(r'race_id=(\d{12})', res.text))
+            place_dict = {'01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'}
+            for r_id in ids:
+                if not (1 <= int(r_id[4:6]) <= 10): continue
+                place = place_dict.get(r_id[4:6], '不明')
+                r_num = int(r_id[10:12])
+                
+                # 過去レースは時間が表示されないため、ダミーの時間をセットしてR番号順に並べる
+                dummy_time = tokyo_tz.localize(datetime.datetime.strptime(f"{date_str} 12:00", "%Y%m%d %H:%M"))
                 races.append({
-                    'id': r_id, 'place': place_dict.get(r_id[4:6], '不明'),
-                    'num': int(r_id[10:12]), 'title': title_span.text.strip(), 'time': start_dt
+                    'id': r_id, 'place': place, 'num': r_num, 'title': f"{place} {r_num}R", 'time': dummy_time,
+                    'sort_key': f"{r_id[4:6]}{r_num:02d}"
                 })
-    except: pass
-    return sorted(races, key=lambda x: x['time'])
+        except: pass
+        return sorted(races, key=lambda x: x['sort_key'])
 
 def get_payouts(race_id):
     # 払い戻し取得（絶対取得版）
