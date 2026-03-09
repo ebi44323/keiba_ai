@@ -16,7 +16,7 @@ from sklearn.metrics import roc_auc_score, roc_curve
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 
 st.title("🐴 keiba-ebye 予測ダッシュボード")
-st.markdown("独自のデータアナリティクスとAI (ebi × AI × Eye) が、期待値に隠されたお宝馬を暴き出します。")
+st.markdown("えーびーあい (ebi × AI × Eye) が、期待値に隠されたお宝馬を暴き出すかも？")
 
 # ==========================================
 # 1. 本格AIエンジンの学習とデータ準備
@@ -534,7 +534,7 @@ elif action == "📅 今週末の全レース予想":
                 st.download_button("📥 週末予想レポートをダウンロード (.txt)", data=report_txt, file_name=f"keiba_weekend_forecast.txt", mime="text/plain")
 
 elif action == "🧪 性能試験 (バックテスト)":
-    st.subheader("🧪 keiba-ebye 性能試験 (詳細レポート付き)")
+    st.subheader("🧪 keiba-ebye 性能試験 (システムの都合直近1,2週間のレースを指定するのを推奨します。)")
     test_date = st.date_input("テストする日付を選択", datetime.date.today() - datetime.timedelta(days=3))
     date_str = test_date.strftime('%Y%m%d')
     
@@ -592,3 +592,4 @@ elif action == "📈 AI精度評価 (AUCスコア)":
     st.markdown("##### 📉 ROC曲線")
     roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
     st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
+
