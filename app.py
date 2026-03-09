@@ -127,7 +127,7 @@ def prepare_model_and_data():
     for col in num_features + ana_flags: df[col] = pd.to_numeric(df[col], errors='coerce')
     for col in cat_features: df[col] = df[col].astype('category')
     
-　　cat_categories_dict = {}
+    cat_categories_dict = {}
     for col in cat_features:
         cats = list(df[col].cat.categories)
         if col == '脚質カテゴリ':
@@ -568,4 +568,5 @@ elif action == "📈 AI精度評価 (AUCスコア)":
     roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
 
     st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
+
 
