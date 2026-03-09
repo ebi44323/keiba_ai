@@ -419,8 +419,8 @@ def display_result(df_res, topics, reco, pace_text):
         show_df = show_df.rename(columns={'勝率(AI予測)': '勝率', '脚質カテゴリ': '脚質', '単勝オッズ': 'オッズ'})
         show_df['勝率'] = (show_df['勝率'] * 100).map('{:.1f}%'.format)
         
-        # 💡 hide_index=True で左端の無駄な番号を完全消去！
-        st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), use_container_width=True, hide_index=True)
+        # 💡 最新のStreamlit仕様に合わせて width='stretch' を使用！
+        st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), width='stretch', hide_index=True)
     
     with tab2:
         st.info(f"**🏇 展開予想:**\n{pace_text}")
@@ -541,3 +541,4 @@ elif action == "📈 AI精度評価 (AUCスコア)":
     st.markdown("##### 📉 ROC曲線")
     roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
     st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
+
