@@ -2,7 +2,7 @@ streamlit
 pandas
 numpy
 lightgbm==4.6.0
+scikit-learn
 requests
 beautifulsoup4
-
 pytz
