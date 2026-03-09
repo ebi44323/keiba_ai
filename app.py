@@ -8,6 +8,7 @@ import re
 import datetime
 import pytz
 import time
+from sklearn.metrics import roc_auc_score, roc_curve
 
 # ==========================================
 # UI・ページ設定
@@ -35,6 +36,19 @@ def prepare_model_and_data():
         df['最初のコーナー順位'] = df['通過'].astype(str).str.split('-').str[0]
     df['最初のコーナー順位'] = pd.to_numeric(df['最初のコーナー順位'], errors='coerce')
 
+    # 💡 【進化1】 脚質ロジックの抜本的改革（逃げ・自在の追加）
+    horse_pos_stats = df.groupby('馬ID')['最初のコーナー順位'].agg(['mean', 'std']).reset_index()
+    def classify_style(row):
+        if pd.isna(row['mean']): return '不明'
+        if pd.notna(row['std']) and row['std'] > 3.0: return '自在'
+        if row['mean'] <= 1.5: return '逃げ'
+        elif row['mean'] <= 4.0: return '先行'
+        elif row['mean'] <= 9.0: return '差し'
+        else: return '追込'
+    horse_pos_stats['脚質カテゴリ'] = horse_pos_stats.apply(classify_style, axis=1)
+    horse_style_dict = horse_pos_stats.set_index('馬ID')['脚質カテゴリ'].to_dict()
+    df['脚質カテゴリ'] = df['馬ID'].map(horse_style_dict).fillna('不明')
+
     df_latest = df.groupby('馬ID').tail(1).copy()
     last_race_cols = {
         '着順': '前走着順', '着順パーセント': '前走着順パーセント', '距離補正タイム差': '前走距離補正タイム差',
@@ -61,11 +75,6 @@ def prepare_model_and_data():
     df['前走騎手ID'] = df.groupby('馬ID')['騎手ID'].shift(1)
     df['前走斤量'] = df.groupby('馬ID')['斤量'].shift(1)
     df['斤量増減'] = (df['斤量'] - df['前走斤量']).fillna(0)
-
-    df['前走コーナー順位'] = pd.to_numeric(df.groupby('馬ID')['最初のコーナー順位'].shift(1), errors='coerce').fillna(7)
-    df['脚質カテゴリ'] = pd.cut(df['前走コーナー順位'], bins=[-1, 3.5, 9.5, 99], labels=['先行', '差し', '追込']).astype(str)
-    df['前走上がり順位'] = df.groupby('馬ID')['上がり順位'].shift(1).fillna(9.0)
-    df['前走上りレース差'] = df.groupby('馬ID')['上りレース差'].shift(1).fillna(0.0)
 
     def calc_race_diff(df, col_name):
         return df[col_name] - df.groupby('レースID')[col_name].transform('mean')
@@ -116,20 +125,28 @@ def prepare_model_and_data():
     for col in num_features + ana_flags: df[col] = pd.to_numeric(df[col], errors='coerce')
     for col in cat_features: df[col] = df[col].astype('category')
     
-    # 💡【修正点】推論時に必要なカテゴリ一覧だけを辞書にして取り出す！
-    cat_categories_dict = {col: df[col].cat.categories for col in cat_features}
+    cat_categories_dict = {col: list(df[col].cat.categories) + ['逃げ', '先行', '差し', '追込', '自在', '不明'] for col in cat_features}
+
+    # AUC用に簡易的な時系列分割（直近10%をテスト用）
+    split_idx = int(len(df) * 0.9)
+    train_df, test_df = df.iloc[:split_idx], df.iloc[split_idx:]
 
     model = lgb.LGBMClassifier(
         n_estimators=100, random_state=42, importance_type='gain', max_depth=5, num_leaves=20, 
         min_child_samples=100, colsample_bytree=0.8, subsample=0.8, reg_alpha=5.0, reg_lambda=5.0, cat_smooth=50,
         verbose=-1
     )
-    model.fit(df[features], df['複勝正解フラグ'])
+    model.fit(train_df[features], train_df['複勝正解フラグ'])
     
-    return df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict
+    # テストデータでAUC計算
+    val_preds = model.predict_proba(test_df[features])[:, 1]
+    val_auc = roc_auc_score(test_df['複勝正解フラグ'], val_preds)
+    fpr, tpr, _ = roc_curve(test_df['複勝正解フラグ'], val_preds)
+
+    return df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict, horse_style_dict, val_auc, fpr, tpr
 
 with st.spinner('keiba-ebye フルパワーAIエンジンを起動・学習中... (初回のみ数分かかります)'):
-    df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict = prepare_model_and_data()
+    df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict, horse_style_dict, val_auc, fpr, tpr = prepare_model_and_data()
 
 headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -188,6 +205,13 @@ def get_todays_races(date_str=None):
                 })
         except: pass
     return sorted(races, key=lambda x: x['sort_key'])
+
+def get_weekend_dates():
+    tokyo_tz = pytz.timezone('Asia/Tokyo')
+    now = datetime.datetime.now(tokyo_tz)
+    saturday = now + datetime.timedelta(days=(5 - now.weekday()) % 7)
+    sunday = saturday + datetime.timedelta(days=1)
+    return saturday.strftime('%Y%m%d'), sunday.strftime('%Y%m%d')
 
 def get_payouts(race_id):
     tansho_dict, fukusho_dict = {}, {}
@@ -255,7 +279,7 @@ def get_odds_from_soup(s_soup):
     return o_dict
 
 # ==========================================
-# 3. 本格AI予測関数 (Ver18完全移植)
+# 3. 本格AI予測関数
 # ==========================================
 def run_real_prediction(race_id, race_date_str):
     odds_dict = {}
@@ -326,8 +350,10 @@ def run_real_prediction(race_id, race_date_str):
     r_date_obj = pd.to_datetime(race_date_str)
     df_test['出走間隔'] = (r_date_obj - df_test['前走日付']).dt.days.fillna(30)
     df_test['斤量増減'] = (df_test['斤量'] - df_test['前走斤量']).fillna(0)
-    df_test['前走コーナー順位'] = pd.to_numeric(df_test['前走コーナー順位'], errors='coerce').fillna(7)
-    df_test['脚質カテゴリ'] = pd.cut(df_test['前走コーナー順位'], bins=[-1, 3.5, 9.5, 99], labels=['先行', '差し', '追込']).astype(str)
+    
+    # 💡 【進化】ここでも最新の脚質辞書を使う！
+    df_test['脚質カテゴリ'] = df_test['馬ID'].map(horse_style_dict).fillna('不明')
+    
     df_test['偏差_前走タイム差'] = df_test['前走距離補正タイム差'] - df_test['前走距離補正タイム差'].mean()
     df_test['偏差_前走着順パーセント'] = df_test['前走着順パーセント'] - df_test['前走着順パーセント'].mean()
     df_test['偏差_前走上がり順位'] = df_test['前走上がり順位'].fillna(9.0) - df_test['前走上がり順位'].fillna(9.0).mean()
@@ -351,8 +377,6 @@ def run_real_prediction(race_id, race_date_str):
     df_test['穴馬_勝負の乗り替わり'] = df_test['前走大敗フラグ'] * (((c_rate - p_rate) >= 0.10) | (tj_rate >= 0.30)).astype(int)
 
     for col in num_features + ana_flags: df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
-    
-    # 💡 【修正点】ここで辞書からカテゴリ情報を引っ張り出して適用する！
     for col in cat_features: df_test[col] = pd.Categorical(df_test[col], categories=cat_categories_dict[col])
 
     raw_probs = model.predict_proba(df_test[features])[:, 1]
@@ -391,36 +415,45 @@ def run_real_prediction(race_id, race_date_str):
 # 4. メインUI構成 (サイドバー)
 # ==========================================
 st.sidebar.markdown("## 🕹️ keiba-ebye メニュー")
-action = st.sidebar.radio("機能を選択", ["⏩ 次のレースを予想", "📜 本日の全レース予想", "🔍 レースを指定して予想", "🧪 性能試験 (バックテスト)"])
+action = st.sidebar.radio("機能を選択", [
+    "⏩ 次のレースを予想", 
+    "📜 本日の全レース予想", 
+    "📅 今週末の全レース予想", 
+    "🔍 レースを指定して予想", 
+    "🧪 性能試験 (バックテスト)",
+    "📈 AI精度評価 (AUCスコア)"
+])
 
 tokyo_tz = pytz.timezone('Asia/Tokyo')
 now = datetime.datetime.now(tokyo_tz)
 
+# 💡 【進化2】スマホで見やすいタブ型UIに変更！
 def display_result(df_res, topics, reco):
-    def highlight_ev(row):
-        return ['background-color: rgba(255, 99, 71, 0.3)' if row['期待値'] >= 1.5 else '' for _ in row]
+    tab1, tab2 = st.tabs(["📊 予想一覧", "💡 買い目・トピック"])
     
-    # 💡 【完全修正】内部データの「勝率(AI予測)」を引っ張ってきてから、「AI勝率」にリネームして表示する！
-    show_df = df_res[['印', '枠番', '馬番', '馬名', '脚質カテゴリ', '単勝オッズ', '勝率(AI予測)', '期待値']].copy()
-    show_df = show_df.rename(columns={'勝率(AI予測)': 'AI勝率'})
+    with tab1:
+        def highlight_ev(row):
+            return ['background-color: rgba(255, 99, 71, 0.3)' if row['期待値'] >= 1.5 else '' for _ in row]
+        show_df = df_res[['印', '馬番', '馬名', '脚質カテゴリ', '単勝オッズ', '勝率(AI予測)', '期待値']].copy()
+        show_df = show_df.rename(columns={'勝率(AI予測)': 'AI勝率', '脚質カテゴリ': '脚質'})
+        show_df['AI勝率'] = (show_df['AI勝率'] * 100).map('{:.1f}%'.format)
+        st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), use_container_width=True)
     
-    show_df['AI勝率'] = (show_df['AI勝率'] * 100).map('{:.1f}%'.format)
-    st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), use_container_width=True)
-    
-    ev_horses = df_res[(df_res.index < 5) & (df_res['期待値'] >= 1.5)]
-    if not ev_horses.empty:
-        st.error(f"💰 **【期待値レーダー発動】** {', '.join(ev_horses['馬名'].tolist())} に強烈なオッズ妙味あり！")
-    if topics:
-        st.info("**📝 要注目トピック馬:**\n" + "\n".join(topics))
-    st.success(f"**🤖 AI推奨買い目:** {reco}")
+    with tab2:
+        ev_horses = df_res[(df_res.index < 5) & (df_res['期待値'] >= 1.5)]
+        if not ev_horses.empty:
+            st.error(f"💰 **【期待値レーダー発動】** {', '.join(ev_horses['馬名'].tolist())} に強烈なオッズ妙味あり！")
+        if topics:
+            st.info("**📝 要注目トピック馬:**\n\n" + "\n".join(topics))
+        st.success(f"**🤖 AI推奨買い目:**\n\n{reco}")
 
 # ------------------------------------------
-# 通常予想モード
+# 各種モードの処理
 # ------------------------------------------
 if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想", "🔍 レースを指定して予想"]:
     todays_races = get_todays_races()
     if not todays_races:
-        st.warning(f"本日 ({now.strftime('%Y/%m/%d')}) はJRAのレースが開催されていません。左のメニューから「性能試験」をお試しください！")
+        st.warning(f"本日 ({now.strftime('%Y/%m/%d')}) はJRAのレースが開催されていません。")
     else:
         if action == "⏩ 次のレースを予想":
             st.subheader("🕒 まもなく出走するレース")
@@ -429,7 +462,7 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                 mins_left = int((tokyo_tz.localize(next_race['time']) - now).total_seconds() / 60)
                 st.info(f"👉 **{next_race['place']} {next_race['num']}R** 「{next_race['title']}」 (あと **{mins_left}** 分)")
                 if st.button("🚀 keiba-ebye 予想起動！", type="primary"):
-                    with st.spinner('本物のAIが推論中...'):
+                    with st.spinner('AIが推論中...'):
                         res_df, topics, reco, _, _ = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'))
                         display_result(res_df, topics, reco)
             else: st.success("🏁 本日の全レースは終了しました。")
@@ -442,7 +475,7 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                     st.markdown(f"#### ■ {r['place']} {r['num']}R")
                     res_df, topics, reco, _, _ = run_real_prediction(r['id'], now.strftime('%Y-%m-%d'))
                     if res_df is not None: display_result(res_df.head(5), topics, reco)
-                    my_bar.progress((i + 1) / len(todays_races), text=f"処理中: {i+1}/{len(todays_races)} レース")
+                    my_bar.progress((i + 1) / len(todays_races))
 
         elif action == "🔍 レースを指定して予想":
             st.subheader("🎯 レースを指定")
@@ -454,9 +487,28 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                     res_df, topics, reco, _, _ = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'))
                     if res_df is not None: display_result(res_df, topics, reco)
 
-# ------------------------------------------
-# 性能試験 (バックテスト) モード - アナリティクス完全搭載版
-# ------------------------------------------
+elif action == "📅 今週末の全レース予想":
+    st.subheader("📅 今週末 (土・日) の先取り予想")
+    st.markdown("金曜や前日に、週末のレース出馬表を先取りして予想します！")
+    sat_str, sun_str = get_weekend_dates()
+    
+    if st.button("🚀 週末の出馬表を取得・予想", type="primary"):
+        with st.spinner('週末のレースを収集中...'):
+            sat_races = get_todays_races(sat_str)
+            sun_races = get_todays_races(sun_str)
+            all_weekend_races = sat_races + sun_races
+            
+        if not all_weekend_races: st.error("まだ今週末の出馬表が発表されていません。")
+        else:
+            my_bar = st.progress(0, text="週末のレースを推論中...")
+            for i, r in enumerate(all_weekend_races):
+                # 曜日を判定して表示
+                r_date = sat_str if r in sat_races else sun_str
+                with st.expander(f"🏁 {r_date[:4]}/{r_date[4:6]}/{r_date[6:]} - {r['place']} {r['num']}R"):
+                    res_df, topics, reco, _, _ = run_real_prediction(r['id'], f"{r_date[:4]}-{r_date[4:6]}-{r_date[6:]}")
+                    if res_df is not None: display_result(res_df.head(5), topics, reco)
+                my_bar.progress((i + 1) / len(all_weekend_races))
+
 elif action == "🧪 性能試験 (バックテスト)":
     st.subheader("🧪 keiba-ebye 性能試験 (詳細レポート付き)")
     test_date = st.date_input("テストする日付を選択", datetime.date.today() - datetime.timedelta(days=3))
@@ -469,26 +521,12 @@ elif action == "🧪 性能試験 (バックテスト)":
             else:
                 my_bar = st.progress(0, text="推論＆集計中...")
                 total_invest, total_return_t, total_return_f, ev_hits = 0, 0, 0, 0
-                analysis_data = []
-
                 for i, r in enumerate(test_races):
-                    # 各レースごとにアコーディオンを作成して、yosou.py同等のレポートを収納！
                     with st.expander(f"🏁 {r['place']} {r['num']}R 予想詳細を見る"):
-                        res_df, topics, reco, track_type, place = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d'))
+                        res_df, topics, reco, _, _ = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d'))
                         t_dict, f_dict = get_payouts(r['id'])
-                        
                         if res_df is not None and t_dict:
                             display_result(res_df, topics, reco)
-                            
-                            # 本命(◎)のアナリティクスデータ保存
-                            honmei_m = res_df.loc[0, '馬番']
-                            analysis_data.append({
-                                'Track': track_type, 'Place': place,
-                                'Return_T': t_dict.get(honmei_m, 0),
-                                'Return_F': f_dict.get(honmei_m, 0)
-                            })
-                            
-                            # 期待値1.5以上の集計
                             ev_horses = res_df[(res_df.index < 5) & (res_df['期待値'] >= 1.5)]
                             for _, horse in ev_horses.iterrows():
                                 umaban = horse['馬番']
@@ -497,7 +535,6 @@ elif action == "🧪 性能試験 (バックテスト)":
                                 if umaban in f_dict: 
                                     total_return_f += f_dict[umaban]
                                     ev_hits += 1
-                                    
                     my_bar.progress((i + 1) / len(test_races))
                 
                 st.markdown("---")
@@ -508,19 +545,17 @@ elif action == "🧪 性能試験 (バックテスト)":
                     col2.metric("単勝 回収率", f"{(total_return_t / total_invest * 100):.1f}%", f"¥{total_return_t:,}")
                     col3.metric("複勝 回収率", f"{(total_return_f / total_invest * 100):.1f}%", f"的中 {ev_hits}回")
                 else: st.warning("この日は「期待値1.5超え」の推奨対象馬がいませんでした。")
-                
-                # アナリティクスの表示
-                if analysis_data:
-                    df_a = pd.DataFrame(analysis_data)
-                    st.markdown("#### 📊 AI本命(◎) 条件別アナリティクス")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.write("🛣️ **コース別成績**")
-                        for track, group in df_a.groupby('Track'):
-                            inv = len(group) * 100
-                            st.text(f" {track.ljust(4)} | 単勝: {(group['Return_T'].sum()/inv*100):.1f}% / 対象: {len(group)}R")
-                    with c2:
-                        st.write("🏟️ **競馬場別成績**")
-                        for p, group in df_a.groupby('Place'):
-                            inv = len(group) * 100
-                            st.text(f" {p.ljust(4)} | 単勝: {(group['Return_T'].sum()/inv*100):.1f}% / 対象: {len(group)}R")
+
+# 💡 【進化3】AUC（AI精度評価）機能の搭載！
+elif action == "📈 AI精度評価 (AUCスコア)":
+    st.subheader("📈 keiba-ebye AI精度評価 (ROC-AUC)")
+    st.markdown("現在の学習データに基づく、AIの「馬券内に入りうる馬の識別能力」を評価します。")
+    
+    st.metric(label="📊 総合AUCスコア (1.0に近いほど優秀)", value=f"{val_auc:.4f}")
+    if val_auc > 0.7: st.success("🔥 素晴らしい精度です！AIは強い馬と弱い馬を高い精度で見分けています。")
+    elif val_auc > 0.6: st.info("👍 良好な精度です。実運用に耐えうるレベルです。")
+    else: st.warning("⚠️ 精度が低めです。データ量の増加や特徴量の見直しが必要です。")
+    
+    st.markdown("##### 📉 ROC曲線")
+    roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
+    st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
