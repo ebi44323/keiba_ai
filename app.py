@@ -115,6 +115,9 @@ def prepare_model_and_data():
 
     for col in num_features + ana_flags: df[col] = pd.to_numeric(df[col], errors='coerce')
     for col in cat_features: df[col] = df[col].astype('category')
+    
+    # 💡【修正点】推論時に必要なカテゴリ一覧だけを辞書にして取り出す！
+    cat_categories_dict = {col: df[col].cat.categories for col in cat_features}
 
     model = lgb.LGBMClassifier(
         n_estimators=100, random_state=42, importance_type='gain', max_depth=5, num_leaves=20, 
@@ -123,10 +126,10 @@ def prepare_model_and_data():
     )
     model.fit(df[features], df['複勝正解フラグ'])
     
-    return df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags
+    return df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict
 
 with st.spinner('keiba-ebye フルパワーAIエンジンを起動・学習中... (初回のみ数分かかります)'):
-    df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags = prepare_model_and_data()
+    df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict = prepare_model_and_data()
 
 headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -273,10 +276,10 @@ def run_real_prediction(race_id, race_date_str):
     try:
         res = requests.get(url, headers=headers); res.encoding = 'euc-jp'
         soup = BeautifulSoup(res.text, 'html.parser')
-    except: return None, None, None, None
+    except: return None, None, None, None, None
 
     race_data_box = soup.find('div', class_='RaceData01')
-    if not race_data_box: return None, None, None, None
+    if not race_data_box: return None, None, None, None, None
     race_text = race_data_box.text.replace('\n', '')
     
     baba_match = re.search(r'馬場:([良稍重不良]+)', race_text)
@@ -293,7 +296,7 @@ def run_real_prediction(race_id, race_date_str):
 
     horses = []
     table = soup.select_one('.Shutuba_Table') or soup.find('table')
-    if not table: return None, None, None, None
+    if not table: return None, None, None, None, None
 
     for tr in table.find_all('tr'):
         tds = tr.find_all('td')
@@ -314,7 +317,7 @@ def run_real_prediction(race_id, race_date_str):
             horses.append({'枠番': waku, '馬番': umaban, '馬名': horse_a.text.strip(), '馬ID': horse_id, '斤量': kinryo, '騎手ID': jockey_id, '調教師': trainer_id, '距離': distance, '競馬場': place, '芝/ダート': track_type, '回り': mawari, 'コース地形': course_slope, '馬場': todays_baba, '馬体重_数値': weight_val, '単勝オッズ': odds_val})
         except: continue
 
-    if not horses: return None, None, None, None
+    if not horses: return None, None, None, None, None
     df_test = pd.DataFrame(horses)
     df_test = pd.merge(df_test, df_latest_clean, on='馬ID', how='left')
 
@@ -348,7 +351,9 @@ def run_real_prediction(race_id, race_date_str):
     df_test['穴馬_勝負の乗り替わり'] = df_test['前走大敗フラグ'] * (((c_rate - p_rate) >= 0.10) | (tj_rate >= 0.30)).astype(int)
 
     for col in num_features + ana_flags: df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
-    for col in cat_features: df_test[col] = pd.Categorical(df_test[col], categories=df[col].cat.categories)
+    
+    # 💡 【修正点】ここで辞書からカテゴリ情報を引っ張り出して適用する！
+    for col in cat_features: df_test[col] = pd.Categorical(df_test[col], categories=cat_categories_dict[col])
 
     raw_probs = model.predict_proba(df_test[features])[:, 1]
     probs = raw_probs ** 1.2
@@ -369,13 +374,12 @@ def run_real_prediction(race_id, race_date_str):
         if row['穴馬_勝負の乗り替わり'] == 1: reasons.append("勝負騎手")
         
         if rank >= 5:
-            tj_key = f"{row['調教師']}_{row['騎手ID']}"
             is_potential_ai = row['勝率(AI予測)'] >= (df_test.loc[4, '勝率(AI予測)'] * 0.5)
             if len(reasons) >= 2 or (len(reasons) >= 1 and is_potential_ai):
                 topics_list.append(f"📌 {row['馬名']}({', '.join(reasons)})")
                 if f"{row['馬番']}番" not in ana_horse_nums: ana_horse_nums.append(f"{row['馬番']}番")
 
-    ana_str = "・".join(ana_horse_nums[:3]) if ana_horse_nums else ""
+    ana_str = "・".join(str(n) for n in ana_horse_nums[:3]) if ana_horse_nums else ""
     p1, p2 = df_test.loc[0, '勝率(AI予測)'], df_test.loc[1, '勝率(AI予測)']
     if p1 >= 0.20: reco = f"🎯 馬連・馬単: ◎から印馬・穴馬({ana_str})への流し"
     elif p1 >= 0.12 and (p1 - p2) >= 0.03: reco = f"🎯 馬連・ワイド: ◎から穴馬({ana_str})への流しで高配当狙い"
