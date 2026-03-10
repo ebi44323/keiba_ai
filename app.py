@@ -283,23 +283,32 @@ def generate_txt_report(results_list):
     return txt
 
 # ==========================================
-# 3. 本格AI予測関数
+# 3. 本格AI予測関数 (過去レース・結果ページ完全対応版)
 # ==========================================
 def run_real_prediction(race_id, race_date_str):
     odds_dict = {}
-    for fetch_url in [f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}', f'https://race.netkeiba.com/race/result.html?race_id={race_id}']:
+    html_text = ""
+    # 💡 出馬表 -> 結果ページ -> 過去DB の順で、存在するページを執念で探す！
+    for fetch_url in [
+        f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}',
+        f'https://race.netkeiba.com/race/result.html?race_id={race_id}',
+        f'https://db.netkeiba.com/race/{race_id}/'
+    ]:
         try:
             r = requests.get(fetch_url, headers=headers); r.encoding = 'euc-jp'
-            odds_dict = get_odds_from_soup(BeautifulSoup(r.text, 'html.parser'))
-            if odds_dict: break
+            soup = BeautifulSoup(r.text, 'html.parser')
+            # 馬柱のテーブルが見つかれば、そのページのHTMLを採用
+            if soup.select_one('.Shutuba_Table') or soup.select_one('#All_Result_Table') or soup.select_one('.race_table_01'):
+                html_text = r.text
+                odds_dict = get_odds_from_soup(soup)
+                break
         except: pass
 
-    try:
-        res = requests.get(f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}', headers=headers); res.encoding = 'euc-jp'
-        soup = BeautifulSoup(res.text, 'html.parser')
-    except: return None, None, None, None, None, None, None
+    if not html_text: return None, None, None, None, None, None, None
+    soup = BeautifulSoup(html_text, 'html.parser')
 
-    race_data_box = soup.find('div', class_='RaceData01')
+    # レース情報の取得 (ライブ会場と過去DBでタグが違う問題を吸収)
+    race_data_box = soup.find('div', class_='RaceData01') or soup.find('dl', class_='racedata')
     if not race_data_box: return None, None, None, None, None, None, None
     race_text = race_data_box.text.replace('\n', '')
     
@@ -315,27 +324,44 @@ def run_real_prediction(race_id, race_date_str):
     mawari = '左回り' if place in ['東京', '新潟', '中京'] else '右回り'
 
     horses = []
-    table = soup.select_one('.Shutuba_Table') or soup.find('table')
+    # 💡 過去結果ページ (#All_Result_Table) にも完全対応！
+    table = soup.select_one('.Shutuba_Table') or soup.select_one('#All_Result_Table') or soup.select_one('.race_table_01')
     if not table: return None, None, None, None, None, None, None
 
-    for tr in table.find_all('tr'):
+    for tr in table.find_all('tr')[1:]: # ヘッダーを飛ばす
         tds = tr.find_all('td')
         if len(tds) < 5: continue
         try:
-            waku = int(re.search(r'\d+', (tr.select_one('td[class*="Waku"]') or tds[0]).text).group(0))
-            umaban = int(re.search(r'\d+', (tr.select_one('td[class*="Umaban"]') or tds[1]).text).group(0))
+            # クラス名が無くても強引に左から何番目かで取得するフォールバック
+            waku_td = tr.select_one('td[class*="Waku"]') or tds[0]
+            umaban_td = tr.select_one('td[class*="Umaban"]') or tds[1]
+            waku = int(re.search(r'\d+', waku_td.text).group(0))
+            umaban = int(re.search(r'\d+', umaban_td.text).group(0))
+            
             horse_a = tr.select_one('td.HorseInfo a') or tr.find('a', href=re.compile(r'/horse/'))
             horse_id = re.search(r'\d+', horse_a['href']).group(0)
+            
             jockey_a = tr.select_one('td.Jockey a') or tr.find('a', href=re.compile(r'/jockey/'))
             jockey_id = re.search(r'\d+', jockey_a['href']).group(0) if jockey_a else "0"
+            
             trainer_a = tr.select_one('td.Trainer a') or tr.find('a', href=re.compile(r'/trainer/'))
             trainer_id = re.search(r'\d+', trainer_a['href']).group(0) if trainer_a else "不明"
-            kinryo = float(re.search(r'\d+(\.\d+)?', (tr.select_one('td.Jockey') or jockey_a.parent).find_previous_sibling('td').text).group(0))
+            
+            kinryo_text = (tr.select_one('td.Jockey') or jockey_a.parent).find_previous_sibling('td').text if jockey_a else tds[4].text
+            kinryo = float(re.search(r'\d+(\.\d+)?', kinryo_text).group(0))
+            
             weight_td = tr.select_one('td.Weight')
-            weight_val = float(re.search(r'\d+', weight_td.text).group(0)) if weight_td and re.search(r'\d+', weight_td.text) else np.nan
-            odds_val = odds_dict.get(umaban, 0.0)
+            if not weight_td:
+                # 過去ページ用の馬体重取得
+                for td in tds:
+                    if re.match(r'\d{3}\([+-]?\d+\)', td.text.strip()):
+                        weight_td = td; break
+            weight_val = float(re.search(r'^(\d{3})', weight_td.text.strip()).group(1)) if weight_td and re.search(r'^(\d{3})', weight_td.text.strip()) else np.nan
+            
+            odds_val = odds_dict.get(umaban, 10.0) # 取れなければ仮オッズ
             horses.append({'枠番': waku, '馬番': umaban, '馬名': horse_a.text.strip(), '馬ID': horse_id, '斤量': kinryo, '騎手ID': jockey_id, '調教師': trainer_id, '距離': distance, '競馬場': place, '芝/ダート': track_type, '回り': mawari, 'コース地形': course_slope, '馬場': todays_baba, '馬体重_数値': weight_val, '単勝オッズ': odds_val})
-        except: continue
+        except Exception as e:
+            continue
 
     if not horses: return None, None, None, None, None, None, None
     df_test = pd.DataFrame(horses)
@@ -592,4 +618,5 @@ elif action == "📈 AI精度評価 (AUCスコア)":
     st.markdown("##### 📉 ROC曲線")
     roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
     st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
+
 
