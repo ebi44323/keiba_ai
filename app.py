@@ -8,6 +8,7 @@ import re
 import datetime
 import pytz
 import traceback
+from sklearn.metrics import roc_auc_score, roc_curve 
 
 # ==========================================
 # UI・ページ設定
@@ -713,3 +714,4 @@ elif action == "📈 AI精度評価 (AUCスコア)":
     st.markdown("##### 📉 ROC曲線")
     roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
     st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
+
