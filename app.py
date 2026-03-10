@@ -272,17 +272,25 @@ def get_odds_from_soup(s_soup):
     o_dict = {}
     tgt_table = s_soup.select_one('.Shutuba_Table') or s_soup.select_one('#All_Result_Table') or s_soup.select_one('.race_table_01')
     if not tgt_table: return o_dict
+    
+    # 💡【重要修正】この初期化が抜けていたため、オッズ取得が全滅していました！
+    u_idx, o_idx = -1, -1
+    
     for i, th in enumerate(tgt_table.find_all('th')):
         c_txt = re.sub(r'\s+', '', th.text)
         if '馬番' in c_txt: u_idx = i
         if '単勝' in c_txt or 'オッズ' in c_txt: o_idx = i
+        
     try:
         if u_idx != -1 and o_idx != -1:
             for tr in tgt_table.find_all('tr')[1:]:
                 tds = tr.find_all('td')
                 if len(tds) > max(u_idx, o_idx):
-                    u_m, o_m = re.search(r'\d+', tds[u_idx].text), re.search(r'\d+\.\d+', tds[o_idx].text)
-                    if u_m and o_m: o_dict[int(u_m.group(0))] = float(o_m.group(0))
+                    u_m = re.search(r'\d+', tds[u_idx].text)
+                    # 💡「10.5」のような小数も「10」のような整数も拾えるように強化！
+                    o_m = re.search(r'\d+(\.\d+)?', tds[o_idx].text)
+                    if u_m and o_m: 
+                        o_dict[int(u_m.group(0))] = float(o_m.group(0))
     except: pass
     return o_dict
 
@@ -686,5 +694,6 @@ elif action == "🧪 性能試験 (バックテスト)":
 elif action == "📈 AI精度評価 (AUCスコア)":
     st.subheader("📈 keiba-ebye AI精度評価 (ROC-AUC)")
     st.markdown("現在の学習データに基づく、AIの「馬券内に入りうる馬の識別能力」を評価します。")
+
 
 
