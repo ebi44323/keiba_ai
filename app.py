@@ -120,8 +120,20 @@ def prepare_model_and_data():
     tj_rate = df['調教師_騎手'].map(trainer_jockey_stats).fillna(0)
     df['穴馬_勝負の乗り替わり'] = df['前走大敗フラグ_穴馬用'] * (((c_rate - p_rate) >= 0.10) | (tj_rate >= 0.30)).astype(int)
 
+    # 💡 開幕週/開催後半のバイアスを判定するロジックを追加
+    def get_track_bias(date, place):
+        # 簡易的に、開催の序盤は「前有利」、終盤は「差し有利」と仮定
+        # 本格的に実装する場合は、JRAの開催日程データとの連携が必要
+        month = date.month
+        day = date.day
+        if day <= 7: return '前有利'
+        elif day >= 21: return '差し有利'
+        else: return 'フラット'
+
+    df['馬場バイアス'] = df.apply(lambda row: get_track_bias(row['日付'], row['競馬場']), axis=1)
+
     cat_features = ['競馬場', '芝/ダート', '回り', 'コース地形', '調教師', '騎手ID', '父', '母父', 
-                    '調教師_間隔', '調教師_騎手', '騎手_競馬場', '騎手_距離', '脚質カテゴリ', '馬場', '馬体_馬場シナジー']
+                    '調教師_間隔', '調教師_騎手', '騎手_競馬場', '騎手_距離', '脚質カテゴリ', '馬場', '馬体_馬場シナジー', '馬場バイアス']
     num_features = ['枠番', '距離', '斤量差', '出走間隔', '斤量増減', 
                     '前走上りレース差', '偏差_前走タイム差', '偏差_前走着順パーセント', '偏差_前走上がり順位', '偏差_斤量',
                     '父_馬場適性スコア', '馬単体_馬場適性スコア', '馬体重_数値']
@@ -137,6 +149,9 @@ def prepare_model_and_data():
         if col == '脚質カテゴリ':
             for style in ['逃げ', '先行', '差し', '追込', '自在', '不明']:
                 if style not in cats: cats.append(style)
+        if col == '馬場バイアス':
+            for bias in ['前有利', '差し有利', 'フラット']:
+                if bias not in cats: cats.append(bias)
         cat_categories_dict[col] = cats
 
     split_idx = int(len(df) * 0.9)
@@ -153,10 +168,10 @@ def prepare_model_and_data():
     val_auc = roc_auc_score(test_df['複勝正解フラグ'], val_preds)
     fpr, tpr, _ = roc_curve(test_df['複勝正解フラグ'], val_preds)
 
-    return df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict, horse_style_dict, val_auc, fpr, tpr
+    return df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict, horse_style_dict, val_auc, fpr, tpr, get_track_bias
 
 with st.spinner('keiba-ebye フルパワーAIエンジンを起動・学習中... (初回のみ数分かかります)'):
-    df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict, horse_style_dict, val_auc, fpr, tpr = prepare_model_and_data()
+    df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict, horse_style_dict, val_auc, fpr, tpr, get_track_bias = prepare_model_and_data()
 
 headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -369,7 +384,8 @@ def run_real_prediction(race_id, race_date_str):
 
     df_test['斤量差'] = df_test['斤量'] - df_test['斤量'].mean()
     df_test['偏差_斤量'] = df_test['斤量'] - df_test['斤量'].mean()
-    df_test['出走間隔'] = (pd.to_datetime(race_date_str) - df_test['前走日付']).dt.days.fillna(30)
+    race_date_obj = pd.to_datetime(race_date_str)
+    df_test['出走間隔'] = (race_date_obj - df_test['前走日付']).dt.days.fillna(30)
     df_test['斤量増減'] = (df_test['斤量'] - df_test['前走斤量']).fillna(0)
     
     df_test['脚質カテゴリ'] = df_test['馬ID'].map(horse_style_dict).fillna('不明')
@@ -395,15 +411,24 @@ def run_real_prediction(race_id, race_date_str):
     p_rate = df_test['前走騎手ID'].map(jockey_stats).fillna(0)
     tj_rate = df_test['調教師_騎手'].map(trainer_jockey_stats).fillna(0)
     df_test['穴馬_勝負の乗り替わり'] = df_test['前走大敗フラグ_穴馬用'] * (((c_rate - p_rate) >= 0.10) | (tj_rate >= 0.30)).astype(int)
+    
+    df_test['馬場バイアス'] = get_track_bias(race_date_obj, place)
 
     for col in num_features + ana_flags: df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
     for col in cat_features: df_test[col] = pd.Categorical(df_test[col], categories=cat_categories_dict[col])
 
     nige_count = sum(df_test['脚質カテゴリ'] == '逃げ')
     senko_count = sum(df_test['脚質カテゴリ'] == '先行')
-    if nige_count >= 3: pace_text = f"🔥 【ハイペース濃厚】 逃げ馬が{nige_count}頭もおり先行争いが激化。差し・追込馬の台頭に警戒！"
-    elif nige_count == 0: pace_text = f"🐌 【スローペース濃厚】 確たる逃げ馬が不在。先行馬({senko_count}頭)の押し切り、前残りに注意。"
-    else: pace_text = f"🐎 【ミドルペース】 逃げ馬{nige_count}頭、先行馬{senko_count}頭。平均的なペースで実力が反映されやすい展開。"
+    track_bias = df_test['馬場バイアス'].iloc[0] if not df_test.empty else 'フラット'
+    
+    bias_str = ""
+    if track_type == '芝':
+        if track_bias == '前有利': bias_str = "🌱 開幕序盤: 芝が綺麗で逃げ・先行馬に有利な馬場状態。"
+        elif track_bias == '差し有利': bias_str = "🍂 開催終盤: 内側の芝が傷み、外からの差し馬が届きやすい馬場状態。"
+    
+    if nige_count >= 3: pace_text = f"🔥 【ハイペース濃厚】 逃げ馬が{nige_count}頭もおり先行争いが激化。差し・追込馬の台頭に警戒！\n{bias_str}"
+    elif nige_count == 0: pace_text = f"🐌 【スローペース濃厚】 確たる逃げ馬が不在。先行馬({senko_count}頭)の押し切り、前残りに注意。\n{bias_str}"
+    else: pace_text = f"🐎 【ミドルペース】 逃げ馬{nige_count}頭、先行馬{senko_count}頭。平均的なペースで実力が反映されやすい展開。\n{bias_str}"
 
     raw_probs = model.predict_proba(df_test[features])[:, 1]
     probs = raw_probs ** 1.2
@@ -618,5 +643,3 @@ elif action == "📈 AI精度評価 (AUCスコア)":
     st.markdown("##### 📉 ROC曲線")
     roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
     st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
-
-
