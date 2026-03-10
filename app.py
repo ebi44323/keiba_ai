@@ -537,7 +537,7 @@ def display_result(df_res, topics, reco, pace_text):
         show_df['勝率'] = (show_df['勝率'] * 100).map('{:.1f}%'.format)
         show_df['複勝率'] = (show_df['複勝率'] * 100).map('{:.1f}%'.format)
         
-        st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), width=None, hide_index=True)
+        st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), use_container_width=True, hide_index=True)
     
     with tab2:
         st.info(f"**🏇 展開予想:**\n{pace_text}")
@@ -686,4 +686,5 @@ elif action == "🧪 性能試験 (バックテスト)":
 elif action == "📈 AI精度評価 (AUCスコア)":
     st.subheader("📈 keiba-ebye AI精度評価 (ROC-AUC)")
     st.markdown("現在の学習データに基づく、AIの「馬券内に入りうる馬の識別能力」を評価します。")
+
 
