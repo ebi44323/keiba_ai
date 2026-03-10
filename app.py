@@ -226,24 +226,46 @@ def get_weekend_dates():
 
 def get_payouts(race_id):
     tansho_dict, fukusho_dict = {}, {}
-    try:
-        res = requests.get(f"https://race.netkeiba.com/race/result.html?race_id={race_id}", headers=headers); res.encoding = 'euc-jp'
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for tbl in soup.find_all('table', class_=re.compile(r'Pay_Table_01')) or soup.find_all('table', class_='pay_table_01') or soup.find_all('table', summary='払い戻し'):
-            for tr in tbl.find_all('tr'):
-                th = tr.find('th')
-                if not th: continue
-                if th.text.strip() in ['単勝', '複勝']:
-                    res_td = tr.find('td', class_=re.compile(r'Result')) or tr.find_all('td')[0]
-                    pay_td = tr.find('td', class_=re.compile(r'Payout')) or tr.find_all('td')[1]
-                    if res_td and pay_td:
-                        umbans = [re.sub(r'\D', '', s) for s in res_td.stripped_strings if re.sub(r'\D', '', s)]
-                        pays = [re.sub(r'\D', '', s) for s in pay_td.stripped_strings if re.sub(r'\D', '', s)]
-                        for u, p in zip(umbans, pays):
-                            if u and p:
-                                if th.text.strip() == '単勝': tansho_dict[int(u)] = int(p)
-                                else: fukusho_dict[int(u)] = int(p)
-    except: pass
+    # 💡 最新レース会場と過去DBの両方を探しに行く！
+    urls = [
+        f"https://race.netkeiba.com/race/result.html?race_id={race_id}",
+        f"https://db.netkeiba.com/race/{race_id}/"
+    ]
+    for url in urls:
+        try:
+            res = requests.get(url, headers=headers); res.encoding = 'euc-jp'
+            soup = BeautifulSoup(res.text, 'html.parser')
+            
+            # HTMLの構造違い（クラス名の違い）をすべて網羅して表を探す
+            tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01'))
+            if not tables: tables = soup.find_all('table', class_='pay_table_01')
+            if not tables: tables = soup.find_all('table', summary='払い戻し')
+            
+            for tbl in tables:
+                for tr in tbl.find_all('tr'):
+                    th = tr.find('th')
+                    if not th: continue
+                    if th.text.strip() in ['単勝', '複勝']:
+                        res_td = tr.find('td', class_=re.compile(r'Result'))
+                        if not res_td:
+                            tds = tr.find_all('td')
+                            if len(tds) > 0: res_td = tds[0]
+                        
+                        pay_td = tr.find('td', class_=re.compile(r'Payout'))
+                        if not pay_td:
+                            tds = tr.find_all('td')
+                            if len(tds) > 1: pay_td = tds[1]
+                        
+                        if res_td and pay_td:
+                            umbans = [re.sub(r'\D', '', s) for s in res_td.stripped_strings if re.sub(r'\D', '', s)]
+                            pays = [re.sub(r'\D', '', s) for s in pay_td.stripped_strings if re.sub(r'\D', '', s)]
+                            for u, p in zip(umbans, pays):
+                                if u and p:
+                                    if th.text.strip() == '単勝': tansho_dict[int(u)] = int(p)
+                                    else: fukusho_dict[int(u)] = int(p)
+            # 無事に取得できたらループを抜ける
+            if tansho_dict: break
+        except: pass
     return tansho_dict, fukusho_dict
 
 def get_odds_from_soup(s_soup):
@@ -664,3 +686,4 @@ elif action == "🧪 性能試験 (バックテスト)":
 elif action == "📈 AI精度評価 (AUCスコア)":
     st.subheader("📈 keiba-ebye AI精度評価 (ROC-AUC)")
     st.markdown("現在の学習データに基づく、AIの「馬券内に入りうる馬の識別能力」を評価します。")
+
