@@ -120,17 +120,14 @@ def prepare_model_and_data():
     tj_rate = df['調教師_騎手'].map(trainer_jockey_stats).fillna(0)
     df['穴馬_勝負の乗り替わり'] = df['前走大敗フラグ_穴馬用'] * (((c_rate - p_rate) >= 0.10) | (tj_rate >= 0.30)).astype(int)
 
-    # 💡 開幕週/開催後半のバイアスを判定するロジックを追加
-    def get_track_bias(date, place):
-        # 簡易的に、開催の序盤は「前有利」、終盤は「差し有利」と仮定
-        # 本格的に実装する場合は、JRAの開催日程データとの連携が必要
-        month = date.month
-        day = date.day
+    # 💡 新機能：開催バイアス（開幕週/開催後半）の判定
+    def get_track_bias(date_obj):
+        day = date_obj.day
         if day <= 7: return '前有利'
         elif day >= 21: return '差し有利'
         else: return 'フラット'
 
-    df['馬場バイアス'] = df.apply(lambda row: get_track_bias(row['日付'], row['競馬場']), axis=1)
+    df['馬場バイアス'] = df['日付'].apply(get_track_bias)
 
     cat_features = ['競馬場', '芝/ダート', '回り', 'コース地形', '調教師', '騎手ID', '父', '母父', 
                     '調教師_間隔', '調教師_騎手', '騎手_競馬場', '騎手_距離', '脚質カテゴリ', '馬場', '馬体_馬場シナジー', '馬場バイアス']
@@ -241,12 +238,13 @@ def get_payouts(race_id):
     try:
         res = requests.get(f"https://race.netkeiba.com/race/result.html?race_id={race_id}", headers=headers); res.encoding = 'euc-jp'
         soup = BeautifulSoup(res.text, 'html.parser')
-        for tbl in soup.find_all('table', class_=re.compile(r'Pay_Table_01')):
+        for tbl in soup.find_all('table', class_=re.compile(r'Pay_Table_01')) or soup.find_all('table', class_='pay_table_01') or soup.find_all('table', summary='払い戻し'):
             for tr in tbl.find_all('tr'):
                 th = tr.find('th')
                 if not th: continue
                 if th.text.strip() in ['単勝', '複勝']:
-                    res_td, pay_td = tr.find('td', class_=re.compile(r'Result')), tr.find('td', class_=re.compile(r'Payout'))
+                    res_td = tr.find('td', class_=re.compile(r'Result')) or tr.find_all('td')[0]
+                    pay_td = tr.find('td', class_=re.compile(r'Payout')) or tr.find_all('td')[1]
                     if res_td and pay_td:
                         umbans = [re.sub(r'\D', '', s) for s in res_td.stripped_strings if re.sub(r'\D', '', s)]
                         pays = [re.sub(r'\D', '', s) for s in pay_td.stripped_strings if re.sub(r'\D', '', s)]
@@ -275,7 +273,6 @@ def get_odds_from_soup(s_soup):
     except: pass
     return o_dict
 
-# 💡 【新規】TXTレポート生成関数
 def generate_txt_report(results_list):
     txt = "=== 🏇 keiba-ebye 予想レポート ===\n\n"
     for r in results_list:
@@ -286,7 +283,7 @@ def generate_txt_report(results_list):
         for rank, row in r['df'].iterrows():
             if rank >= 5: break
             ev_str = f" 📈期待値:{row['期待値']:.2f}" if row['期待値'] >= 1.5 else ""
-            txt += f" {row['印']} {rank+1}位: [{row['枠番']}枠{row['馬番']}番] {row['馬名']} ({row['脚質カテゴリ']}) - 勝率 {row['勝率(AI予測)']*100:.1f}% (オッズ {row['単勝オッズ']}倍){ev_str}\n"
+            txt += f" {row['印']} {rank+1}位: [{row['枠番']}枠{row['馬番']}番] {row['馬名']} ({row['脚質カテゴリ']}) - 勝率 {row['勝率(AI予測)']*100:.1f}% / 複勝率 {row['複勝率(AI予測)']*100:.1f}% (オッズ {row['単勝オッズ']}倍){ev_str}\n"
         txt += "-"*50 + "\n"
         if r['topics']:
             txt += "📝 要注目トピック馬:\n"
@@ -298,7 +295,7 @@ def generate_txt_report(results_list):
     return txt
 
 # ==========================================
-# 3. 本格AI予測関数 (過去レース・結果ページ完全対応版)
+# 3. 本格AI予測関数 (💡過去ページ完全対応 ＆ 馬場バイアス・複勝率搭載版！)
 # ==========================================
 def run_real_prediction(race_id, race_date_str):
     odds_dict = {}
@@ -312,7 +309,6 @@ def run_real_prediction(race_id, race_date_str):
         try:
             r = requests.get(fetch_url, headers=headers); r.encoding = 'euc-jp'
             soup = BeautifulSoup(r.text, 'html.parser')
-            # 馬柱のテーブルが見つかれば、そのページのHTMLを採用
             if soup.select_one('.Shutuba_Table') or soup.select_one('#All_Result_Table') or soup.select_one('.race_table_01'):
                 html_text = r.text
                 odds_dict = get_odds_from_soup(soup)
@@ -322,7 +318,6 @@ def run_real_prediction(race_id, race_date_str):
     if not html_text: return None, None, None, None, None, None, None
     soup = BeautifulSoup(html_text, 'html.parser')
 
-    # レース情報の取得 (ライブ会場と過去DBでタグが違う問題を吸収)
     race_data_box = soup.find('div', class_='RaceData01') or soup.find('dl', class_='racedata')
     if not race_data_box: return None, None, None, None, None, None, None
     race_text = race_data_box.text.replace('\n', '')
@@ -343,11 +338,10 @@ def run_real_prediction(race_id, race_date_str):
     table = soup.select_one('.Shutuba_Table') or soup.select_one('#All_Result_Table') or soup.select_one('.race_table_01')
     if not table: return None, None, None, None, None, None, None
 
-    for tr in table.find_all('tr')[1:]: # ヘッダーを飛ばす
+    for tr in table.find_all('tr')[1:]: 
         tds = tr.find_all('td')
         if len(tds) < 5: continue
         try:
-            # クラス名が無くても強引に左から何番目かで取得するフォールバック
             waku_td = tr.select_one('td[class*="Waku"]') or tds[0]
             umaban_td = tr.select_one('td[class*="Umaban"]') or tds[1]
             waku = int(re.search(r'\d+', waku_td.text).group(0))
@@ -367,13 +361,12 @@ def run_real_prediction(race_id, race_date_str):
             
             weight_td = tr.select_one('td.Weight')
             if not weight_td:
-                # 過去ページ用の馬体重取得
                 for td in tds:
                     if re.match(r'\d{3}\([+-]?\d+\)', td.text.strip()):
                         weight_td = td; break
             weight_val = float(re.search(r'^(\d{3})', weight_td.text.strip()).group(1)) if weight_td and re.search(r'^(\d{3})', weight_td.text.strip()) else np.nan
             
-            odds_val = odds_dict.get(umaban, 10.0) # 取れなければ仮オッズ
+            odds_val = odds_dict.get(umaban, 10.0) 
             horses.append({'枠番': waku, '馬番': umaban, '馬名': horse_a.text.strip(), '馬ID': horse_id, '斤量': kinryo, '騎手ID': jockey_id, '調教師': trainer_id, '距離': distance, '競馬場': place, '芝/ダート': track_type, '回り': mawari, 'コース地形': course_slope, '馬場': todays_baba, '馬体重_数値': weight_val, '単勝オッズ': odds_val})
         except Exception as e:
             continue
@@ -411,8 +404,8 @@ def run_real_prediction(race_id, race_date_str):
     p_rate = df_test['前走騎手ID'].map(jockey_stats).fillna(0)
     tj_rate = df_test['調教師_騎手'].map(trainer_jockey_stats).fillna(0)
     df_test['穴馬_勝負の乗り替わり'] = df_test['前走大敗フラグ_穴馬用'] * (((c_rate - p_rate) >= 0.10) | (tj_rate >= 0.30)).astype(int)
-    
-    df_test['馬場バイアス'] = get_track_bias(race_date_obj, place)
+
+    df_test['馬場バイアス'] = get_track_bias(race_date_obj)
 
     for col in num_features + ana_flags: df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
     for col in cat_features: df_test[col] = pd.Categorical(df_test[col], categories=cat_categories_dict[col])
@@ -430,10 +423,14 @@ def run_real_prediction(race_id, race_date_str):
     elif nige_count == 0: pace_text = f"🐌 【スローペース濃厚】 確たる逃げ馬が不在。先行馬({senko_count}頭)の押し切り、前残りに注意。\n{bias_str}"
     else: pace_text = f"🐎 【ミドルペース】 逃げ馬{nige_count}頭、先行馬{senko_count}頭。平均的なペースで実力が反映されやすい展開。\n{bias_str}"
 
+    # 💡 複勝率の取得と、勝率への変換！
     raw_probs = model.predict_proba(df_test[features])[:, 1]
+    df_test['複勝率(AI予測)'] = raw_probs # 本来のAI予測値（3着以内に入る確率）
+    
     probs = raw_probs ** 1.2
     probs = np.maximum(probs, 0.001)
-    df_test['勝率(AI予測)'] = probs / probs.sum()
+    df_test['勝率(AI予測)'] = probs / probs.sum() # 単勝用に正規化した確率
+    
     df_test['期待値'] = df_test['勝率(AI予測)'] * df_test['単勝オッズ']
     df_test = df_test.sort_values('勝率(AI予測)', ascending=False).reset_index(drop=True)
 
@@ -484,11 +481,12 @@ def display_result(df_res, topics, reco, pace_text):
     with tab1:
         def highlight_ev(row):
             return ['background-color: rgba(255, 99, 71, 0.3)' if row['期待値'] >= 1.5 else '' for _ in row]
-        show_df = df_res[['印', '馬番', '馬名', '脚質カテゴリ', '単勝オッズ', '勝率(AI予測)', '期待値']].copy()
-        show_df = show_df.rename(columns={'勝率(AI予測)': '勝率', '脚質カテゴリ': '脚質', '単勝オッズ': 'オッズ'})
+        # 💡 ここに「複勝率(AI予測)」を追加！
+        show_df = df_res[['印', '馬番', '馬名', '脚質カテゴリ', '単勝オッズ', '勝率(AI予測)', '複勝率(AI予測)', '期待値']].copy()
+        show_df = show_df.rename(columns={'勝率(AI予測)': '勝率', '複勝率(AI予測)': '複勝率', '脚質カテゴリ': '脚質', '単勝オッズ': 'オッズ'})
         show_df['勝率'] = (show_df['勝率'] * 100).map('{:.1f}%'.format)
+        show_df['複勝率'] = (show_df['複勝率'] * 100).map('{:.1f}%'.format)
         
-        # 💡 Streamlit警告対策：width='stretch'を使用
         st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), width=None, hide_index=True)
     
     with tab2:
@@ -538,7 +536,6 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                     else: st.error("⚠️ データ取得失敗。アクセス制限の可能性があります。")
                     my_bar.progress((i + 1) / len(todays_races))
                 
-                # 💡 TXTダウンロードボタン！
                 if results_for_txt:
                     report_txt = generate_txt_report(results_for_txt)
                     st.download_button("📥 予想レポートをダウンロード (.txt)", data=report_txt, file_name=f"keiba_ebye_{now.strftime('%Y%m%d')}.txt", mime="text/plain")
@@ -568,7 +565,7 @@ elif action == "📅 今週末の全レース予想":
             my_bar = st.progress(0, text="週末のレースを推論中...")
             results_for_txt = []
             for i, r in enumerate(all_weekend_races):
-                r_date = sat_str if r['id'].startswith(sat_str) else sun_str # 日付判定を少し簡略化
+                r_date = sat_str if r['id'].startswith(sat_str) else sun_str
                 with st.expander(f"🏁 {r_date[:4]}/{r_date[4:6]}/{r_date[6:]} - {r['place']} {r['num']}R"):
                     res_df, topics, reco, pace_text, track_type, place, dist = run_real_prediction(r['id'], f"{r_date[:4]}-{r_date[4:6]}-{r_date[6:]}")
                     if res_df is not None:
