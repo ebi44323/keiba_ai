@@ -149,17 +149,24 @@ def prepare_model_and_data():
                 if bias not in cats: cats.append(bias)
         cat_categories_dict[col] = cats
 
+    split_idx = int(len(df) * 0.9)
+    train_df, test_df = df.iloc[:split_idx], df.iloc[split_idx:]
+
     model = lgb.LGBMClassifier(
         n_estimators=100, random_state=42, importance_type='gain', max_depth=5, num_leaves=20, 
         min_child_samples=100, colsample_bytree=0.8, subsample=0.8, reg_alpha=5.0, reg_lambda=5.0, cat_smooth=50,
         verbose=-1
     )
-    model.fit(df[features], df['複勝正解フラグ'])
+    model.fit(train_df[features], train_df['複勝正解フラグ'])
+    
+    val_preds = model.predict_proba(test_df[features])[:, 1]
+    val_auc = roc_auc_score(test_df['複勝正解フラグ'], val_preds)
+    fpr, tpr, _ = roc_curve(test_df['複勝正解フラグ'], val_preds)
 
-    return df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict, horse_style_dict, get_track_bias
+    return df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict, horse_style_dict, val_auc, fpr, tpr, get_track_bias
 
 with st.spinner('keiba-ebye フルパワーAIエンジンを起動・学習中... (初回のみ数分かかります)'):
-    df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict, horse_style_dict, get_track_bias = prepare_model_and_data()
+    df_latest_clean, horse_baba_dict, sire_baba_dict, jockey_stats, trainer_jockey_stats, trainer_interval_stats, model, features, num_features, cat_features, ana_flags, cat_categories_dict, horse_style_dict, val_auc, fpr, tpr, get_track_bias = prepare_model_and_data()
 
 headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -226,7 +233,6 @@ def get_weekend_dates():
 
 def get_payouts(race_id):
     tansho_dict, fukusho_dict = {}, {}
-    # 💡 最新レース会場と過去DBの両方を探しに行く！
     urls = [
         f"https://race.netkeiba.com/race/result.html?race_id={race_id}",
         f"https://db.netkeiba.com/race/{race_id}/"
@@ -235,8 +241,6 @@ def get_payouts(race_id):
         try:
             res = requests.get(url, headers=headers); res.encoding = 'euc-jp'
             soup = BeautifulSoup(res.text, 'html.parser')
-            
-            # HTMLの構造違い（クラス名の違い）をすべて網羅して表を探す
             tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01'))
             if not tables: tables = soup.find_all('table', class_='pay_table_01')
             if not tables: tables = soup.find_all('table', summary='払い戻し')
@@ -247,14 +251,10 @@ def get_payouts(race_id):
                     if not th: continue
                     if th.text.strip() in ['単勝', '複勝']:
                         res_td = tr.find('td', class_=re.compile(r'Result'))
-                        if not res_td:
-                            tds = tr.find_all('td')
-                            if len(tds) > 0: res_td = tds[0]
+                        if not res_td: res_td = tr.find_all('td')[0] if len(tr.find_all('td')) > 0 else None
                         
                         pay_td = tr.find('td', class_=re.compile(r'Payout'))
-                        if not pay_td:
-                            tds = tr.find_all('td')
-                            if len(tds) > 1: pay_td = tds[1]
+                        if not pay_td: pay_td = tr.find_all('td')[1] if len(tr.find_all('td')) > 1 else None
                         
                         if res_td and pay_td:
                             umbans = [re.sub(r'\D', '', s) for s in res_td.stripped_strings if re.sub(r'\D', '', s)]
@@ -263,19 +263,17 @@ def get_payouts(race_id):
                                 if u and p:
                                     if th.text.strip() == '単勝': tansho_dict[int(u)] = int(p)
                                     else: fukusho_dict[int(u)] = int(p)
-            # 無事に取得できたらループを抜ける
             if tansho_dict: break
         except: pass
     return tansho_dict, fukusho_dict
 
+# 💡 【完全進化】オッズ取得関数：表のヘッダーを読み取り、どんな構成のページでもオッズ列を探し当てる！
 def get_odds_from_soup(s_soup):
     o_dict = {}
-    tgt_table = s_soup.select_one('.Shutuba_Table') or s_soup.select_one('#All_Result_Table') or s_soup.select_one('.race_table_01')
+    tgt_table = s_soup.select_one('.Shutuba_Table') or s_soup.select_one('.RaceTable01') or s_soup.select_one('.race_table_01') or s_soup.select_one('#All_Result_Table')
     if not tgt_table: return o_dict
     
-    # 💡【重要修正】この初期化が抜けていたため、オッズ取得が全滅していました！
     u_idx, o_idx = -1, -1
-    
     for i, th in enumerate(tgt_table.find_all('th')):
         c_txt = re.sub(r'\s+', '', th.text)
         if '馬番' in c_txt: u_idx = i
@@ -287,7 +285,7 @@ def get_odds_from_soup(s_soup):
                 tds = tr.find_all('td')
                 if len(tds) > max(u_idx, o_idx):
                     u_m = re.search(r'\d+', tds[u_idx].text)
-                    # 💡「10.5」のような小数も「10」のような整数も拾えるように強化！
+                    # 💡 10.5のような小数も、過去DBの整数の払い戻し金も拾える！
                     o_m = re.search(r'\d+(\.\d+)?', tds[o_idx].text)
                     if u_m and o_m: 
                         o_dict[int(u_m.group(0))] = float(o_m.group(0))
@@ -316,13 +314,14 @@ def generate_txt_report(results_list):
     return txt
 
 # ==========================================
-# 3. 本格AI予測関数 (💡デバッグログ搭載 & 最強テーブル解析)
+# 3. 本格AI予測関数 (💡オッズ執念確保 ＆ エラーログ付き)
 # ==========================================
 def run_real_prediction(race_id, race_date_str):
     error_log = []
     odds_dict = {}
     html_text = ""
     
+    # 💡 執念のURL巡回：オッズが取れるページを最優先で確保！
     for fetch_url in [
         f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}',
         f'https://race.netkeiba.com/race/result.html?race_id={race_id}',
@@ -331,10 +330,14 @@ def run_real_prediction(race_id, race_date_str):
         try:
             r = requests.get(fetch_url, headers=headers); r.encoding = 'euc-jp'
             soup = BeautifulSoup(r.text, 'html.parser')
-            if soup.select_one('.Shutuba_Table') or soup.select_one('#All_Result_Table') or soup.select_one('.race_table_01'):
-                html_text = r.text
-                odds_dict = get_odds_from_soup(soup)
-                break
+            if soup.select_one('.Shutuba_Table') or soup.select_one('.RaceTable01') or soup.select_one('.race_table_01') or soup.select_one('#All_Result_Table'):
+                if not html_text: 
+                    html_text = r.text # 最低限、テーブルがあるHTMLを確保
+                temp_odds = get_odds_from_soup(soup)
+                if temp_odds: # もしオッズが含まれていれば、そのページを「正解」として採用！
+                    html_text = r.text
+                    odds_dict = temp_odds
+                    break 
         except Exception as e: 
             error_log.append(f"URL取得失敗({fetch_url}): {e}")
 
@@ -363,14 +366,14 @@ def run_real_prediction(race_id, race_date_str):
     mawari = '左回り' if place in ['東京', '新潟', '中京'] else '右回り'
 
     horses = []
-    table = soup.select_one('.Shutuba_Table') or soup.select_one('#All_Result_Table') or soup.select_one('.race_table_01')
+    table = soup.select_one('.Shutuba_Table') or soup.select_one('.RaceTable01') or soup.select_one('.race_table_01') or soup.select_one('#All_Result_Table')
     if not table: 
         error_log.append("❌ 出走馬の一覧表(テーブル)が見つかりませんでした。")
         return None, None, None, None, None, None, None, error_log
 
-    # 💡 【最強進化】表のヘッダーを読み取って、自動で「枠番」や「斤量」の列を探す！
+    # 💡 【最強進化】ヘッダーを読み取り、どんな構成のページでも列を探し当てる！
     ths = table.find_all('th')
-    headers_text = [th.text.strip() for th in ths]
+    headers_text = [th.text.strip().replace('\n', '') for th in ths]
     
     def get_idx(keywords):
         for i, h in enumerate(headers_text):
@@ -382,6 +385,7 @@ def run_real_prediction(race_id, race_date_str):
     uma_idx = get_idx(['馬番'])
     kinryo_idx = get_idx(['斤量'])
     weight_idx = get_idx(['馬体重'])
+    odds_idx = get_idx(['単勝', 'オッズ'])
 
     for tr in table.find_all('tr')[1:]: 
         tds = tr.find_all('td')
@@ -409,7 +413,13 @@ def run_real_prediction(race_id, race_date_str):
             weight_match = re.search(r'^(\d{3})', weight_text.strip())
             weight_val = float(weight_match.group(1)) if weight_match else np.nan
             
-            odds_val = odds_dict.get(umaban, 10.0) 
+            # 💡 【鉄壁のオッズ確保ロジック】
+            odds_val = odds_dict.get(umaban, 0.0) 
+            if odds_val == 0.0 and odds_idx != -1:
+                odds_match = re.search(r'\d+(\.\d+)?', tds[odds_idx].text)
+                if odds_match: odds_val = float(odds_match.group(0))
+            if odds_val == 0.0: odds_val = 10.0 # 最終防衛ライン
+            
             horses.append({'枠番': waku, '馬番': umaban, '馬名': horse_a.text.strip(), '馬ID': horse_id, '斤量': kinryo, '騎手ID': jockey_id, '調教師': trainer_id, '距離': distance, '競馬場': place, '芝/ダート': track_type, '回り': mawari, 'コース地形': course_slope, '馬場': todays_baba, '馬体重_数値': weight_val, '単勝オッズ': odds_val})
         except Exception as e:
             error_log.append(f"馬(馬番:{umaban})のデータ取得中にエラー: {e}")
@@ -694,6 +704,12 @@ elif action == "🧪 性能試験 (バックテスト)":
 elif action == "📈 AI精度評価 (AUCスコア)":
     st.subheader("📈 keiba-ebye AI精度評価 (ROC-AUC)")
     st.markdown("現在の学習データに基づく、AIの「馬券内に入りうる馬の識別能力」を評価します。")
-
-
-
+    
+    st.metric(label="📊 総合AUCスコア (1.0に近いほど優秀)", value=f"{val_auc:.4f}")
+    if val_auc > 0.7: st.success("🔥 素晴らしい精度です！AIは強い馬と弱い馬を高い精度で見分けています。")
+    elif val_auc > 0.6: st.info("👍 良好な精度です。実運用に耐えうるレベルです。")
+    else: st.warning("⚠️ 精度が低めです。データ量の増加や特徴量の見直しが必要です。")
+    
+    st.markdown("##### 📉 ROC曲線")
+    roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
+    st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
