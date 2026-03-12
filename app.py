@@ -59,7 +59,7 @@ def prepare_model_and_data():
         '騎手ID': '前走騎手ID', '日付': '前走日付', '斤量': '前走斤量',
         '上がり順位': '前走上がり順位', '上りレース差': '前走上りレース差'
     }
-    df_latest_clean = df_latest[['馬ID', '父', '母父'] + list(last_race_cols.keys())].rename(columns=last_race_cols)
+    df_latest_clean = df_latest[['馬ID', '父', '父系', '母', '母系', '母父', ] + list(last_race_cols.keys())].rename(columns=last_race_cols)
     df_latest_clean = df_latest_clean.loc[:, ~df_latest_clean.columns.duplicated()]
 
     df['前走日付'] = df.groupby('馬ID')['日付'].shift(1)
@@ -127,8 +127,8 @@ def prepare_model_and_data():
         else: return 'フラット'
 
     df['馬場バイアス'] = df['日付'].apply(get_track_bias)
-
-    cat_features = ['競馬場', '芝/ダート', '回り', 'コース地形', '調教師', '騎手ID', '父', '母父', 
+    
+    cat_features = ['競馬場', '芝/ダート', '回り', 'コース地形', '調教師', '騎手ID', '父', '父系', '母', '母系', '母父',  
                     '調教師_間隔', '調教師_騎手', '騎手_競馬場', '騎手_距離', '脚質カテゴリ', '馬場', '馬体_馬場シナジー', '馬場バイアス']
     num_features = ['枠番', '距離', '斤量差', '出走間隔', '斤量増減', 
                     '前走上りレース差', '偏差_前走タイム差', '偏差_前走着順パーセント', '偏差_前走上がり順位', '偏差_斤量',
@@ -433,6 +433,8 @@ def run_real_prediction(race_id, race_date_str):
     try:
         df_test = pd.DataFrame(horses)
         df_test = pd.merge(df_test, df_latest_clean, on='馬ID', how='left')
+        for col in ['父', '父系', '母', '母系', '母父']:
+            if col in df_test.columns: df_test[col] = df_test[col].fillna('不明')
 
         df_test['斤量差'] = df_test['斤量'] - df_test['斤量'].mean()
         df_test['偏差_斤量'] = df_test['斤量'] - df_test['斤量'].mean()
@@ -714,4 +716,5 @@ elif action == "📈 AI精度評価 (AUCスコア)":
     st.markdown("##### 📉 ROC曲線")
     roc_df = pd.DataFrame({'False Positive Rate (間違える確率)': fpr, 'True Positive Rate (当てる確率)': tpr})
     st.line_chart(roc_df, x='False Positive Rate (間違える確率)', y='True Positive Rate (当てる確率)')
+
 
