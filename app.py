@@ -12,8 +12,8 @@ import time
 from sklearn.metrics import roc_auc_score, roc_curve 
 
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
-st.title("🐴 keiba-ebye 予測ダッシュボード (AUC 0.75 完全体)")
-st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出します。")
+st.title("🐴 keiba-ebye 予測ダッシュボード")
+st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも？")
 
 # ==========================================
 # 1. 限界突破AIエンジンの学習とデータ準備
@@ -93,7 +93,6 @@ def prepare_model_and_data():
     
     df['過去3走平均最終コーナー'] = df[['前走_最終コーナー', '2走前_最終コーナー', '3走前_最終コーナー']].mean(axis=1)
     
-    # 💡 提案1: 脚質カテゴリの明確化
     def classify_style(pos):
         if pd.isna(pos): return '不明'
         if pos <= 2.5: return '逃げ'
@@ -102,17 +101,13 @@ def prepare_model_and_data():
         else: return '追込'
     df['脚質カテゴリ'] = df['過去3走平均最終コーナー'].apply(classify_style)
 
-    # 💡 提案2: 同レースの逃げ馬・先行馬の頭数（展開ファクター）
     df['前走逃げフラグ'] = (df['前走_最終コーナー'] <= 2).astype(int)
     df['前走先行フラグ'] = ((df['前走_最終コーナー'] > 2) & (df['前走_最終コーナー'] <= 5)).astype(int)
     df['同レース逃げ馬頭数'] = df.groupby('レースID')['前走逃げフラグ'].transform('sum')
     df['同レース先行馬頭数'] = df.groupby('レースID')['前走先行フラグ'].transform('sum')
 
-    # 💡 提案3: コース適性（リピーター要素：ebiさん式の頭数補正版）
-    # ※過去の同競馬場・同馬場での平均着順パーセント
     df['コース適性_着順パーセント'] = df.groupby(['馬ID', '競馬場', '芝/ダート'])['着順パーセント'].transform(lambda x: x.shift(1).expanding().mean()).fillna(0.5)
 
-    # 💡 提案4: 位置取りショック
     df['位置取りショック'] = df['前走_最終コーナー'] - df['2走前_最終コーナー']
     # --------------------------------------------------
 
@@ -146,7 +141,6 @@ def prepare_model_and_data():
     ]
     latest_horse_data = df_latest[cols_to_keep].copy()
 
-    # コース適性辞書の作成（本番予測用）
     horse_course_dict = df.groupby(['馬ID', '競馬場', '芝/ダート'])['着順パーセント'].mean().to_dict()
 
     df_valid = df.dropna(subset=['前走_着順', '着順', '単勝']).copy()
@@ -160,9 +154,9 @@ def prepare_model_and_data():
         '前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数', '過去3走平均スピード指数',
         '前走_人気', '前走_上り', '前走_上がり順位', '前走_最終コーナー',
         '距離変化', '斤量変化', '馬体重変化', '出走頭数',
-        '位置取りショック', '同レース逃げ馬頭数', '同レース先行馬頭数', 'コース適性_着順パーセント' # 🌟 追加！
+        '位置取りショック', '同レース逃げ馬頭数', '同レース先行馬頭数', 'コース適性_着順パーセント' 
     ]
-    cat_features = ['競馬場', '馬場', '芝/ダート', '性別', '脚質カテゴリ', '父', '父系', '母', '母系', '母父', '母父系', '騎手', '調教師', '調教師_騎手'] # 🌟 追加！
+    cat_features = ['競馬場', '馬場', '芝/ダート', '性別', '脚質カテゴリ', '父', '父系', '母', '母系', '母父', '母父系', '騎手', '調教師', '調教師_騎手'] 
     features = cat_features + num_features
 
     cat_categories_dict = {}
@@ -300,7 +294,6 @@ def get_payouts(race_id):
         except: pass
     return tansho_dict, fukusho_dict
 
-# 💡 【完全進化】金曜の「予想オッズ」エラー無視＆強制確保
 def get_odds_from_soup(s_soup):
     o_dict = {}
     tgt_table = s_soup.select_one('.Shutuba_Table') or s_soup.select_one('.RaceTable01') or s_soup.select_one('.race_table_01') or s_soup.select_one('#All_Result_Table')
@@ -327,7 +320,6 @@ def get_odds_from_soup(s_soup):
                 o_m = re.search(r'\d+\.\d+', tds[o_idx].text)
                 if o_m: odds_val = float(o_m.group(0))
             
-            # クラス名から強引に取得
             if odds_val == 0.0:
                 for td in tds:
                     classes = td.get('class', [])
@@ -481,10 +473,40 @@ def run_real_prediction(race_id, race_date_str):
         df_test['年齢'] = pd.to_numeric(df_test['性齢'].astype(str).str.extract(r'(\d+)')[0], errors='coerce')
         df_test['調教師_騎手'] = df_test['調教師'].astype(str) + '_' + df_test['騎手'].astype(str)
 
-        df_test['3走前_通過'] = df_test['2走前_通過'] 
-        df_test['2走前_通過'] = df_test['前走_通過']   
-        df_test['前走_通過'] = df_test['最新_通過']   
+        # 💡 【完全修正】安全で確実な3->2->1のスライド処理！
         
+        # --- 着順 ---
+        df_test['3走前_着順'] = df_test['2走前_着順'] if '2走前_着順' in df_test.columns else np.nan
+        df_test['2走前_着順'] = df_test['前走_着順'] if '前走_着順' in df_test.columns else np.nan
+        df_test['前走_着順'] = df_test['最新_着順'] if '最新_着順' in df_test.columns else np.nan
+        df_test['過去3走平均着順'] = df_test[['前走_着順', '2走前_着順', '3走前_着順']].mean(axis=1)
+
+        # --- 着順パーセント ---
+        df_test['3走前_着順パーセント'] = df_test['2走前_着順パーセント'] if '2走前_着順パーセント' in df_test.columns else np.nan
+        df_test['2走前_着順パーセント'] = df_test['前走_着順パーセント'] if '前走_着順パーセント' in df_test.columns else np.nan
+        df_test['前走_着順パーセント'] = df_test['最新_着順パーセント'] if '最新_着順パーセント' in df_test.columns else np.nan
+        df_test['過去3走平均着順パーセント'] = df_test[['前走_着順パーセント', '2走前_着順パーセント', '3走前_着順パーセント']].mean(axis=1)
+
+        # --- タイム差 ---
+        df_test['3走前_タイム差'] = df_test['2走前_タイム差'] if '2走前_タイム差' in df_test.columns else np.nan
+        df_test['2走前_タイム差'] = df_test['前走_タイム差'] if '前走_タイム差' in df_test.columns else np.nan
+        df_test['前走_タイム差'] = df_test['最新_タイム差'] if '最新_タイム差' in df_test.columns else np.nan
+        df_test['過去3走平均タイム差'] = df_test[['前走_タイム差', '2走前_タイム差', '3走前_タイム差']].mean(axis=1)
+
+        # --- スピード指数 ---
+        df_test['3走前_スピード指数'] = df_test['2走前_スピード指数'] if '2走前_スピード指数' in df_test.columns else np.nan
+        df_test['2走前_スピード指数'] = df_test['前走_スピード指数'] if '前走_スピード指数' in df_test.columns else np.nan
+        df_test['前走_スピード指数'] = df_test['最新_スピード指数'] if '最新_スピード指数' in df_test.columns else np.nan
+        df_test['過去3走平均スピード指数'] = df_test[['前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数']].mean(axis=1)
+
+        # --- 通過 (コーナー) ---
+        df_test['3走前_通過'] = df_test['2走前_通過'] if '2走前_通過' in df_test.columns else np.nan
+        df_test['2走前_通過'] = df_test['前走_通過'] if '前走_通過' in df_test.columns else np.nan
+        df_test['前走_通過'] = df_test['最新_通過'] if '最新_通過' in df_test.columns else np.nan
+
+        # --------------------------------------------------
+        # 🌟【専門家監修】ディープ特徴量の反映
+        # --------------------------------------------------
         df_test['前走_最終コーナー'] = pd.to_numeric(df_test['前走_通過'].fillna('').astype(str).apply(lambda x: str(x).split('-')[-1] if '-' in str(x) else (str(x) if str(x).isdigit() else np.nan)), errors='coerce')
         df_test['2走前_最終コーナー'] = pd.to_numeric(df_test['2走前_通過'].fillna('').astype(str).apply(lambda x: str(x).split('-')[-1] if '-' in str(x) else (str(x) if str(x).isdigit() else np.nan)), errors='coerce')
         df_test['3走前_最終コーナー'] = pd.to_numeric(df_test['3走前_通過'].fillna('').astype(str).apply(lambda x: str(x).split('-')[-1] if '-' in str(x) else (str(x) if str(x).isdigit() else np.nan)), errors='coerce')
@@ -506,31 +528,21 @@ def run_real_prediction(race_id, race_date_str):
         
         df_test['コース適性_着順パーセント'] = df_test.set_index(['馬ID', '競馬場', '芝/ダート']).index.map(horse_course_dict).fillna(0.5)
         df_test['位置取りショック'] = df_test['前走_最終コーナー'] - df_test['2走前_最終コーナー']
+        # --------------------------------------------------
 
-        df_test['前走_着順'] = df_test['最新_着順']
-        df_test['2走前_着順'] = df_test['前走_着順_y'] if '前走_着順_y' in df_test.columns else np.nan
-        df_test['3走前_着順'] = df_test['2走前_着順_y'] if '2走前_着順_y' in df_test.columns else np.nan
-        df_test['過去3走平均着順'] = df_test[['前走_着順', '2走前_着順', '3走前_着順']].mean(axis=1)
-
-        df_test['前走_着順パーセント'] = df_test['最新_着順パーセント']
-        df_test['過去3走平均着順パーセント'] = df_test[['前走_着順パーセント', '2走前_着順パーセント_y' if '2走前_着順パーセント_y' in df_test.columns else '前走_着順パーセント_y', '前走_着順パーセント_y']].mean(axis=1, skipna=True)
-
-        df_test['前走_タイム差'] = df_test['最新_タイム差']
-        df_test['過去3走平均タイム差'] = df_test[['前走_タイム差', '前走_タイム差_y', '2走前_タイム差_y' if '2走前_タイム差_y' in df_test.columns else '前走_タイム差_y']].mean(axis=1, skipna=True)
-
-        df_test['前走_スピード指数'] = df_test['最新_スピード指数']
-        df_test['過去3走平均スピード指数'] = df_test[['前走_スピード指数', '前走_スピード指数_y', '2走前_スピード指数_y' if '2走前_スピード指数_y' in df_test.columns else '前走_スピード指数_y']].mean(axis=1, skipna=True)
-
-        df_test['前走_上がり順位'] = df_test['最新_上がり順位']
-        df_test['前走_人気'] = df_test['最新_人気']
-        df_test['前走_上り'] = df_test['最新_上り']
+        df_test['前走_上がり順位'] = df_test['最新_上がり順位'] if '最新_上がり順位' in df_test.columns else np.nan
+        df_test['前走_人気'] = df_test['最新_人気'] if '最新_人気' in df_test.columns else np.nan
+        df_test['前走_上り'] = df_test['最新_上り'] if '最新_上り' in df_test.columns else np.nan
         
-        df_test['距離変化'] = df_test['距離'] - df_test['最新_距離']
-        df_test['斤量変化'] = df_test['斤量'] - df_test['最新_斤量']
-        df_test['馬体重変化'] = df_test['馬体重_num'] - df_test['最新_馬体重']
+        df_test['距離変化'] = df_test['距離'] - (df_test['最新_距離'] if '最新_距離' in df_test.columns else df_test['距離'])
+        df_test['斤量変化'] = df_test['斤量'] - (df_test['最新_斤量'] if '最新_斤量' in df_test.columns else df_test['斤量'])
+        df_test['馬体重変化'] = df_test['馬体重_num'] - (df_test['最新_馬体重'] if '最新_馬体重' in df_test.columns else df_test['馬体重_num'])
         
         race_date_obj = pd.to_datetime(race_date_str)
-        df_test['休養日数'] = (race_date_obj - pd.to_datetime(df_test['最新_日付'])).dt.days
+        if '最新_日付' in df_test.columns:
+            df_test['休養日数'] = (race_date_obj - pd.to_datetime(df_test['最新_日付'])).dt.days
+        else:
+            df_test['休養日数'] = np.nan
 
         for col in num_features: df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
         for col in cat_features:
