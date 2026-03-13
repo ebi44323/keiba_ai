@@ -422,13 +422,20 @@ def run_real_prediction(race_id, race_date_str):
     jockey_idx = get_idx(['騎手'])
     trainer_idx = get_idx(['調教師', '厩舎'])
 
-    for tr in table.find_all('tr')[1:]: 
+for tr in table.find_all('tr')[1:]: 
         tds = tr.find_all('td')
         if len(tds) < 5: continue
         try:
-            if uma_idx == -1 or len(tds) <= uma_idx or not re.search(r'\d+', tds[uma_idx].text): continue
-            umaban = int(re.search(r'\d+', tds[uma_idx].text).group(0))
-            waku = int(re.search(r'\d+', tds[waku_idx].text).group(0)) if waku_idx != -1 and len(tds) > waku_idx and re.search(r'\d+', tds[waku_idx].text) else 0
+            # 🌟 修正ポイント①: 枠番・馬番が未発表(日曜など)でもダミーを入れて予想を強行する
+            if uma_idx == -1 or len(tds) <= uma_idx or not re.search(r'\d+', tds[uma_idx].text): 
+                umaban = len(horses) + 1 # 未発表時は上から順に仮の馬番を振る
+            else:
+                umaban = int(re.search(r'\d+', tds[uma_idx].text).group(0))
+                
+            if waku_idx == -1 or len(tds) <= waku_idx or not re.search(r'\d+', tds[waku_idx].text): 
+                waku = 0 # 枠番未発表時は一旦0枠扱い
+            else:
+                waku = int(re.search(r'\d+', tds[waku_idx].text).group(0))
             
             horse_a = tr.find('a', href=re.compile(r'/horse/'))
             if not horse_a: continue
@@ -448,15 +455,28 @@ def run_real_prediction(race_id, race_date_str):
             weight_match = re.search(r'^(\d{3})', weight_text.strip())
             weight_val = float(weight_match.group(1)) if weight_match else np.nan
             
+            # 🌟 修正ポイント②: 前日・予想オッズを意地でも拾いにいく強力なスクレイピング
             odds_val = odds_dict.get(umaban, 0.0) 
             if odds_val == 0.0 and odds_idx != -1 and len(tds) > odds_idx:
-                odds_match = re.search(r'\d+\.\d+', tds[odds_idx].text)
+                odds_match = re.search(r'\d{1,3}\.\d+', tds[odds_idx].text)
                 if odds_match: odds_val = float(odds_match.group(0))
-            if odds_val == 0.0: odds_val = 10.0
+                
+            if odds_val == 0.0:
+                for td in tds:
+                    class_list = td.get('class', [])
+                    # 予想オッズ等の特殊な配置に対応
+                    if any(c in ['Odds', 'Popular', 'txt_r', 'Txt_R'] for c in class_list) or td.find('span'):
+                        om = re.search(r'\d{1,3}\.\d+', td.text)
+                        if om: 
+                            odds_val = float(om.group(0))
+                            break
+                            
+            if odds_val == 0.0: odds_val = 10.0 # 本当に何も取得できなければ10.0
             sex_age = tds[sex_age_idx].text.strip() if sex_age_idx != -1 and len(tds) > sex_age_idx else "牡3"
 
             horses.append({'枠番': waku, '馬番': umaban, '馬名': horse_a.text.strip(), '馬ID': horse_id, '性齢': sex_age, '斤量': kinryo, '騎手': jockey_name, '調教師': trainer_name, '距離': distance, '競馬場': place, '芝/ダート': track_type, '馬場': todays_baba, '馬体重_num': weight_val, '単勝オッズ': odds_val})
-        except: pass
+        except Exception as e: 
+            pass
 
     if not horses: return None, None, None, None, None, None, None, None, ["❌ 出走馬データの読み取りに失敗しました。"]
 
@@ -485,7 +505,6 @@ def run_real_prediction(race_id, race_date_str):
         df_test['前走_着順'] = df_test['最新_着順'] if '最新_着順' in df_test.columns else np.nan
         df_test['過去3走平均着順'] = df_test[['前走_着順', '2走前_着順', '3走前_着順']].mean(axis=1)
 
-        # トレンド特徴量のスライド
         df_test['5走前_スピード指数'] = df_test['4走前_スピード指数'] if '4走前_スピード指数' in df_test.columns else np.nan
         df_test['4走前_スピード指数'] = df_test['3走前_スピード指数'] if '3走前_スピード指数' in df_test.columns else np.nan
         df_test['3走前_スピード指数'] = df_test['2走前_スピード指数'] if '2走前_スピード指数' in df_test.columns else np.nan
@@ -548,28 +567,35 @@ def run_real_prediction(race_id, race_date_str):
         marks = ['◎', '〇', '▲', '△', '☆'] + [''] * (len(df_test) - 5)
         df_test['印'] = marks[:len(df_test)]
 
-        # 🌟 自信度の判定ロジック
         p1, p2 = df_test.loc[0, '勝率(AI予測)'], df_test.loc[1, '勝率(AI予測)']
         score_diff = p1 - p2
-        
-        if p1 >= 0.25 and score_diff >= 0.10:
-            confidence_text = f"💎 【鉄板レース】 ◎が抜けた存在({p1*100:.1f}%)！ 軸は不動です。"
-        elif score_diff <= 0.03 and p1 < 0.20:
-            confidence_text = f"🌪️ 【波乱レース】 上位の実力が拮抗の大混戦！ 穴馬からのヒモ荒れに警戒してください。"
-        else:
-            confidence_text = f"⚖️ 【中穴狙いレース】 上位はまとまっていますが、展開次第で伏兵の台頭もあります。"
 
+        # 🌟 修正ポイント③: 馬券提案を超具体的に。馬番も印字してコピペ買いできるようにする
+        top1_umaban = df_test.loc[0, '馬番']
+        himo_umabans = df_test.loc[1:4, '馬番'].astype(str).tolist() if len(df_test) >= 5 else df_test.loc[1:, '馬番'].astype(str).tolist()
+        himo_str = "・".join(himo_umabans)
+        
         ana_horse_nums = []
         topics_list = []
         for rank, row in df_test.iterrows():
-            if rank >= 5 and row['期待値'] >= 1.5:
+            if rank >= 4 and row['期待値'] >= 1.5:
                 topics_list.append(f"📌 {row['馬名']} (期待値特大の穴馬！)")
                 if f"{row['馬番']}番" not in ana_horse_nums: ana_horse_nums.append(f"{row['馬番']}番")
 
         ana_str = "・".join(str(n) for n in ana_horse_nums[:3]) if ana_horse_nums else ""
-        if p1 >= 0.20: reco = f"🎯 馬連・馬単: ◎から印馬・穴馬({ana_str})への流し"
-        elif p1 >= 0.12 and score_diff >= 0.03: reco = f"🎯 馬連・ワイド: ◎から穴馬({ana_str})への流しで高配当狙い"
-        else: reco = f"⚠️ 評価割れの大混戦。印馬と穴馬({ana_str})のボックス推奨"
+
+        if p1 >= 0.25 and score_diff >= 0.10:
+            confidence_text = f"💎 【鉄板レース】 ◎が抜けた存在({p1*100:.1f}%)！ 軸は不動です。"
+            reco = f"🎯 【本命・単勝勝負】 ◎ {top1_umaban}番 の単勝。\n  🔗 馬単・3連単: {top1_umaban}着固定 → 相手: {himo_str}"
+            if ana_str: reco += f"\n  💣 余裕があれば穴馬({ana_str}番)へのヒモ流しも推奨。"
+        elif score_diff <= 0.03 and p1 < 0.20:
+            confidence_text = f"🌪️ 【波乱レース】 上位の実力が拮抗の大混戦！ 穴馬からのヒモ荒れに警戒してください。"
+            reco = f"⚠️ 【ボックス推奨】 上位陣 ({top1_umaban}・{himo_str}番) の馬連・3連複ボックス。"
+            if ana_str: reco += f"\n  💣 大穴狙い: 穴馬({ana_str}番)を絡めたワイドや3連複が面白いです。"
+        else:
+            confidence_text = f"⚖️ 【中穴狙いレース】 上位はまとまっていますが、展開次第で伏兵の台頭もあります。"
+            reco = f"🎯 【馬連・ワイド】 ◎ {top1_umaban}番 から相手 ({himo_str}番) への流し。"
+            if ana_str: reco += f"\n  💣 妙味狙い: {top1_umaban}番から穴馬({ana_str}番)へのワイドで高配当！"
 
         return df_test, topics_list, reco, pace_text, confidence_text, track_type, place, distance, error_log
 
