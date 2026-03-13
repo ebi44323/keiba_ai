@@ -698,9 +698,8 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
     todays_races = get_todays_races()
     if not todays_races: st.warning(f"本日 ({now.strftime('%Y/%m/%d')}) はJRAのレースが開催されていません。")
     else:
-if action == "⏩ 次のレースを予想":
+      if action == "⏩ 次のレースを予想":
             st.subheader("🕒 まもなく出走するレース")
-            # 🌟 既に日本時間になっているので、そのまま now と比較するだけでOK
             next_race = next((r for r in todays_races if r['time'] > now), None)
             if next_race:
                 mins_left = int((next_race['time'] - now).total_seconds() / 60)
