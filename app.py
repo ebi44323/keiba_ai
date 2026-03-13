@@ -13,7 +13,7 @@ from sklearn.metrics import roc_auc_score, roc_curve
 
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
-st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも？")
+st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも")
 
 # ==========================================
 # 1. 限界突破AIエンジンの学習とデータ準備
@@ -80,7 +80,9 @@ def prepare_model_and_data():
     df['3走前_スピード指数'] = df.groupby('馬ID')['スピード指数'].shift(3)
     df['過去3走平均スピード指数'] = df[['前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数']].mean(axis=1)
 
-    # ディープ特徴量
+    # --------------------------------------------------
+    # 🌟【専門家監修】ディープ特徴量の追加
+    # --------------------------------------------------
     df['前走_通過'] = df.groupby('馬ID')['通過'].shift(1)
     df['2走前_通過'] = df.groupby('馬ID')['通過'].shift(2)
     df['3走前_通過'] = df.groupby('馬ID')['通過'].shift(3)
@@ -105,7 +107,9 @@ def prepare_model_and_data():
     df['同レース先行馬頭数'] = df.groupby('レースID')['前走先行フラグ'].transform('sum')
 
     df['コース適性_着順パーセント'] = df.groupby(['馬ID', '競馬場', '芝/ダート'])['着順パーセント'].transform(lambda x: x.shift(1).expanding().mean()).fillna(0.5)
+
     df['位置取りショック'] = df['前走_最終コーナー'] - df['2走前_最終コーナー']
+    # --------------------------------------------------
 
     df['前走_人気'] = df.groupby('馬ID')['人気'].shift(1)
     df['前走_上り'] = df.groupby('馬ID')['上り'].shift(1)
@@ -126,21 +130,20 @@ def prepare_model_and_data():
         '日付': '最新_日付', '通過': '最新_通過'
     }
     df_latest = df_latest.rename(columns=rename_dict)
+    
     cols_to_keep = [
         '馬ID', '父', '父系', '母', '母系', '母父', '母父系',
         '最新_着順', '最新_着順パーセント', '最新_タイム差', '最新_スピード指数', '最新_上がり順位', 
         '最新_人気', '最新_上り', '最新_距離', '最新_斤量', '最新_馬体重', '最新_日付', '最新_通過',
-        '前走_着順', '2走前_着順', '前走_着順パーセント', '2走前_着パーセント', 
+        '前走_着順', '2走前_着順', '前走_着順パーセント', '2走前_着順パーセント', 
         '前走_タイム差', '2走前_タイム差', '前走_スピード指数', '2走前_スピード指数',
         '前走_通過', '2走前_通過'
     ]
-    # 足りない列は無視して抽出
     cols_to_keep = [c for c in cols_to_keep if c in df_latest.columns]
     latest_horse_data = df_latest[cols_to_keep].copy()
 
     horse_course_dict = df.groupby(['馬ID', '競馬場', '芝/ダート'])['着順パーセント'].mean().to_dict()
 
-    # 💡 【重要修正】初出走馬（前走_着順がNaNの馬）を学習データから除外しない！
     df_valid = df.dropna(subset=['着順', '単勝']).copy()
     df_valid['馬券内'] = (df_valid['着順'] <= 3).astype(int)
 
@@ -161,7 +164,9 @@ def prepare_model_and_data():
     for col in cat_features:
         if col not in df_valid.columns: df_valid[col] = '不明'
         df_valid[col] = df_valid[col].fillna('不明').astype('category')
-        cat_categories_dict[col] = list(df_valid[col].cat.categories)
+        cats = list(df_valid[col].cat.categories)
+        if '不明' not in cats: cats.append('不明')
+        cat_categories_dict[col] = cats
 
     split_date = pd.to_datetime('2025-01-01')
     train_df = df_valid[df_valid['日付'] < split_date].copy()
@@ -177,7 +182,6 @@ def prepare_model_and_data():
     val_auc = roc_auc_score(test_df['馬券内'], val_preds)
     fpr, tpr, _ = roc_curve(test_df['馬券内'], val_preds)
 
-    # 💡 【重要修正】未出走馬のために血統マスターを読み込んでおく
     try:
         ped_df = pd.read_csv('pedigree_master_all.csv', dtype=str)
         ped_df['馬ID'] = ped_df['馬ID'].astype(str).str.zfill(10)
@@ -383,7 +387,15 @@ def run_real_prediction(race_id, race_date_str):
                 if kw in h: return i
         return -1
 
-    waku_idx, uma_idx, kinryo_idx, weight_idx, odds_idx, sex_age_idx = get_idx(['枠']), get_idx(['馬番']), get_idx(['斤量']), get_idx(['馬体重']), get_idx(['単勝', 'オッズ', '予想']), get_idx(['性齢'])
+    waku_idx = get_idx(['枠'])
+    uma_idx = get_idx(['馬番'])
+    kinryo_idx = get_idx(['斤量'])
+    weight_idx = get_idx(['馬体重'])
+    odds_idx = get_idx(['単勝', 'オッズ', '予想'])
+    sex_age_idx = get_idx(['性齢'])
+    # 💡 【完全修復】確実にテキストを取得するための列インデックス
+    jockey_idx = get_idx(['騎手'])
+    trainer_idx = get_idx(['調教師', '厩舎'])
 
     for tr in table.find_all('tr')[1:]: 
         tds = tr.find_all('td')
@@ -397,11 +409,9 @@ def run_real_prediction(race_id, race_date_str):
             if not horse_a: continue
             horse_id = re.search(r'\d+', horse_a['href']).group(0)
             
-            jockey_a = tr.find('a', href=re.compile(r'/jockey/'))
-            jockey_name = jockey_a.text.strip() if jockey_a else "不明"
-            
-            trainer_a = tr.find('a', href=re.compile(r'/trainer/'))
-            trainer_name = trainer_a.text.strip() if trainer_a else "不明"
+            # 💡 【完全修復】URLに頼らず、表の列からそのまま文字をぶっこ抜く！
+            jockey_name = tds[jockey_idx].text.strip().replace('\n', '') if jockey_idx != -1 and len(tds) > jockey_idx else "不明"
+            trainer_name = tds[trainer_idx].text.strip().replace('\n', '') if trainer_idx != -1 and len(tds) > trainer_idx else "不明"
             
             kinryo_text = tds[kinryo_idx].text if kinryo_idx != -1 and len(tds) > kinryo_idx else "55.0"
             kinryo_match = re.search(r'\d+(\.\d+)?', kinryo_text)
@@ -415,6 +425,11 @@ def run_real_prediction(race_id, race_date_str):
             if odds_val == 0.0 and odds_idx != -1 and len(tds) > odds_idx:
                 odds_match = re.search(r'\d+\.\d+', tds[odds_idx].text)
                 if odds_match: odds_val = float(odds_match.group(0))
+            if odds_val == 0.0:
+                for td in tds:
+                    if any(c in ['Odds', 'Popular', 'txt_r', 'Txt_R'] for c in td.get('class', [])):
+                        om = re.search(r'\d+\.\d+', td.text)
+                        if om: odds_val = float(om.group(0)); break
             if odds_val == 0.0: odds_val = 10.0
             
             sex_age = tds[sex_age_idx].text.strip() if sex_age_idx != -1 and len(tds) > sex_age_idx else "牡3"
@@ -429,7 +444,6 @@ def run_real_prediction(race_id, race_date_str):
         df_test['出走頭数'] = len(df_test)
         df_test = pd.merge(df_test, latest_horse_data, on='馬ID', how='left')
 
-        # 💡 【重要】新馬・未出走馬のための「血統完全補完」ロジック！
         for col in ['父', '父系', '母', '母系', '母父', '母父系']:
             if col not in df_test.columns: df_test[col] = np.nan
 
@@ -511,6 +525,7 @@ def run_real_prediction(race_id, race_date_str):
         for col in cat_features:
             if col not in df_test.columns: df_test[col] = '不明'
             cats = cat_categories_dict.get(col, ['不明'])
+            if '不明' not in cats: cats.append('不明')
             df_test[col] = pd.Categorical(df_test[col].fillna('不明'), categories=cats)
 
         nige_count = df_test['同レース逃げ馬頭数'].iloc[0] if not df_test.empty else 0
@@ -575,7 +590,6 @@ def display_error_log(err_log):
         for log in err_log: st.write(f"- {log}")
 
 def display_result(df_res, topics, reco, pace_text):
-    # 💡 【UI進化】第3のタブ「性能詳細」を追加！
     tab1, tab2, tab3 = st.tabs(["📊 予想一覧", "💡 買い目・展開", "🔍 性能詳細"])
     
     with tab1:
@@ -594,7 +608,6 @@ def display_result(df_res, topics, reco, pace_text):
         st.success(f"**🤖 AI推奨買い目:**\n\n{reco}")
         
     with tab3:
-        # 💡 各馬の性能詳細（マニアックデータ）を一覧表示！
         detail_df = df_res[['馬番', '馬名', '父', '母父', '騎手', '調教師', '過去3走平均スピード指数', 'コース適性_着順パーセント', '位置取りショック']].copy()
         detail_df = detail_df.rename(columns={'コース適性_着順パーセント': 'コース適性(%)', '過去3走平均スピード指数': '平均スピード指数'})
         detail_df['平均スピード指数'] = detail_df['平均スピード指数'].fillna(0)
