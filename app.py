@@ -12,7 +12,7 @@ import time
 from sklearn.metrics import roc_auc_score, roc_curve 
 
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
-st.title("🐴 keiba-ebye 予測ダッシュボード)
+st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも？")
 
 # ==========================================
