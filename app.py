@@ -422,11 +422,11 @@ def run_real_prediction(race_id, race_date_str):
     jockey_idx = get_idx(['騎手'])
     trainer_idx = get_idx(['調教師', '厩舎'])
 
-for tr in table.find_all('tr')[1:]: 
+    for tr in table.find_all('tr')[1:]: 
         tds = tr.find_all('td')
         if len(tds) < 5: continue
         try:
-            # 🌟 修正ポイント①: 枠番・馬番が未発表(日曜など)でもダミーを入れて予想を強行する
+            # 🌟 枠番・馬番が未発表(日曜など)でもダミーを入れて予想を強行する
             if uma_idx == -1 or len(tds) <= uma_idx or not re.search(r'\d+', tds[uma_idx].text): 
                 umaban = len(horses) + 1 # 未発表時は上から順に仮の馬番を振る
             else:
@@ -455,7 +455,7 @@ for tr in table.find_all('tr')[1:]:
             weight_match = re.search(r'^(\d{3})', weight_text.strip())
             weight_val = float(weight_match.group(1)) if weight_match else np.nan
             
-            # 🌟 修正ポイント②: 前日・予想オッズを意地でも拾いにいく強力なスクレイピング
+            # 🌟 前日・予想オッズを意地でも拾いにいく強力なスクレイピング
             odds_val = odds_dict.get(umaban, 0.0) 
             if odds_val == 0.0 and odds_idx != -1 and len(tds) > odds_idx:
                 odds_match = re.search(r'\d{1,3}\.\d+', tds[odds_idx].text)
@@ -464,7 +464,6 @@ for tr in table.find_all('tr')[1:]:
             if odds_val == 0.0:
                 for td in tds:
                     class_list = td.get('class', [])
-                    # 予想オッズ等の特殊な配置に対応
                     if any(c in ['Odds', 'Popular', 'txt_r', 'Txt_R'] for c in class_list) or td.find('span'):
                         om = re.search(r'\d{1,3}\.\d+', td.text)
                         if om: 
@@ -570,7 +569,7 @@ for tr in table.find_all('tr')[1:]:
         p1, p2 = df_test.loc[0, '勝率(AI予測)'], df_test.loc[1, '勝率(AI予測)']
         score_diff = p1 - p2
 
-        # 🌟 修正ポイント③: 馬券提案を超具体的に。馬番も印字してコピペ買いできるようにする
+        # 🌟 馬券提案を超具体的に。馬番も印字してコピペ買いできるようにする
         top1_umaban = df_test.loc[0, '馬番']
         himo_umabans = df_test.loc[1:4, '馬番'].astype(str).tolist() if len(df_test) >= 5 else df_test.loc[1:, '馬番'].astype(str).tolist()
         himo_str = "・".join(himo_umabans)
