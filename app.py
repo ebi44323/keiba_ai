@@ -717,7 +717,7 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
     if not todays_races: st.warning(f"本日 ({now.strftime('%Y/%m/%d')}) はJRAのレースが開催されていません。")
     else:
             if action == "⏩ 次のレースを予想":
-            st.subheader("🕒 まもなく出走するレース")
+              st.subheader("🕒 まもなく出走するレース")
             
             # 🌟 レース一覧を発走時刻（time）順にソートしてから、未来のレースを探す
             races_sorted_by_time = sorted(todays_races, key=lambda x: x['time'])
