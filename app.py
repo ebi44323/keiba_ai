@@ -250,8 +250,11 @@ def get_todays_races(date_str=None):
     ]
     for url in urls_to_try:
         try:
-            res = requests.get(url, headers=headers, timeout=10); res.encoding = 'euc-jp'
-            soup = BeautifulSoup(res.text, 'html.parser')
+            # 🌟 文字化け対策: encodingの強制指定を削除
+            res = requests.get(url, headers=headers, timeout=10)
+            # 🌟 res.textではなく、res.content(生データ)を渡してAIに自動判定させる！
+            soup = BeautifulSoup(res.content, 'html.parser')
+            
             for a_tag in soup.find_all('a', href=re.compile(r'race_id=(\d{12})')):
                 r_id = re.search(r'race_id=(\d{12})', a_tag.get('href')).group(1)
                 if not (1 <= int(r_id[4:6]) <= 10): continue
@@ -278,6 +281,21 @@ def get_todays_races(date_str=None):
                 races.append({'id': r_id, 'place': place, 'num': r_num, 'title': title, 'time': start_dt, 'sort_key': f"{r_id[4:6]}{r_num:02d}"})
         except: pass
         if races: break
+
+    if not races:
+        url = f'https://db.netkeiba.com/race/list/{target_date_str}/'
+        try:
+            # 🌟 ここも同様に文字化け対策
+            res = requests.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(res.content, 'html.parser')
+            ids = set(re.findall(r'/race/(\d{12})', res.text))
+            for r_id in ids:
+                if not (1 <= int(r_id[4:6]) <= 10): continue
+                place = {'01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'}.get(r_id[4:6], '不明')
+                r_num = int(r_id[10:12])
+                dummy_time = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} 12:00", "%Y%m%d %H:%M"))
+                races.append({'id': r_id, 'place': place, 'num': r_num, 'title': f"{place} {r_num}R", 'time': dummy_time, 'sort_key': f"{r_id[4:6]}{r_num:02d}"})
+        except: pass
     return sorted(races, key=lambda x: x['sort_key'])
 
 def get_weekend_dates():
