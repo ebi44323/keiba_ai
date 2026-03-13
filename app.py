@@ -16,27 +16,50 @@ st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
 
 # ==========================================
-# 🌟 【ebiさん考案】最強の「名寄せ（フルネーム復元）」関数
+# 🌟 【ebiさん考案】最強の「名寄せ（フルネーム復元）」関数（改修版）
 # ==========================================
 def resolve_name(short_name, known_names):
     if pd.isna(short_name) or short_name == '不明': return '不明'
-    # 余計な記号(☆や▲)や空白、[東]などの所属を完全に消し去る
-    clean_name = re.sub(r'[☆▲△◇\n\s　]', '', str(short_name))
+    
+    # ① 検索キーから余計な記号(☆や▲)、空白、[東]、栗東/美浦などを完全に消し去る
+    clean_name = re.sub(r'[☆▲△◇★\n\s　]', '', str(short_name))
     clean_name = re.sub(r'\[[東西地外]\]', '', clean_name)
+    clean_name = re.sub(r'(栗東|美浦)', '', clean_name)
     if not clean_name: return '不明'
     
-    # ① 完全一致を探す
-    if clean_name in known_names: return clean_name
+    # ② 学習データ側(known_names)も同様に正規化してマッチングしやすくする
+    normalized_dict = {}
+    for kn in known_names:
+        if pd.isna(kn): continue
+        norm_kn = re.sub(r'[☆▲△◇★\n\s　]', '', str(kn))
+        norm_kn = re.sub(r'\[[東西地外]\]', '', norm_kn)
+        norm_kn = re.sub(r'(栗東|美浦)', '', norm_kn)
+        
+        if norm_kn not in normalized_dict:
+            normalized_dict[norm_kn] = []
+        normalized_dict[norm_kn].append(kn)
+
+    # ③ 完全一致を探す (正規化後同士で比較)
+    if clean_name in normalized_dict:
+        return sorted(normalized_dict[clean_name], key=len)[0]
     
-    # ② 前方一致を探す（例：「菅原明」→「菅原明良」）
-    matches = [n for n in known_names if str(n).startswith(clean_name)]
-    if len(matches) > 0: return sorted(matches, key=len)[0] # 一番短い文字数を優先
+    # ④ 前方一致を探す（例：「菅原明」→「菅原明良」、「矢作」→「[西] 矢作芳人」）
+    forward_matches = []
+    for norm_kn, orig_names in normalized_dict.items():
+        if norm_kn.startswith(clean_name):
+            forward_matches.extend(orig_names)
+    if forward_matches:
+        return sorted(forward_matches, key=len)[0] # 一番短い文字数を優先
     
-    # ③ 部分一致を探す（例：「ルメール」→「C.ルメール」）
-    matches = [n for n in known_names if clean_name in str(n)]
-    if len(matches) > 0: return sorted(matches, key=len)[0]
+    # ⑤ 部分一致を探す（例：「ルメール」→「C.ルメール」）
+    partial_matches = []
+    for norm_kn, orig_names in normalized_dict.items():
+        if clean_name in norm_kn:
+            partial_matches.extend(orig_names)
+    if partial_matches:
+        return sorted(partial_matches, key=len)[0]
     
-    return clean_name
+    return clean_name # 復元できなければ元の正規化名(苗字のみ等)を返す
 
 # ==========================================
 # 1. 限界突破AIエンジンの学習とデータ準備
