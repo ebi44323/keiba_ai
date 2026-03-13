@@ -12,8 +12,31 @@ import time
 from sklearn.metrics import roc_auc_score, roc_curve 
 
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
-st.title("🐴 keiba-ebye 予測ダッシュボード ")
-st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも？")
+st.title("🐴 keiba-ebye 予測ダッシュボード")
+st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
+
+# ==========================================
+# 🌟 【ebiさん考案】最強の「名寄せ（フルネーム復元）」関数
+# ==========================================
+def resolve_name(short_name, known_names):
+    if pd.isna(short_name) or short_name == '不明': return '不明'
+    # 余計な記号(☆や▲)や空白、[東]などの所属を完全に消し去る
+    clean_name = re.sub(r'[☆▲△◇\n\s　]', '', str(short_name))
+    clean_name = re.sub(r'\[[東西地外]\]', '', clean_name)
+    if not clean_name: return '不明'
+    
+    # ① 完全一致を探す
+    if clean_name in known_names: return clean_name
+    
+    # ② 前方一致を探す（例：「菅原明」→「菅原明良」）
+    matches = [n for n in known_names if str(n).startswith(clean_name)]
+    if len(matches) > 0: return sorted(matches, key=len)[0] # 一番短い文字数を優先
+    
+    # ③ 部分一致を探す（例：「ルメール」→「C.ルメール」）
+    matches = [n for n in known_names if clean_name in str(n)]
+    if len(matches) > 0: return sorted(matches, key=len)[0]
+    
+    return clean_name
 
 # ==========================================
 # 1. 限界突破AIエンジンの学習とデータ準備
@@ -54,8 +77,8 @@ def prepare_model_and_data():
     df = pd.merge(df, course_stats, on=['競馬場', '芝/ダート', '距離'], how='left')
     df['スピード指数'] = np.where(df['コース標準偏差'] > 0, 50 - ((df['走破タイム秒'] - df['コース平均']) / df['コース標準偏差']) * 10, 50)
 
-    # 💡 【重要】名前の揺れを防ぐため、騎手は「騎手ID」を使用！
-    df['調教師_騎手'] = df['調教師'].astype(str) + '_' + df['騎手ID'].astype(str)
+    # 💡 IDではなく、確実に名前をベースに学習させる
+    df['調教師_騎手'] = df['調教師'].astype(str) + '_' + df['騎手'].astype(str)
     
     df = df.sort_values(['馬ID', '日付']).reset_index(drop=True)
 
@@ -81,7 +104,6 @@ def prepare_model_and_data():
     df['3走前_スピード指数'] = df.groupby('馬ID')['スピード指数'].shift(3)
     df['過去3走平均スピード指数'] = df[['前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数']].mean(axis=1)
 
-    # ディープ特徴量
     df['前走_通過'] = df.groupby('馬ID')['通過'].shift(1)
     df['2走前_通過'] = df.groupby('馬ID')['通過'].shift(2)
     df['3走前_通過'] = df.groupby('馬ID')['通過'].shift(3)
@@ -153,8 +175,8 @@ def prepare_model_and_data():
         '距離変化', '斤量変化', '馬体重変化', '出走頭数',
         '位置取りショック', '同レース逃げ馬頭数', '同レース先行馬頭数', 'コース適性_着順パーセント' 
     ]
-    # 💡 【重要】AIには「騎手」の名前ではなく、不変の「騎手ID」を渡す！
-    cat_features = ['競馬場', '馬場', '芝/ダート', '性別', '脚質カテゴリ', '父', '父系', '母', '母系', '母父', '母父系', '騎手ID', '調教師', '調教師_騎手'] 
+    # 💡 騎手を文字（名前）に戻す！
+    cat_features = ['競馬場', '馬場', '芝/ダート', '性別', '脚質カテゴリ', '父', '父系', '母', '母系', '母父', '母父系', '騎手', '調教師', '調教師_騎手'] 
     features = cat_features + num_features
 
     cat_categories_dict = {}
@@ -164,6 +186,10 @@ def prepare_model_and_data():
         cats = list(df_valid[col].cat.categories)
         if '不明' not in cats: cats.append('不明')
         cat_categories_dict[col] = cats
+
+    # 🌟 過去データに存在する「フルネーム」の全リストを作成（名寄せ用）
+    known_jockeys = df_valid['騎手'].dropna().unique().tolist()
+    known_trainers = df_valid['調教師'].dropna().unique().tolist()
 
     split_date = pd.to_datetime('2025-01-01')
     train_df = df_valid[df_valid['日付'] < split_date].copy()
@@ -186,10 +212,10 @@ def prepare_model_and_data():
     except:
         ped_dict = {}
 
-    return model, features, cat_features, num_features, cat_categories_dict, latest_horse_data, horse_course_dict, ped_dict, val_auc, fpr, tpr
+    return model, features, cat_features, num_features, cat_categories_dict, latest_horse_data, horse_course_dict, ped_dict, val_auc, fpr, tpr, known_jockeys, known_trainers
 
 with st.spinner('keiba-ebye フルパワーAIエンジンを起動・学習中... (初回のみ数分かかります)'):
-    model, features, cat_features, num_features, cat_categories_dict, latest_horse_data, horse_course_dict, ped_dict, val_auc, fpr, tpr = prepare_model_and_data()
+    model, features, cat_features, num_features, cat_categories_dict, latest_horse_data, horse_course_dict, ped_dict, val_auc, fpr, tpr, known_jockeys, known_trainers = prepare_model_and_data()
 
 headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -390,7 +416,6 @@ def run_real_prediction(race_id, race_date_str):
     weight_idx = get_idx(['馬体重'])
     odds_idx = get_idx(['単勝', 'オッズ', '予想'])
     sex_age_idx = get_idx(['性齢'])
-    # 💡 【完全修復】確実に文字を引っこ抜く！
     jockey_idx = get_idx(['騎手'])
     trainer_idx = get_idx(['調教師', '厩舎'])
 
@@ -406,25 +431,12 @@ def run_real_prediction(race_id, race_date_str):
             if not horse_a: continue
             horse_id = re.search(r'\d+', horse_a['href']).group(0)
             
-            # 💡 【超・重要】騎手は「名前(表示用)」と「ID(AI予測用)」を両方確保する！
-            j_a = tds[jockey_idx].find('a') if jockey_idx != -1 and len(tds) > jockey_idx else None
-            if j_a:
-                jm = re.search(r'/(\d{5})', j_a.get('href', ''))
-                jockey_id = jm.group(1) if jm else "0"
-                jockey_name = j_a.text.strip()
-            else:
-                jockey_id = "0"
-                jockey_name = tds[jockey_idx].text.strip() if jockey_idx != -1 and len(tds) > jockey_idx else "不明"
-            # 記号を除去
-            jockey_name = re.sub(r'[☆▲△◇]', '', jockey_name).strip()
+            # 💡 【完全修復】ebiさん考案・略称からのフルネーム復元ロジック！
+            jockey_raw = tds[jockey_idx].text.strip() if jockey_idx != -1 and len(tds) > jockey_idx else "不明"
+            jockey_name = resolve_name(jockey_raw, known_jockeys)
             
-            t_a = tds[trainer_idx].find('a') if trainer_idx != -1 and len(tds) > trainer_idx else None
-            if t_a:
-                trainer_name = t_a.text.strip()
-            else:
-                trainer_name = tds[trainer_idx].text.strip() if trainer_idx != -1 and len(tds) > trainer_idx else "不明"
-            # [東]などの記号を除去してDBと一致させる
-            trainer_name = re.sub(r'\[[東西地外]\]', '', trainer_name).strip()
+            trainer_raw = tds[trainer_idx].text.strip() if trainer_idx != -1 and len(tds) > trainer_idx else "不明"
+            trainer_name = resolve_name(trainer_raw, known_trainers)
             
             kinryo_text = tds[kinryo_idx].text if kinryo_idx != -1 and len(tds) > kinryo_idx else "55.0"
             kinryo_match = re.search(r'\d+(\.\d+)?', kinryo_text)
@@ -447,7 +459,7 @@ def run_real_prediction(race_id, race_date_str):
             
             sex_age = tds[sex_age_idx].text.strip() if sex_age_idx != -1 and len(tds) > sex_age_idx else "牡3"
 
-            horses.append({'枠番': waku, '馬番': umaban, '馬名': horse_a.text.strip(), '馬ID': horse_id, '性齢': sex_age, '斤量': kinryo, '騎手': jockey_name, '騎手ID': jockey_id, '調教師': trainer_name, '距離': distance, '競馬場': place, '芝/ダート': track_type, '馬場': todays_baba, '馬体重_num': weight_val, '単勝オッズ': odds_val})
+            horses.append({'枠番': waku, '馬番': umaban, '馬名': horse_a.text.strip(), '馬ID': horse_id, '性齢': sex_age, '斤量': kinryo, '騎手': jockey_name, '調教師': trainer_name, '距離': distance, '競馬場': place, '芝/ダート': track_type, '馬場': todays_baba, '馬体重_num': weight_val, '単勝オッズ': odds_val})
         except: pass
 
     if not horses: return None, None, None, None, None, None, None, ["❌ 出走馬データの読み取りに失敗しました。"]
@@ -472,13 +484,7 @@ def run_real_prediction(race_id, race_date_str):
 
         df_test['性別'] = df_test['性齢'].astype(str).str.extract(r'([牡牝セ])')[0]
         df_test['年齢'] = pd.to_numeric(df_test['性齢'].astype(str).str.extract(r'(\d+)')[0], errors='coerce')
-        
-        # 💡 【完全修復】ここで予測用のID文字列を組み立てる
-        df_test['調教師_騎手'] = df_test['調教師'].astype(str) + '_' + df_test['騎手ID'].astype(str)
-        
-        # 💡 【完全修復】画面表示用に生の名前をコピーしておく！
-        df_test['表示_騎手'] = df_test['騎手']
-        df_test['表示_調教師'] = df_test['調教師']
+        df_test['調教師_騎手'] = df_test['調教師'].astype(str) + '_' + df_test['騎手'].astype(str)
 
         df_test['3走前_着順'] = df_test['2走前_着順'] if '2走前_着順' in df_test.columns else np.nan
         df_test['2走前_着順'] = df_test['前走_着順'] if '前走_着順' in df_test.columns else np.nan
@@ -627,9 +633,8 @@ def display_result(df_res, topics, reco, pace_text):
         st.success(f"**🤖 AI推奨買い目:**\n\n{reco}")
         
     with tab3:
-        # 💡 【完全修復】ここで変換前の「表示用」の生の名前を呼び出す！
-        detail_df = df_res[['馬番', '馬名', '父', '母父', '表示_騎手', '表示_調教師', '過去3走平均スピード指数', 'コース適性_着順パーセント', '位置取りショック']].copy()
-        detail_df = detail_df.rename(columns={'コース適性_着順パーセント': 'コース適性(%)', '過去3走平均スピード指数': '平均スピード指数', '表示_騎手': '騎手', '表示_調教師': '調教師'})
+        detail_df = df_res[['馬番', '馬名', '父', '母父', '騎手', '調教師', '過去3走平均スピード指数', 'コース適性_着順パーセント', '位置取りショック']].copy()
+        detail_df = detail_df.rename(columns={'コース適性_着順パーセント': 'コース適性(%)', '過去3走平均スピード指数': '平均スピード指数'})
         detail_df['平均スピード指数'] = detail_df['平均スピード指数'].fillna(0)
         detail_df['位置取りショック'] = detail_df['位置取りショック'].fillna(0)
         st.markdown("※『コース適性(%)』は数字が低い（0に近い）ほどそのコースが得意なことを示します。")
