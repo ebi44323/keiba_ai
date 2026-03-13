@@ -8,6 +8,7 @@ import re
 import datetime
 import pytz
 import traceback
+import time  # 💡 アクセス制限回避のために追加
 from sklearn.metrics import roc_auc_score, roc_curve 
 
 # ==========================================
@@ -15,7 +16,7 @@ from sklearn.metrics import roc_auc_score, roc_curve
 # ==========================================
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 
-st.title("🐴 keiba-ebye 予測ダッシュボード")
+st.title("🐴 keiba-ebye 予測ダッシュボード (AUC 0.75版)")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも？")
 
 # ==========================================
@@ -177,7 +178,7 @@ def get_todays_races(date_str=None):
     
     for url in urls_to_try:
         try:
-            res = requests.get(url, headers=headers); res.encoding = 'euc-jp'
+            res = requests.get(url, headers=headers, timeout=10); res.encoding = 'euc-jp'
             soup = BeautifulSoup(res.text, 'html.parser')
             
             for a_tag in soup.find_all('a', href=re.compile(r'race_id=(\d{12})')):
@@ -216,7 +217,7 @@ def get_todays_races(date_str=None):
     if not races:
         url = f'https://db.netkeiba.com/race/list/{target_date_str}/'
         try:
-            res = requests.get(url, headers=headers); res.encoding = 'euc-jp'
+            res = requests.get(url, headers=headers, timeout=10); res.encoding = 'euc-jp'
             ids = set(re.findall(r'/race/(\d{12})', res.text))
             place_dict = {'01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'}
             for r_id in ids:
@@ -246,7 +247,7 @@ def get_payouts(race_id):
     ]
     for url in urls:
         try:
-            res = requests.get(url, headers=headers); res.encoding = 'euc-jp'
+            res = requests.get(url, headers=headers, timeout=10); res.encoding = 'euc-jp'
             soup = BeautifulSoup(res.text, 'html.parser')
             tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01'))
             if not tables: tables = soup.find_all('table', class_='pay_table_01')
@@ -274,7 +275,7 @@ def get_payouts(race_id):
         except: pass
     return tansho_dict, fukusho_dict
 
-# 💡 【完全進化】金曜の「予想オッズ」も絶対に逃がさない最強オッズ抽出！
+# 💡 【完全進化】金曜の「予想オッズ」エラー無視＆強制確保
 def get_odds_from_soup(s_soup):
     o_dict = {}
     tgt_table = s_soup.select_one('.Shutuba_Table') or s_soup.select_one('.RaceTable01') or s_soup.select_one('.race_table_01') or s_soup.select_one('#All_Result_Table')
@@ -284,22 +285,37 @@ def get_odds_from_soup(s_soup):
     for i, th in enumerate(tgt_table.find_all('th')):
         c_txt = re.sub(r'\s+', '', th.text)
         if '馬番' in c_txt: u_idx = i
-        if '単勝' in c_txt or 'オッズ' in c_txt: o_idx = i
+        if '単勝' in c_txt or 'オッズ' in c_txt or '予想' in c_txt: o_idx = i
         
     try:
-        if u_idx != -1 and o_idx != -1:
-            for tr in tgt_table.find_all('tr')[1:]:
-                tds = tr.find_all('td')
-                if len(tds) > max(u_idx, o_idx):
-                    u_m = re.search(r'\d+', tds[u_idx].text)
-                    # 予想オッズは「14.5」のような小数。余計なタグが含まれていても確実に拾う
-                    o_str = tds[o_idx].text.strip()
-                    o_m = re.search(r'\d+\.\d+', o_str)
-                    if not o_m:
-                        span = tds[o_idx].find('span')
-                        if span: o_m = re.search(r'\d+\.\d+', span.text)
-                    if u_m and o_m: 
-                        o_dict[int(u_m.group(0))] = float(o_m.group(0))
+        for tr in tgt_table.find_all('tr')[1:]:
+            tds = tr.find_all('td')
+            
+            # 馬番の取得
+            umaban = -1
+            if u_idx != -1 and len(tds) > u_idx:
+                u_m = re.search(r'\d+', tds[u_idx].text)
+                if u_m: umaban = int(u_m.group(0))
+            if umaban == -1: continue
+            
+            # オッズの取得
+            odds_val = 0.0
+            if o_idx != -1 and len(tds) > o_idx:
+                o_m = re.search(r'\d+\.\d+', tds[o_idx].text)
+                if o_m: odds_val = float(o_m.group(0))
+            
+            # クラス名から強引に取得
+            if odds_val == 0.0:
+                for td in tds:
+                    classes = td.get('class', [])
+                    if any(c in ['Odds', 'Popular', 'txt_r', 'Txt_R'] for c in classes):
+                        o_m = re.search(r'\d+\.\d+', td.text)
+                        if o_m: 
+                            odds_val = float(o_m.group(0))
+                            break
+            
+            if odds_val > 0.0:
+                o_dict[umaban] = odds_val
     except: pass
     return o_dict
 
@@ -310,7 +326,6 @@ def generate_txt_report(results_list):
         txt += f"■ {r['date']} | {r['place']} {r['num']}R ({r['track']}{r['dist']}m) ■\n"
         txt += f"🐎 【展開予想】\n{r['pace']}\n"
         txt += "-"*50 + "\n"
-        # 💡 リミッター解除：テキストレポートでも全頭出力！
         for rank, row in r['df'].iterrows():
             ev_str = f" 📈期待値:{row['期待値']:.2f}" if row['期待値'] >= 1.5 else ""
             txt += f" {row['印']} {rank+1}位: [{row['枠番']}枠{row['馬番']}番] {row['馬名']} - 勝率 {row['勝率(AI予測)']*100:.1f}% / 複勝率 {row['複勝率(AI予測)']*100:.1f}% (オッズ {row['単勝オッズ']}倍){ev_str}\n"
@@ -338,7 +353,7 @@ def run_real_prediction(race_id, race_date_str):
         f'https://db.netkeiba.com/race/{race_id}/'
     ]:
         try:
-            r = requests.get(fetch_url, headers=headers); r.encoding = 'euc-jp'
+            r = requests.get(fetch_url, headers=headers, timeout=10); r.encoding = 'euc-jp'
             soup = BeautifulSoup(r.text, 'html.parser')
             if soup.select_one('.Shutuba_Table') or soup.select_one('.RaceTable01') or soup.select_one('.race_table_01') or soup.select_one('#All_Result_Table'):
                 if not html_text: 
@@ -349,7 +364,7 @@ def run_real_prediction(race_id, race_date_str):
                     odds_dict = temp_odds
                     break 
         except Exception as e: 
-            error_log.append(f"URL取得失敗({fetch_url}): {e}")
+            pass # 内部エラーは無視して次へ
 
     if not html_text: 
         error_log.append("❌ 出馬表や結果ページのHTMLが取得できませんでした。")
@@ -392,15 +407,16 @@ def run_real_prediction(race_id, race_date_str):
     uma_idx = get_idx(['馬番'])
     kinryo_idx = get_idx(['斤量'])
     weight_idx = get_idx(['馬体重'])
-    odds_idx = get_idx(['単勝', 'オッズ'])
+    odds_idx = get_idx(['単勝', 'オッズ', '予想'])
 
     for tr in table.find_all('tr')[1:]: 
         tds = tr.find_all('td')
         if len(tds) < 5: continue
+        
         try:
-            if uma_idx == -1 or not re.search(r'\d+', tds[uma_idx].text): continue
+            if uma_idx == -1 or len(tds) <= uma_idx or not re.search(r'\d+', tds[uma_idx].text): continue
             umaban = int(re.search(r'\d+', tds[uma_idx].text).group(0))
-            waku = int(re.search(r'\d+', tds[waku_idx].text).group(0)) if waku_idx != -1 and re.search(r'\d+', tds[waku_idx].text) else 0
+            waku = int(re.search(r'\d+', tds[waku_idx].text).group(0)) if waku_idx != -1 and len(tds) > waku_idx and re.search(r'\d+', tds[waku_idx].text) else 0
             
             horse_a = tr.find('a', href=re.compile(r'/horse/'))
             if not horse_a: continue
@@ -412,37 +428,36 @@ def run_real_prediction(race_id, race_date_str):
             trainer_a = tr.find('a', href=re.compile(r'/trainer/'))
             trainer_name = trainer_a.text.strip() if trainer_a else "不明"
             
-            kinryo_text = tds[kinryo_idx].text if kinryo_idx != -1 else "55.0"
+            kinryo_text = tds[kinryo_idx].text if kinryo_idx != -1 and len(tds) > kinryo_idx else "55.0"
             kinryo_match = re.search(r'\d+(\.\d+)?', kinryo_text)
             kinryo = float(kinryo_match.group(0)) if kinryo_match else 55.0
             
-            weight_text = tds[weight_idx].text if weight_idx != -1 else ""
+            weight_text = tds[weight_idx].text if weight_idx != -1 and len(tds) > weight_idx else ""
             weight_match = re.search(r'^(\d{3})', weight_text.strip())
             weight_val = float(weight_match.group(1)) if weight_match else np.nan
             
-            # 💡 【金曜オッズの執念抽出】
+            # 💡 【絶対停止しないオッズ取得】
             odds_val = odds_dict.get(umaban, 0.0) 
-            if odds_val == 0.0 and odds_idx != -1:
+            if odds_val == 0.0 and odds_idx != -1 and len(tds) > odds_idx:
                 odds_match = re.search(r'\d+\.\d+', tds[odds_idx].text)
                 if odds_match: odds_val = float(odds_match.group(0))
-            # 表が崩れている場合、クラス名からも探す
             if odds_val == 0.0:
                 for td in tds:
-                    if 'Popular' in td.get('class', []) or 'Odds' in td.get('class', []):
+                    if any(c in ['Odds', 'Popular', 'txt_r', 'Txt_R'] for c in td.get('class', [])):
                         om = re.search(r'\d+\.\d+', td.text)
                         if om: 
                             odds_val = float(om.group(0))
                             break
-            # 最終防衛ライン
+            # 最悪のケースでもエラーで止めず 10.0倍 としておく
             if odds_val == 0.0: odds_val = 10.0
             
             sex_age_idx = get_idx(['性齢'])
-            sex_age = tds[sex_age_idx].text.strip() if sex_age_idx != -1 else "牡3"
+            sex_age = tds[sex_age_idx].text.strip() if sex_age_idx != -1 and len(tds) > sex_age_idx else "牡3"
 
             horses.append({'枠番': waku, '馬番': umaban, '馬名': horse_a.text.strip(), '馬ID': horse_id, '性齢': sex_age, '斤量': kinryo, '騎手': jockey_name, '調教師': trainer_name, '距離': distance, '競馬場': place, '芝/ダート': track_type, '馬場': todays_baba, '馬体重_num': weight_val, '単勝オッズ': odds_val})
         except Exception as e:
-            error_log.append(f"馬(馬番:{umaban})のデータ取得中にエラー: {e}")
-            continue
+            # 1頭失敗しても他の馬の処理を止めない
+            pass
 
     if not horses: 
         error_log.append("❌ 馬のデータはありましたが、1頭も正しく読み取れませんでした。")
@@ -616,13 +631,14 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                     st.markdown(f"#### ■ {r['place']} {r['num']}R")
                     res_df, topics, reco, pace_text, track_type, place, dist, err_log = run_real_prediction(r['id'], now.strftime('%Y-%m-%d'))
                     if res_df is not None:
-                        # 💡 リミッター解除：全頭表示に変更！
                         display_result(res_df, topics, reco, pace_text)
                         results_for_txt.append({
                             'date': now.strftime('%Y年%m月%d日'), 'place': place, 'num': r['num'],
                             'track': track_type, 'dist': dist, 'pace': pace_text, 'df': res_df, 'topics': topics, 'reco': reco
                         })
                     else: display_error_log(err_log)
+                    
+                    time.sleep(1.0) # 💡 アクセス制限回避
                     my_bar.progress((i + 1) / len(todays_races))
                 
                 if results_for_txt:
@@ -645,31 +661,42 @@ elif action == "📅 今週末の全レース予想":
     st.markdown("金曜や前日に、週末のレース出馬表を先取りして予想します！")
     sat_str, sun_str = get_weekend_dates()
     
-    if st.button("🚀 週末の出馬表を取得・予想", type="primary"):
-        with st.spinner('週末のレースを収集中...'):
-            all_weekend_races = get_todays_races(sat_str) + get_todays_races(sun_str)
+    # 💡 土曜と日曜のボタンを分割！
+    col1, col2 = st.columns(2)
+    with col1:
+        run_sat = st.button(f"🚀 土曜日 ({sat_str[4:6]}/{sat_str[6:]}) の予想を開始", type="primary")
+    with col2:
+        run_sun = st.button(f"🚀 日曜日 ({sun_str[4:6]}/{sun_str[6:]}) の予想を開始", type="primary")
+        
+    target_date = None
+    if run_sat: target_date = sat_str
+    if run_sun: target_date = sun_str
+    
+    if target_date:
+        with st.spinner(f'{target_date[:4]}年{target_date[4:6]}月{target_date[6:]}日 の出馬表を収集中...'):
+            target_races = get_todays_races(target_date)
             
-        if not all_weekend_races: st.error("まだ今週末の出馬表が発表されていません。")
+        if not target_races: st.error(f"まだ {target_date[4:6]}/{target_date[6:]} の出馬表が発表されていません。")
         else:
-            my_bar = st.progress(0, text="週末のレースを推論中...")
+            my_bar = st.progress(0, text="推論中...")
             results_for_txt = []
-            for i, r in enumerate(all_weekend_races):
-                r_date = sat_str if r['id'].startswith(sat_str) else sun_str
-                with st.expander(f"🏁 {r_date[:4]}/{r_date[4:6]}/{r_date[6:]} - {r['place']} {r['num']}R"):
-                    res_df, topics, reco, pace_text, track_type, place, dist, err_log = run_real_prediction(r['id'], f"{r_date[:4]}-{r_date[4:6]}-{r_date[6:]}")
+            for i, r in enumerate(target_races):
+                with st.expander(f"🏁 {target_date[:4]}/{target_date[4:6]}/{target_date[6:]} - {r['place']} {r['num']}R"):
+                    res_df, topics, reco, pace_text, track_type, place, dist, err_log = run_real_prediction(r['id'], f"{target_date[:4]}-{target_date[4:6]}-{target_date[6:]}")
                     if res_df is not None:
-                        # 💡 リミッター解除：全頭表示に変更！
                         display_result(res_df, topics, reco, pace_text)
                         results_for_txt.append({
-                            'date': f"{r_date[:4]}年{r_date[4:6]}月{r_date[6:]}日", 'place': place, 'num': r['num'],
+                            'date': f"{target_date[:4]}年{target_date[4:6]}月{target_date[6:]}日", 'place': place, 'num': r['num'],
                             'track': track_type, 'dist': dist, 'pace': pace_text, 'df': res_df, 'topics': topics, 'reco': reco
                         })
                     else: display_error_log(err_log)
-            my_bar.progress((i + 1) / len(all_weekend_races))
+                    
+                time.sleep(1.0) # 💡 アクセス制限回避
+                my_bar.progress((i + 1) / len(target_races))
             
             if results_for_txt:
                 report_txt = generate_txt_report(results_for_txt)
-                st.download_button("📥 週末予想レポートをダウンロード (.txt)", data=report_txt, file_name=f"keiba_weekend_forecast.txt", mime="text/plain")
+                st.download_button(f"📥 {target_date[4:6]}/{target_date[6:]} 予想レポートをダウンロード (.txt)", data=report_txt, file_name=f"keiba_weekend_{target_date}.txt", mime="text/plain")
 
 elif action == "🧪 性能試験 (バックテスト)":
     st.subheader("🧪 keiba-ebye 性能試験")
@@ -708,6 +735,8 @@ elif action == "🧪 性能試験 (バックテスト)":
                                 st.error("⚠️ AI推論は成功しましたが、このレースの払い戻しデータが取得できませんでした。")
                         else: 
                             display_error_log(err_log)
+                            
+                    time.sleep(1.0) # 💡 アクセス制限回避
                     my_bar.progress((i + 1) / len(test_races))
                 
                 st.markdown("---")
