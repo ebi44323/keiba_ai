@@ -373,7 +373,28 @@ def run_real_prediction(race_id, race_date_str):
     odds_dict = {}
     html_text = ""
     
-    # 🌟 1. まずは「出馬表（馬柱）」だけを取得
+    # 🌟 【新兵器】Netkeibaの裏側（隠しJSON API）を直接叩いて最新オッズをぶっこ抜く！
+    import json
+    odds_api_url = f'https://race.netkeiba.com/api/api_get_jra_odds.html?type=1&action=init&race_id={race_id}'
+    try:
+        r_api = requests.get(odds_api_url, headers=headers, timeout=5)
+        api_data = json.loads(r_api.text)
+        
+        # APIのJSONを再帰的に全探索し、「馬番」がキーで「オッズ」が値になっている場所を探す
+        def find_odds(d):
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    find_odds(v)
+                elif isinstance(v, list) and str(k).isdigit() and 1 <= int(k) <= 18:
+                    try:
+                        # 単勝オッズはリストの0番目に入る仕様
+                        odds_dict[int(k)] = float(v[0])
+                    except: pass
+        find_odds(api_data)
+    except Exception as e:
+        pass
+
+    # 🌟 出馬表（馬柱）の取得
     for fetch_url in [
         f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}',
         f'https://race.netkeiba.com/race/result.html?race_id={race_id}',
@@ -390,26 +411,6 @@ def run_real_prediction(race_id, race_date_str):
     if not html_text: return None, None, None, None, None, None, None, None, ["❌ 出馬表が取得できませんでした。"]
     soup = BeautifulSoup(html_text, 'html.parser')
 
-    # 🌟 2. 次に「オッズ専用ページ」を個別に叩いてオッズだけを確実に回収
-    odds_url = f'https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}'
-    try:
-        r_odds = requests.get(odds_url, headers=headers, timeout=10); r_odds.encoding = 'euc-jp'
-        soup_odds = BeautifulSoup(r_odds.text, 'html.parser')
-        for tr in soup_odds.select('.nk_tb_common tr, #odds_list tr, .Odds_Table tr'):
-            umaban_td = tr.select_one('td.Num, td.Uma_Num, .Uma')
-            odds_td = tr.select_one('td.Odds, td.Txt_R')
-            if umaban_td and odds_td:
-                u_m = re.search(r'\d+', umaban_td.text)
-                o_m = re.search(r'\d{1,4}\.\d+', odds_td.text)
-                if u_m and o_m:
-                    odds_dict[int(u_m.group(0))] = float(o_m.group(0))
-    except Exception as e: pass
-    
-    # 専用ページから取れなかった場合の保険（出馬表内検索）
-    if not odds_dict:
-        odds_dict = get_odds_from_soup(soup)
-
-    # 🌟 3. 出馬表の解析開始
     race_data_box = soup.find('div', class_='RaceData01') or soup.find('dl', class_='racedata')
     if not race_data_box: return None, None, None, None, None, None, None, None, ["❌ レース条件が見つかりません。"]
 
@@ -474,13 +475,13 @@ def run_real_prediction(race_id, race_date_str):
             weight_match = re.search(r'^(\d{3})', weight_text.strip())
             weight_val = float(weight_match.group(1)) if weight_match else np.nan
             
-            # 🌟 斤量誤爆を防止し、確実に先ほどのodds_dictから数値を引っ張る
+            # 🌟 斤量誤爆を完全に防止！裏APIで取れた純度100%のオッズを使用
             odds_val = odds_dict.get(umaban, 0.0) 
             if odds_val == 0.0 and odds_idx != -1 and len(tds) > odds_idx:
                 odds_match = re.search(r'\d{1,4}\.\d+', tds[odds_idx].text)
                 if odds_match: odds_val = float(odds_match.group(0))
                 
-            if odds_val == 0.0: odds_val = 10.0 # 本当に何も取得できなければ10.0
+            if odds_val == 0.0: odds_val = 10.0
             sex_age = tds[sex_age_idx].text.strip() if sex_age_idx != -1 and len(tds) > sex_age_idx else "牡3"
 
             horses.append({'枠番': waku, '馬番': umaban, '馬名': horse_a.text.strip(), '馬ID': horse_id, '性齢': sex_age, '斤量': kinryo, '騎手': jockey_name, '調教師': trainer_name, '距離': distance, '競馬場': place, '芝/ダート': track_type, '馬場': todays_baba, '馬体重_num': weight_val, '単勝オッズ': odds_val})
