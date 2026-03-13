@@ -15,8 +15,8 @@ from sklearn.metrics import roc_auc_score, roc_curve
 # ==========================================
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 
-st.title("🐴 keiba-ebye 予測ダッシュボード (AUC 0.75 完全体)")
-st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出します。")
+st.title("🐴 keiba-ebye 予測ダッシュボード ")
+st.markdown("えーびーあい (ebi × AI × Eye) が、穴馬を暴き出すかも？。")
 
 # ==========================================
 # 1. 限界突破AIエンジンの学習とデータ準備
@@ -176,33 +176,48 @@ def get_todays_races(date_str=None):
     now = datetime.datetime.now(tokyo_tz)
     target_date_str = date_str if date_str else now.strftime('%Y%m%d')
     
+    # 💡 【超強力化】netkeibaのページ構造に依存せず、すべてのレースIDを強制抽出！
     url = f'https://race.netkeiba.com/top/race_list.html?kaisai_date={target_date_str}'
     try:
         res = requests.get(url, headers=headers); res.encoding = 'euc-jp'
         soup = BeautifulSoup(res.text, 'html.parser')
-        for item in soup.find_all('li', class_='RaceList_DataItem'):
-            a_tag = item.find('a')
-            if not a_tag: continue
-            m_id = re.search(r'race_id=(\d{12})', a_tag.get('href', ''))
-            if not m_id: continue
-            r_id = m_id.group(1)
-            if not (1 <= int(r_id[4:6]) <= 10): continue
+        
+        added_ids = set()
+        # ページ内の「race_id=」を含むすべてのリンクを片っ端から回収
+        for a_tag in soup.find_all('a', href=re.compile(r'race_id=(\d{12})')):
+            r_id = re.search(r'race_id=(\d{12})', a_tag.get('href')).group(1)
             
-            time_span = item.find('span', class_='RaceList_Itemtime')
-            title_span = item.find('span', class_='ItemTitle')
+            if not (1 <= int(r_id[4:6]) <= 10): continue # 中央競馬(01〜10)のみ
+            if r_id in added_ids: continue
+            added_ids.add(r_id)
+            
             place_dict = {'01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'}
             place = place_dict.get(r_id[4:6], '不明')
             r_num = int(r_id[10:12])
             
-            if time_span and title_span:
-                try: start_dt = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} {time_span.text.strip()}", "%Y%m%d %H:%M"))
-                except: start_dt = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} 12:00", "%Y%m%d %H:%M"))
-                races.append({
-                    'id': r_id, 'place': place, 'num': r_num, 'title': title_span.text.strip(), 'time': start_dt,
-                    'sort_key': f"{start_dt.strftime('%H%M')}_{r_id}"
-                })
-    except: pass
+            # 親要素から時間とタイトルを拾う（見つからなければ適当な値を入れる安全設計）
+            parent = a_tag.find_parent('li') or a_tag.find_parent('dl') or a_tag.find_parent('div')
+            time_span = parent.find(class_=re.compile(r'time', re.I)) if parent else None
+            title_span = parent.find(class_=re.compile(r'Title', re.I)) if parent else None
+            
+            if time_span and title_span and time_span.text.strip():
+                try: 
+                    time_str = re.search(r'\d{2}:\d{2}', time_span.text).group(0)
+                    start_dt = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} {time_str}", "%Y%m%d %H:%M"))
+                except: 
+                    start_dt = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} 12:00", "%Y%m%d %H:%M"))
+                title = title_span.text.strip()
+            else:
+                start_dt = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} 12:00", "%Y%m%d %H:%M"))
+                title = f"{place} {r_num}R"
+                
+            races.append({
+                'id': r_id, 'place': place, 'num': r_num, 'title': title, 'time': start_dt,
+                'sort_key': f"{r_id[4:6]}{r_num:02d}"
+            })
+    except Exception as e: pass
 
+    # 万が一上記で取れなかった場合の過去DB用フォールバック
     if not races:
         url = f'https://db.netkeiba.com/race/list/{target_date_str}/'
         try:
