@@ -139,7 +139,15 @@ def prepare_model_and_data():
         '日付': '最新_日付', '通過': '最新_通過'
     }
     df_latest = df_latest.rename(columns=rename_dict)
-    cols_to_keep = [c for c in df_latest.columns]
+    cols_to_keep = [
+        '馬ID', '父', '父系', '母', '母系', '母父', '母父系',
+        '最新_着順', '最新_スピード指数', '最新_人気', '最新_上り', '最新_距離', '最新_斤量', '最新_馬体重', '最新_日付', '最新_通過',
+        '前走_着順', '2走前_着順', '3走前_着順', '過去3走平均着順', 
+        '前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数', '4走前_スピード指数', '5走前_スピード指数',
+        '過去3走平均スピード指数', '近5走_中央値スピード指数', '近5走_最高スピード指数', '上昇度_スピード指数',
+        '前走_通過', '2走前_通過', '前走_最終コーナー', '2走前_最終コーナー'
+    ]
+    cols_to_keep = [c for c in cols_to_keep if c in df_latest.columns]
     latest_horse_data = df_latest[cols_to_keep].copy()
 
     horse_course_dict = df.groupby(['馬ID', '競馬場', '芝/ダート'])['着順パーセント'].mean().to_dict()
