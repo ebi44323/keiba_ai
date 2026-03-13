@@ -27,6 +27,18 @@ def resolve_name(short_name, known_names):
     clean_name = re.sub(r'(栗東|美浦)', '', clean_name)
     if not clean_name: return '不明'
     
+    # ▼▼ 追加: 競馬特有の不規則な省略辞書 ▼▼
+    aliases = {
+        "鮫島駿": "鮫島克駿",
+        "鮫島良": "鮫島良太",
+        "吉田隼": "吉田隼人",
+        "武幸": "武幸四郎",
+        "菅原明": "菅原明良"
+    }
+    if clean_name in aliases:
+        clean_name = aliases[clean_name]
+    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
     # ② 学習データ側(known_names)も同様に正規化してマッチングしやすくする
     normalized_dict = {}
     for kn in known_names:
@@ -43,13 +55,13 @@ def resolve_name(short_name, known_names):
     if clean_name in normalized_dict:
         return sorted(normalized_dict[clean_name], key=len)[0]
     
-    # ④ 前方一致を探す（例：「菅原明」→「菅原明良」、「矢作」→「[西] 矢作芳人」）
+    # ④ 前方一致を探す（例：「矢作」→「[西] 矢作芳人」）
     forward_matches = []
     for norm_kn, orig_names in normalized_dict.items():
         if norm_kn.startswith(clean_name):
             forward_matches.extend(orig_names)
     if forward_matches:
-        return sorted(forward_matches, key=len)[0] # 一番短い文字数を優先
+        return sorted(forward_matches, key=len)[0] 
     
     # ⑤ 部分一致を探す（例：「ルメール」→「C.ルメール」）
     partial_matches = []
@@ -59,7 +71,7 @@ def resolve_name(short_name, known_names):
     if partial_matches:
         return sorted(partial_matches, key=len)[0]
     
-    return clean_name # 復元できなければ元の正規化名(苗字のみ等)を返す
+    return clean_name
 
 # ==========================================
 # 1. 限界突破AIエンジンの学習とデータ準備
@@ -100,7 +112,6 @@ def prepare_model_and_data():
     df = pd.merge(df, course_stats, on=['競馬場', '芝/ダート', '距離'], how='left')
     df['スピード指数'] = np.where(df['コース標準偏差'] > 0, 50 - ((df['走破タイム秒'] - df['コース平均']) / df['コース標準偏差']) * 10, 50)
 
-    # 💡 IDではなく、確実に名前をベースに学習させる
     df['調教師_騎手'] = df['調教師'].astype(str) + '_' + df['騎手'].astype(str)
     
     df = df.sort_values(['馬ID', '日付']).reset_index(drop=True)
@@ -122,10 +133,17 @@ def prepare_model_and_data():
 
     df['前走_上がり順位'] = df.groupby('馬ID')['上がり順位'].shift(1)
 
+    # 🌟 トレンド特徴量用（過去5走分確保）
     df['前走_スピード指数'] = df.groupby('馬ID')['スピード指数'].shift(1)
     df['2走前_スピード指数'] = df.groupby('馬ID')['スピード指数'].shift(2)
     df['3走前_スピード指数'] = df.groupby('馬ID')['スピード指数'].shift(3)
+    df['4走前_スピード指数'] = df.groupby('馬ID')['スピード指数'].shift(4)
+    df['5走前_スピード指数'] = df.groupby('馬ID')['スピード指数'].shift(5)
+    
     df['過去3走平均スピード指数'] = df[['前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数']].mean(axis=1)
+    df['近5走_中央値スピード指数'] = df[['前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数', '4走前_スピード指数', '5走前_スピード指数']].median(axis=1)
+    df['近5走_最高スピード指数'] = df[['前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数', '4走前_スピード指数', '5走前_スピード指数']].max(axis=1)
+    df['上昇度_スピード指数'] = df['前走_スピード指数'] - df['近5走_中央値スピード指数']
 
     df['前走_通過'] = df.groupby('馬ID')['通過'].shift(1)
     df['2走前_通過'] = df.groupby('馬ID')['通過'].shift(2)
@@ -177,7 +195,8 @@ def prepare_model_and_data():
         '最新_着順', '最新_着順パーセント', '最新_タイム差', '最新_スピード指数', '最新_上がり順位', 
         '最新_人気', '最新_上り', '最新_距離', '最新_斤量', '最新_馬体重', '最新_日付', '最新_通過',
         '前走_着順', '2走前_着順', '前走_着順パーセント', '2走前_着順パーセント', 
-        '前走_タイム差', '2走前_タイム差', '前走_スピード指数', '2走前_スピード指数',
+        '前走_タイム差', '2走前_タイム差', 
+        '前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数', '4走前_スピード指数', '5走前_スピード指数',
         '前走_通過', '2走前_通過'
     ]
     cols_to_keep = [c for c in cols_to_keep if c in df_latest.columns]
@@ -194,13 +213,12 @@ def prepare_model_and_data():
         '前走_着順パーセント', '過去3走平均着順パーセント',
         '前走_タイム差', '過去3走平均タイム差',
         '前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数', '過去3走平均スピード指数',
+        '近5走_中央値スピード指数', '近5走_最高スピード指数', '上昇度_スピード指数', # 🌟追加
         '前走_人気', '前走_上り', '前走_上がり順位', '前走_最終コーナー',
         '距離変化', '斤量変化', '馬体重変化', '出走頭数',
         '位置取りショック', '同レース逃げ馬頭数', '同レース先行馬頭数', 'コース適性_着順パーセント' 
     ]
-    # 💡 騎手を文字（名前）に戻す！
     cat_features = ['競馬場', '馬場', '芝/ダート', '性別', '脚質カテゴリ', '父', '父系', '母', '母系', '母父', '母父系', '騎手', '調教師', '調教師_騎手'] 
-    features = cat_features + num_features
 
     cat_categories_dict = {}
     for col in cat_features:
@@ -210,21 +228,45 @@ def prepare_model_and_data():
         if '不明' not in cats: cats.append('不明')
         cat_categories_dict[col] = cats
 
-    # 🌟 過去データに存在する「フルネーム」の全リストを作成（名寄せ用）
     known_jockeys = df_valid['騎手'].dropna().unique().tolist()
     known_trainers = df_valid['調教師'].dropna().unique().tolist()
+
+    # 🌟 LGBMRankerのためにレースIDで必ずソートする
+    df_valid = df_valid.sort_values(['レースID', '馬番'])
 
     split_date = pd.to_datetime('2025-01-01')
     train_df = df_valid[df_valid['日付'] < split_date].copy()
     test_df = df_valid[df_valid['日付'] >= split_date].copy()
 
-    model = lgb.LGBMClassifier(
+    # 🌟 ターゲットエンコーディングの実装
+    te_dicts = {}
+    global_mean = train_df['馬券内'].mean()
+    te_cols = ['騎手', '調教師', '父', '調教師_騎手']
+    for col in te_cols:
+        te_dicts[col] = train_df.groupby(col)['馬券内'].mean().to_dict()
+        train_df[f'{col}_TE'] = train_df[col].map(te_dicts[col]).fillna(global_mean)
+        test_df[f'{col}_TE'] = test_df[col].map(te_dicts[col]).fillna(global_mean)
+        num_features.append(f'{col}_TE')
+
+    features = cat_features + num_features
+
+    # 🌟 LGBMRankerの学習
+    train_groups = train_df.groupby('レースID', sort=False).size().values
+    test_groups = test_df.groupby('レースID', sort=False).size().values
+
+    model = lgb.LGBMRanker(
         n_estimators=500, learning_rate=0.01, num_leaves=63, max_bin=255, cat_smooth=10,
         random_state=42, importance_type='gain', colsample_bytree=0.7, subsample=0.8
     )
-    model.fit(train_df[features], train_df['馬券内'], categorical_feature=cat_features)
+    model.fit(
+        train_df[features], train_df['馬券内'], 
+        group=train_groups,
+        categorical_feature=cat_features,
+        eval_set=[(test_df[features], test_df['馬券内'])],
+        eval_group=[test_groups]
+    )
     
-    val_preds = model.predict_proba(test_df[features])[:, 1]
+    val_preds = model.predict(test_df[features])
     val_auc = roc_auc_score(test_df['馬券内'], val_preds)
     fpr, tpr, _ = roc_curve(test_df['馬券内'], val_preds)
 
@@ -235,10 +277,10 @@ def prepare_model_and_data():
     except:
         ped_dict = {}
 
-    return model, features, cat_features, num_features, cat_categories_dict, latest_horse_data, horse_course_dict, ped_dict, val_auc, fpr, tpr, known_jockeys, known_trainers
+    return model, features, cat_features, num_features, cat_categories_dict, latest_horse_data, horse_course_dict, ped_dict, val_auc, fpr, tpr, known_jockeys, known_trainers, te_dicts, global_mean
 
 with st.spinner('keiba-ebye フルパワーAIエンジンを起動・学習中... (初回のみ数分かかります)'):
-    model, features, cat_features, num_features, cat_categories_dict, latest_horse_data, horse_course_dict, ped_dict, val_auc, fpr, tpr, known_jockeys, known_trainers = prepare_model_and_data()
+    model, features, cat_features, num_features, cat_categories_dict, latest_horse_data, horse_course_dict, ped_dict, val_auc, fpr, tpr, known_jockeys, known_trainers, te_dicts, global_mean = prepare_model_and_data()
 
 headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -454,7 +496,6 @@ def run_real_prediction(race_id, race_date_str):
             if not horse_a: continue
             horse_id = re.search(r'\d+', horse_a['href']).group(0)
             
-            # 💡 【完全修復】ebiさん考案・略称からのフルネーム復元ロジック！
             jockey_raw = tds[jockey_idx].text.strip() if jockey_idx != -1 and len(tds) > jockey_idx else "不明"
             jockey_name = resolve_name(jockey_raw, known_jockeys)
             
@@ -524,10 +565,17 @@ def run_real_prediction(race_id, race_date_str):
         df_test['前走_タイム差'] = df_test['最新_タイム差'] if '最新_タイム差' in df_test.columns else np.nan
         df_test['過去3走平均タイム差'] = df_test[['前走_タイム差', '2走前_タイム差', '3走前_タイム差']].mean(axis=1)
 
+        # 🌟 過去5走のデータを今回レース基準にスライド
+        df_test['5走前_スピード指数'] = df_test['4走前_スピード指数'] if '4走前_スピード指数' in df_test.columns else np.nan
+        df_test['4走前_スピード指数'] = df_test['3走前_スピード指数'] if '3走前_スピード指数' in df_test.columns else np.nan
         df_test['3走前_スピード指数'] = df_test['2走前_スピード指数'] if '2走前_スピード指数' in df_test.columns else np.nan
         df_test['2走前_スピード指数'] = df_test['前走_スピード指数'] if '前走_スピード指数' in df_test.columns else np.nan
         df_test['前走_スピード指数'] = df_test['最新_スピード指数'] if '最新_スピード指数' in df_test.columns else np.nan
+        
         df_test['過去3走平均スピード指数'] = df_test[['前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数']].mean(axis=1)
+        df_test['近5走_中央値スピード指数'] = df_test[['前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数', '4走前_スピード指数', '5走前_スピード指数']].median(axis=1)
+        df_test['近5走_最高スピード指数'] = df_test[['前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数', '4走前_スピード指数', '5走前_スピード指数']].max(axis=1)
+        df_test['上昇度_スピード指数'] = df_test['前走_スピード指数'] - df_test['近5走_中央値スピード指数']
 
         df_test['3走前_通過'] = df_test['2走前_通過'] if '2走前_通過' in df_test.columns else np.nan
         df_test['2走前_通過'] = df_test['前走_通過'] if '前走_通過' in df_test.columns else np.nan
@@ -569,6 +617,10 @@ def run_real_prediction(race_id, race_date_str):
         else:
             df_test['休養日数'] = np.nan
 
+        # 🌟 推論データへのターゲットエンコーディング適用
+        for col in ['騎手', '調教師', '父', '調教師_騎手']:
+            df_test[f'{col}_TE'] = df_test[col].map(te_dicts.get(col, {})).fillna(global_mean)
+
         for col in num_features: df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
         for col in cat_features:
             if col not in df_test.columns: df_test[col] = '不明'
@@ -583,12 +635,13 @@ def run_real_prediction(race_id, race_date_str):
         elif nige_count == 0: pace_text = f"🐌 【スローペース濃厚】 確たる逃げ馬が不在。先行馬({senko_count}頭)の押し切り、前残りに注意。"
         else: pace_text = f"🐎 【ミドルペース】 逃げ馬{nige_count}頭、先行馬{senko_count}頭。平均的なペースで実力が反映されやすい展開。"
 
-        raw_probs = model.predict_proba(df_test[features])[:, 1]
-        df_test['複勝率(AI予測)'] = raw_probs
+        # 🌟 LGBMRankerの推論結果（スコア）を確率（Softmax）に変換
+        raw_scores = model.predict(df_test[features])
+        exp_scores = np.exp(raw_scores - np.max(raw_scores))
+        win_probs = exp_scores / np.sum(exp_scores)
         
-        probs = raw_probs ** 1.2
-        probs = np.maximum(probs, 0.001)
-        df_test['勝率(AI予測)'] = probs / probs.sum()
+        df_test['勝率(AI予測)'] = win_probs
+        df_test['複勝率(AI予測)'] = np.clip(win_probs * 2.8, 0, 0.99)
         
         df_test['期待値'] = df_test['勝率(AI予測)'] * df_test['単勝オッズ']
         df_test = df_test.sort_values('勝率(AI予測)', ascending=False).reset_index(drop=True)
@@ -656,13 +709,13 @@ def display_result(df_res, topics, reco, pace_text):
         st.success(f"**🤖 AI推奨買い目:**\n\n{reco}")
         
     with tab3:
-        detail_df = df_res[['馬番', '馬名', '父', '母父', '騎手', '調教師', '過去3走平均スピード指数', 'コース適性_着順パーセント', '位置取りショック']].copy()
-        detail_df = detail_df.rename(columns={'コース適性_着順パーセント': 'コース適性(%)', '過去3走平均スピード指数': '平均スピード指数'})
-        detail_df['平均スピード指数'] = detail_df['平均スピード指数'].fillna(0)
-        detail_df['位置取りショック'] = detail_df['位置取りショック'].fillna(0)
+        # 詳細タブにトレンド特徴量も表示しておくと検証に便利です
+        detail_df = df_res[['馬番', '馬名', '騎手', '調教師', '近5走_中央値スピード指数', '上昇度_スピード指数', 'コース適性_着順パーセント', '位置取りショック']].copy()
+        detail_df = detail_df.rename(columns={'コース適性_着順パーセント': 'コース適性(%)', '近5走_中央値スピード指数': '本来の指数(中央値)', '上昇度_スピード指数': '成長度・復調度'})
         st.markdown("※『コース適性(%)』は数字が低い（0に近い）ほどそのコースが得意なことを示します。")
         st.dataframe(detail_df.style.format({
-            '平均スピード指数': '{:.1f}', 
+            '本来の指数(中央値)': '{:.1f}', 
+            '成長度・復調度': '{:.1f}', 
             'コース適性(%)': '{:.2f}',
             '位置取りショック': '{:.1f}'
         }), use_container_width=True, hide_index=True)
