@@ -51,6 +51,7 @@ def prepare_model_and_data():
 
     course_stats = df.groupby(['競馬場', '芝/ダート', '距離'])['走破タイム秒'].agg(['mean', 'std']).reset_index()
     course_stats.columns = ['競馬場', '芝/ダート', '距離', 'コース平均', 'コース標準偏差']
+    df = pd.merge(df, course_stats, on=['競馬場', '芝/ダート', '距離'], how='left')
     df['スピード指数'] = np.where(df['コース標準偏差'] > 0, 50 - ((df['走破タイム秒'] - df['コース平均']) / df['コース標準偏差']) * 10, 50)
 
     df['調教師_騎手'] = df['調教師'].astype(str) + '_' + df['騎手'].astype(str)
