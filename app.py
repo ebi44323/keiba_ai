@@ -674,7 +674,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
         show_df = show_df.rename(columns={'勝率(AI予測)': '勝率', '複勝率(AI予測)': '複勝率', '単勝オッズ': 'オッズ', '脚質カテゴリ': '脚質'})
         show_df['勝率'] = (show_df['勝率'] * 100).map('{:.1f}%'.format)
         show_df['複勝率'] = (show_df['複勝率'] * 100).map('{:.1f}%'.format)
-        st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}'}), use_container_width=True, hide_index=True)
+        st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}', 'オッズ': '{:.1f}'}), use_container_width=True, hide_index=True)
         
     with tab2:
         st.info(f"**🏇 展開予想:**\n{pace_text}")
