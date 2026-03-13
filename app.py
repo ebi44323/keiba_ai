@@ -716,9 +716,13 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
     todays_races = get_todays_races()
     if not todays_races: st.warning(f"本日 ({now.strftime('%Y/%m/%d')}) はJRAのレースが開催されていません。")
     else:
-        if action == "⏩ 次のレースを予想":
+            if action == "⏩ 次のレースを予想":
             st.subheader("🕒 まもなく出走するレース")
-            next_race = next((r for r in todays_races if r['time'] > now), None)
+            
+            # 🌟 レース一覧を発走時刻（time）順にソートしてから、未来のレースを探す
+            races_sorted_by_time = sorted(todays_races, key=lambda x: x['time'])
+            next_race = next((r for r in races_sorted_by_time if r['time'] > now), None)
+            
             if next_race:
                 mins_left = int((next_race['time'] - now).total_seconds() / 60)
                 st.info(f"👉 **{next_race['place']} {next_race['num']}R** 「{next_race['title']}」 (あと **{mins_left}** 分)")
