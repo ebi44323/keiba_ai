@@ -318,13 +318,30 @@ def get_payouts(race_id):
 
 def get_odds_from_soup(s_soup):
     o_dict = {}
+    
+    # 🌟 パターン1: オッズ専用ページ (type=b1) を直撃
+    odds_tables = s_soup.select('.Odds_Table, .nk_tb_common')
+    for tbl in odds_tables:
+        for tr in tbl.find_all('tr'):
+            umaban_td = tr.select_one('.Waku_Uma .Uma, .Uma_Num, td.Num')
+            odds_td = tr.select_one('.Odds, td.Odds, td.Txt_R')
+            if umaban_td and odds_td:
+                u_m = re.search(r'\d+', umaban_td.text)
+                o_m = re.search(r'\d{1,3}\.\d+', odds_td.text)
+                if u_m and o_m:
+                    o_dict[int(u_m.group(0))] = float(o_m.group(0))
+    if o_dict: return o_dict # オッズ専用ページから取れたら即終了
+
+    # パターン2: 出馬表や結果テーブルから (既存ロジック強化版)
     tgt_table = s_soup.select_one('.Shutuba_Table') or s_soup.select_one('.RaceTable01') or s_soup.select_one('.race_table_01') or s_soup.select_one('#All_Result_Table')
     if not tgt_table: return o_dict
+    
     u_idx, o_idx = -1, -1
     for i, th in enumerate(tgt_table.find_all('th')):
         c_txt = re.sub(r'\s+', '', th.text)
         if '馬番' in c_txt: u_idx = i
-        if '単勝' in c_txt or 'オッズ' in c_txt or '予想' in c_txt: o_idx = i
+        if '単勝' in c_txt or 'オッズ' in c_txt or '予想' in c_txt or '人気' in c_txt: o_idx = i
+        
     try:
         for tr in tgt_table.find_all('tr')[1:]:
             tds = tr.find_all('td')
@@ -333,17 +350,22 @@ def get_odds_from_soup(s_soup):
                 u_m = re.search(r'\d+', tds[u_idx].text)
                 if u_m: umaban = int(u_m.group(0))
             if umaban == -1: continue
+            
             odds_val = 0.0
             if o_idx != -1 and len(tds) > o_idx:
-                o_m = re.search(r'\d+\.\d+', tds[o_idx].text)
+                o_m = re.search(r'\d{1,3}\.\d+', tds[o_idx].text)
                 if o_m: odds_val = float(o_m.group(0))
+                
             if odds_val == 0.0:
                 for td in tds:
-                    if any(c in ['Odds', 'Popular', 'txt_r', 'Txt_R'] for c in td.get('class', [])):
-                        o_m = re.search(r'\d+\.\d+', td.text)
+                    # 予想オッズが入りやすい 'Txt_C' クラスも監視対象に追加
+                    if any(c in ['Odds', 'Popular', 'txt_r', 'Txt_R', 'Txt_C', 'txt_c'] for c in td.get('class', [])):
+                        o_m = re.search(r'\d{1,3}\.\d+', td.text)
                         if o_m: odds_val = float(o_m.group(0)); break
+                        
             if odds_val > 0.0: o_dict[umaban] = odds_val
     except: pass
+    
     return o_dict
 
 def generate_txt_report(results_list):
@@ -375,6 +397,7 @@ def run_real_prediction(race_id, race_date_str):
     html_text = ""
     
     for fetch_url in [
+        f'https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}', # 🌟 単勝・複勝オッズ専用ページを最優先で直撃
         f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}',
         f'https://race.netkeiba.com/race/result.html?race_id={race_id}',
         f'https://db.netkeiba.com/race/{race_id}/'
