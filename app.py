@@ -716,10 +716,9 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
     todays_races = get_todays_races()
     if not todays_races: st.warning(f"本日 ({now.strftime('%Y/%m/%d')}) はJRAのレースが開催されていません。")
     else:
-            if action == "⏩ 次のレースを予想":
-              st.subheader("🕒 まもなく出走するレース")
-            
-            # 🌟 レース一覧を発走時刻（time）順にソートしてから、未来のレースを探す
+        if action == "⏩ 次のレースを予想":
+            st.subheader("🕒 まもなく出走するレース")
+            # 🌟 レース一覧を発走時刻順に並べ直してから探す（中京1R問題解決）
             races_sorted_by_time = sorted(todays_races, key=lambda x: x['time'])
             next_race = next((r for r in races_sorted_by_time if r['time'] > now), None)
             
@@ -732,6 +731,7 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                         if res_df is not None: display_result(res_df, topics, reco, pace_text, conf_text)
                         else: display_error_log(err_log)
             else: st.success("🏁 本日の全レースは終了しました。")
+            
         elif action == "📜 本日の全レース予想":
             st.subheader(f"📅 本日の全レース一覧")
             if st.button("🚀 全レース一括予想", type="primary"):
@@ -748,6 +748,7 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                     my_bar.progress((i + 1) / len(todays_races))
                 if results_for_txt:
                     st.download_button("📥 予想レポートをダウンロード (.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_ebye_{now.strftime('%Y%m%d')}.txt", mime="text/plain")
+                    
         elif action == "🔍 レースを指定して予想":
             options = [f"{r['place']} {r['num']}R - {r['title']}" for r in todays_races]
             selected = st.selectbox("レースを選んでください", options)
