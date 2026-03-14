@@ -334,14 +334,14 @@ def get_payouts(race_id):
         except: pass
     return tansho_dict, fukusho_dict
 
-# --- ここから追加 ---
 def get_all_payouts(race_id):
     payouts = {'tansho': {}, 'fukusho': {}, 'umaren': {}, 'wide': {}}
     urls = [f"https://race.netkeiba.com/race/result.html?race_id={race_id}", f"https://db.netkeiba.com/race/{race_id}/"]
     for url in urls:
         try:
-            res = requests.get(url, headers=headers, timeout=10); res.encoding = 'euc-jp'
-            soup = BeautifulSoup(res.text, 'html.parser')
+            # 🌟 文字化け対策: res.content（生データ）でAIに自動判定させる
+            res = requests.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(res.content, 'html.parser')
             tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01'))
             if not tables: tables = soup.find_all('table', summary='払い戻し')
             
@@ -349,36 +349,40 @@ def get_all_payouts(race_id):
                 for tr in tbl.find_all('tr'):
                     th = tr.find('th')
                     if not th: continue
-                    kind = th.text.strip()
+                    # 空白を除去して「単勝」などを確実に見つける
+                    kind = re.sub(r'\s+', '', th.text.strip())
                     if kind not in ['単勝', '複勝', '馬連', 'ワイド']: continue
                     
                     res_td = tr.find('td', class_=re.compile(r'Result')) or (tr.find_all('td')[0] if len(tr.find_all('td'))>0 else None)
                     pay_td = tr.find('td', class_=re.compile(r'Payout')) or (tr.find_all('td')[1] if len(tr.find_all('td'))>1 else None)
                     if not res_td or not pay_td: continue
                     
-                    res_html = str(res_td).replace('<br />', '\n').replace('<br/>', '\n')
-                    r_lines = [s.strip() for s in BeautifulSoup(res_html, 'html.parser').strings if s.strip()]
-                    pay_html = str(pay_td).replace('<br />', '\n').replace('<br/>', '\n')
-                    p_lines = [s.strip() for s in BeautifulSoup(pay_html, 'html.parser').strings if s.strip() and re.sub(r'\D', '', s)]
+                    # 🌟 堅牢なテキスト抽出 (新旧デザイン両対応)
+                    res_divs = res_td.find_all('div', class_=re.compile(r'Inner_Result', re.I))
+                    pay_divs = pay_td.find_all('div', class_=re.compile(r'Inner_Payout', re.I))
                     
-                    for r_txt, p_txt in zip(r_lines, p_lines):
-                        pay = int(re.sub(r'\D', '', p_txt)) if re.sub(r'\D', '', p_txt) else 0
-                        if pay == 0: continue
+                    if res_divs and pay_divs and len(res_divs) == len(pay_divs):
+                        r_texts = [d.get_text(separator=' ') for d in res_divs]
+                        p_texts = [d.get_text(separator=' ') for d in pay_divs]
+                    else:
+                        r_html = str(res_td).replace('<br />', '<br>').replace('<br/>', '<br>')
+                        p_html = str(pay_td).replace('<br />', '<br>').replace('<br/>', '<br>')
+                        r_texts = [BeautifulSoup(x, 'html.parser').get_text(separator=' ') for x in r_html.split('<br>')]
+                        p_texts = [BeautifulSoup(x, 'html.parser').get_text(separator=' ') for x in p_html.split('<br>')]
+                    
+                    for r_txt, p_txt in zip(r_texts, p_texts):
+                        pay_match = re.sub(r'\D', '', p_txt)
+                        if not pay_match: continue
+                        pay = int(pay_match)
                         
-                        if kind in ['単勝', '複勝']:
-                            num_match = re.search(r'\d+', r_txt)
-                            if num_match:
-                                num = int(num_match.group(0))
-                                if kind == '単勝': payouts['tansho'][num] = pay
-                                if kind == '複勝': payouts['fukusho'][num] = pay
-                                
-                        elif kind in ['馬連', 'ワイド']:
-                            nums = [int(x) for x in re.findall(r'\d+', r_txt)]
-                            if len(nums) == 2:
-                                key = tuple(sorted(nums))
-                                if kind == '馬連': payouts['umaren'][key] = pay
-                                if kind == 'ワイド': payouts['wide'][key] = pay
-                                
+                        nums = [int(x) for x in re.findall(r'\d+', r_txt)]
+                        if not nums: continue
+                        
+                        if kind == '単勝': payouts['tansho'][nums[0]] = pay
+                        if kind == '複勝': payouts['fukusho'][nums[0]] = pay
+                        if kind == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
+                        if kind == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
+                        
             if payouts['tansho']: break
         except Exception as e: pass
     return payouts
@@ -837,7 +841,6 @@ elif action == "📅 今週末の全レース予想":
             if results_for_txt:
                 st.download_button(f"📥 {target_date[4:6]}/{target_date[6:]} 予想レポート(.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_weekend_{target_date}.txt", mime="text/plain")
 
-# 🌟 新規追加：1日の振り返り機能
 elif action == "📝 1日の振り返り (答え合わせ)":
     st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
     target_date = st.date_input("振り返りたい日付を選択", datetime.date.today() - datetime.timedelta(days=1))
@@ -906,6 +909,13 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                                 if ev in payouts['fukusho']:
                                     stats['ev_fuku_hits'] += 1
                                     stats['ev_fuku_return'] += payouts['fukusho'][ev]
+                    else:
+                        # 🌟 もし集計できなかった場合は理由を画面に表示する
+                        if res_df is None:
+                            st.error(f"❌ {r['place']}{r['num']}R: 予想AIの処理に失敗しました。")
+                            if err_log: st.write(err_log)
+                        elif not payouts['tansho']:
+                            st.warning(f"⚠️ {r['place']}{r['num']}R: 払い戻し情報が取得できません。")
                                     
                     time.sleep(0.5)
                     my_bar.progress((i + 1) / len(races))
