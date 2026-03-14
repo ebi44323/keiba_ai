@@ -338,7 +338,7 @@ def get_all_payouts(race_id):
     payouts = {'tansho': {}, 'fukusho': {}, 'umaren': {}, 'wide': {}}
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # 🌟 1. まずは「netkeiba」から取得を試みる
+    # 🌟 1. netkeibaから取得を試みる
     url_nk = f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
     try:
         res = requests.get(url_nk, headers=headers, timeout=10)
@@ -367,41 +367,55 @@ def get_all_payouts(race_id):
                 pay_td = tr.find('td', class_=re.compile(r'Payout', re.I)) or (tr.find_all('td')[1] if len(tr.find_all('td'))>1 else None)
                 if not res_td or not pay_td: continue
                 
-                # 🌟 全てのHTMLの区切りタグを「改行」に置換し、1行ずつ綺麗にリスト化する
-                r_html = str(res_td).replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n').replace('</div>', '\n').replace('</li>', '\n')
-                p_html = str(pay_td).replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n').replace('</div>', '\n').replace('</li>', '\n')
+                # 🌟 最強のパース処理: <li>や<div>ブロックごとにテキストを抽出
+                r_blocks = res_td.find_all('li')
+                if not r_blocks: r_blocks = res_td.find_all('div', class_=re.compile(r'Inner_Result|Result_Num', re.I))
                 
-                r_lines = [BeautifulSoup(x, 'html.parser').text.strip() for x in r_html.split('\n') if BeautifulSoup(x, 'html.parser').text.strip()]
-                p_lines = [BeautifulSoup(x, 'html.parser').text.strip() for x in p_html.split('\n') if BeautifulSoup(x, 'html.parser').text.strip()]
+                p_blocks = pay_td.find_all('li')
+                if not p_blocks: p_blocks = pay_td.find_all('div', class_=re.compile(r'Inner_Payout|Payout_Num', re.I))
                 
-                r_clean = []
+                # もしブロック単位で綺麗に分かれていたらそのまま取得、そうでなければ強引に改行置換
+                if r_blocks and p_blocks and len(r_blocks) == len(p_blocks):
+                    r_lines = [b.get_text(separator=' ', strip=True) for b in r_blocks]
+                    p_lines = [b.get_text(separator=' ', strip=True) for b in p_blocks]
+                else:
+                    r_html = str(res_td).replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+                    r_html = re.sub(r'</(div|li|p|tr|ul)>', '\n', r_html, flags=re.I)
+                    p_html = str(pay_td).replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+                    p_html = re.sub(r'</(div|li|p|tr|ul)>', '\n', p_html, flags=re.I)
+                    
+                    r_lines = [BeautifulSoup(x, 'html.parser').get_text(separator=' ', strip=True) for x in r_html.split('\n') if x.strip()]
+                    p_lines = [BeautifulSoup(x, 'html.parser').get_text(separator=' ', strip=True) for x in p_html.split('\n') if x.strip()]
+                
+                # 金額と馬番のクレンジング
+                r_clean, p_clean = [], []
                 for r in r_lines:
                     nums = [int(x) for x in re.findall(r'\d+', r)]
                     if nums: r_clean.append(nums)
                     
-                p_clean = []
                 for p in p_lines:
-                    p_str = p.replace(',', '') # 1,200円 のようなカンマを除去
+                    p_str = p.replace(',', '') # 1,200円 などのカンマを除去
                     m = re.search(r'\d+', p_str)
                     if m: p_clean.append(int(m.group(0)))
                     
                 if not r_clean or not p_clean: continue
                 
-                # 🌟 配当の横に「1番人気」などが含まれてリストの長さが2倍になった場合、配当だけを抽出する補正
+                # 🌟 人気の数字が配当側に混ざっていた場合の補正 (例: [120, 1人気, 200, 3人気])
                 if len(p_clean) > len(r_clean) and len(p_clean) % len(r_clean) == 0:
                     step = len(p_clean) // len(r_clean)
                     p_clean = p_clean[0::step]
                     
                 for nums, pay in zip(r_clean, p_clean):
-                    if kind == '単勝': payouts['tansho'][nums[0]] = pay
-                    elif kind == '複勝': payouts['fukusho'][nums[0]] = pay
+                    if kind == '単勝' and len(nums) >= 1: payouts['tansho'][nums[0]] = pay
+                    elif kind == '複勝' and len(nums) >= 1: payouts['fukusho'][nums[0]] = pay
                     elif kind == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
                     elif kind == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
                     
-        if payouts['tansho']: return payouts
+        # 正常に取得できたら即終了
+        if payouts['tansho'] and payouts['fukusho']: return payouts
     except Exception as e: pass
 
-    # 🌟 2. netkeibaがダメならYahoo競馬から取得（裏ルート）
+    # 🌟 2. netkeibaがダメならYahoo競馬から（裏ルート）
     try:
         yahoo_id = str(race_id)[2:]
         url_yh = f"https://sports.yahoo.co.jp/keiba/race/result/{yahoo_id}/"
@@ -417,18 +431,19 @@ def get_all_payouts(race_id):
             tds = tr.find_all('td')
             if len(tds) < 2: continue
             
-            r_html = str(tds[0]).replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n').replace('</div>', '\n').replace('</li>', '\n')
-            p_html = str(tds[1]).replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n').replace('</div>', '\n').replace('</li>', '\n')
+            r_html = str(tds[0]).replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+            r_html = re.sub(r'</(div|li|p|tr|ul)>', '\n', r_html, flags=re.I)
+            p_html = str(tds[1]).replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+            p_html = re.sub(r'</(div|li|p|tr|ul)>', '\n', p_html, flags=re.I)
             
-            r_lines = [BeautifulSoup(x, 'html.parser').text.strip() for x in r_html.split('\n') if BeautifulSoup(x, 'html.parser').text.strip()]
-            p_lines = [BeautifulSoup(x, 'html.parser').text.strip() for x in p_html.split('\n') if BeautifulSoup(x, 'html.parser').text.strip()]
+            r_lines = [BeautifulSoup(x, 'html.parser').get_text(separator=' ', strip=True) for x in r_html.split('\n') if x.strip()]
+            p_lines = [BeautifulSoup(x, 'html.parser').get_text(separator=' ', strip=True) for x in p_html.split('\n') if x.strip()]
             
-            r_clean = []
+            r_clean, p_clean = [], []
             for r in r_lines:
                 nums = [int(x) for x in re.findall(r'\d+', r)]
                 if nums: r_clean.append(nums)
                 
-            p_clean = []
             for p in p_lines:
                 p_str = p.replace(',', '')
                 m = re.search(r'\d+', p_str)
@@ -441,8 +456,8 @@ def get_all_payouts(race_id):
                 p_clean = p_clean[0::step]
                 
             for nums, pay in zip(r_clean, p_clean):
-                if th_text == '単勝': payouts['tansho'][nums[0]] = pay
-                elif th_text == '複勝': payouts['fukusho'][nums[0]] = pay
+                if th_text == '単勝' and len(nums) >= 1: payouts['tansho'][nums[0]] = pay
+                elif th_text == '複勝' and len(nums) >= 1: payouts['fukusho'][nums[0]] = pay
                 elif th_text == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
                 elif th_text == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
     except: pass
