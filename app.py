@@ -338,87 +338,99 @@ def get_all_payouts(race_id):
     payouts = {'tansho': {}, 'fukusho': {}, 'umaren': {}, 'wide': {}}
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # 🌟 最強の補助ツール: どんなHTMLタグも確実に「改行」に粉砕してリスト化する
+    # 🌟 どんなHTMLタグも確実に「改行」に粉砕してリスト化する最強の関数
     def parse_td(td_element):
+        if not td_element: return []
         html = str(td_element).replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
         html = re.sub(r'</?(div|li|ul|p|span|strong)[^>]*>', '\n', html, flags=re.I)
         lines = BeautifulSoup(html, 'html.parser').get_text().split('\n')
         return [line.strip() for line in lines if line.strip()]
 
-    # 1. netkeibaから取得
-    url_nk = f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
-    try:
-        res = requests.get(url_nk, headers=headers, timeout=10)
-        res.encoding = res.apparent_encoding # 文字化け防止
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01', re.I))
-        if not tables: tables = soup.find_all('table', summary='払い戻し')
-        
-        for tbl in tables:
-            for tr in tbl.find_all('tr'):
-                th = tr.find('th')
-                if not th: continue
+    # 1. netkeiba (出馬表ページ ＆ 過去データベース 両対応)
+    for url in [f"https://race.netkeiba.com/race/result.html?race_id={race_id}", f"https://db.netkeiba.com/race/{race_id}/"]:
+        try:
+            res = requests.get(url, headers=headers, timeout=10)
+            html_bytes = res.content
+            html_text = html_bytes.decode('euc-jp', errors='ignore') # netkeibaはEUC-JP固定でOK
+            soup = BeautifulSoup(html_text, 'html.parser')
+            
+            tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01', re.I))
+            if not tables: tables = soup.find_all('table', summary='払い戻し')
+            
+            for tbl in tables:
+                current_kind = None # 🌟 前の行の「券種」を記憶する変数
                 
-                th_text = re.sub(r'\s+', '', th.text)
-                th_class = " ".join(th.get('class', [])).lower()
-                
-                kind = None
-                if 'tansho' in th_class or '単勝' in th_text: kind = '単勝'
-                elif 'fukusho' in th_class or '複勝' in th_text: kind = '複勝'
-                elif 'umaren' in th_class or '馬連' in th_text: kind = '馬連'
-                elif 'wide' in th_class or 'ワイド' in th_text: kind = 'ワイド'
-                else: continue
-                
-                tds = tr.find_all('td')
-                if len(tds) < 2: continue
-                res_td = tr.find('td', class_=re.compile(r'Result', re.I)) or tds[0]
-                pay_td = tr.find('td', class_=re.compile(r'Payout', re.I)) or tds[1]
-                
-                # 🌟 タグを粉砕して綺麗なリストにする
-                r_lines = parse_td(res_td)
-                p_lines = parse_td(pay_td)
-                
-                r_clean = []
-                for r in r_lines:
-                    nums = [int(x) for x in re.findall(r'\d+', r)]
-                    if nums: r_clean.append(nums)
+                for tr in tbl.find_all('tr'):
+                    th = tr.find('th')
+                    if th:
+                        # 見出しがあれば券種を上書き
+                        th_text = re.sub(r'\s+', '', th.text)
+                        th_class = " ".join(th.get('class', [])).lower()
+                        if 'tansho' in th_class or '単勝' in th_text: current_kind = '単勝'
+                        elif 'fukusho' in th_class or '複勝' in th_text: current_kind = '複勝'
+                        elif 'umaren' in th_class or '馬連' in th_text: current_kind = '馬連'
+                        elif 'wide' in th_class or 'ワイド' in th_text: current_kind = 'ワイド'
+                        else: current_kind = None
                     
-                p_clean = []
-                for p in p_lines:
-                    if '人気' in p: continue # 人気の表記を無視
-                    val = re.sub(r'\D', '', p.replace(',', ''))
-                    if val: p_clean.append(int(val))
+                    if not current_kind: continue # 単勝・複勝・馬連・ワイド以外は無視
                     
-                if not r_clean or not p_clean: continue
-                
-                # 要素数のズレ補正 (金額の横に別要素が入っている場合の対応)
-                if len(p_clean) > len(r_clean) and len(p_clean) % len(r_clean) == 0:
-                    step = len(p_clean) // len(r_clean)
-                    p_clean = p_clean[0::step]
+                    tds = tr.find_all('td')
+                    if not tds: continue
                     
-                for nums, pay in zip(r_clean, p_clean):
-                    if kind == '単勝' and len(nums) >= 1: payouts['tansho'][nums[0]] = pay
-                    elif kind == '複勝' and len(nums) >= 1: payouts['fukusho'][nums[0]] = pay
-                    elif kind == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
-                    elif kind == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
+                    res_td = tr.find('td', class_=re.compile(r'Result', re.I))
+                    pay_td = tr.find('td', class_=re.compile(r'Payout', re.I))
                     
-        # 🌟 全テーブル(ワイド含む)を処理し終わってからreturnする
-        if payouts['tansho'] and payouts['wide']: return payouts
-    except: pass
+                    # 🌟 クラス名が無い「過去データベース版」への対応
+                    if not res_td and len(tds) >= 2:
+                        res_td = tds[0]
+                        pay_td = tds[1]
+                        
+                    if not res_td or not pay_td: continue
+                    
+                    r_lines = parse_td(res_td)
+                    p_lines = parse_td(pay_td)
+                    
+                    r_clean, p_clean = [], []
+                    for r in r_lines:
+                        nums = [int(x) for x in re.findall(r'\d+', r)]
+                        if nums: r_clean.append(nums)
+                        
+                    for p in p_lines:
+                        if '人気' in p: continue
+                        val = re.sub(r'\D', '', p.replace(',', ''))
+                        if val: p_clean.append(int(val))
+                        
+                    if not r_clean or not p_clean: continue
+                    
+                    if len(p_clean) > len(r_clean) and len(p_clean) % len(r_clean) == 0:
+                        step = len(p_clean) // len(r_clean)
+                        p_clean = p_clean[0::step]
+                        
+                    for nums, pay in zip(r_clean, p_clean):
+                        if current_kind == '単勝' and len(nums) >= 1: payouts['tansho'][nums[0]] = pay
+                        elif current_kind == '複勝' and len(nums) >= 1: payouts['fukusho'][nums[0]] = pay
+                        elif current_kind == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
+                        elif current_kind == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
 
-    # 2. Yahoo競馬から取得（裏ルート保険）
+            if payouts['tansho'] and payouts['wide']: return payouts
+        except: pass
+
+    # 2. Yahoo!競馬 (裏ルート保険版)
     try:
         yahoo_id = str(race_id)[2:]
         url_yh = f"https://sports.yahoo.co.jp/keiba/race/result/{yahoo_id}/"
         res_y = requests.get(url_yh, headers=headers, timeout=10)
         soup_y = BeautifulSoup(res_y.text, 'html.parser')
         
+        current_kind = None # 🌟 ここでも券種を記憶
         for tr in soup_y.find_all('tr'):
             th = tr.find('th')
-            if not th: continue
-            th_text = th.text.strip()
-            if th_text not in ['単勝', '複勝', '馬連', 'ワイド']: continue
+            if th:
+                th_text = th.text.strip()
+                if th_text in ['単勝', '複勝', '馬連', 'ワイド']: current_kind = th_text
+                else: current_kind = None
+            
+            if not current_kind: continue
             
             tds = tr.find_all('td')
             if len(tds) < 2: continue
@@ -426,12 +438,11 @@ def get_all_payouts(race_id):
             r_lines = parse_td(tds[0])
             p_lines = parse_td(tds[1])
             
-            r_clean = []
+            r_clean, p_clean = [], []
             for r in r_lines:
                 nums = [int(x) for x in re.findall(r'\d+', r)]
                 if nums: r_clean.append(nums)
                 
-            p_clean = []
             for p in p_lines:
                 if '人気' in p: continue
                 val = re.sub(r'\D', '', p.replace(',', ''))
@@ -444,10 +455,10 @@ def get_all_payouts(race_id):
                 p_clean = p_clean[0::step]
                 
             for nums, pay in zip(r_clean, p_clean):
-                if th_text == '単勝' and len(nums) >= 1: payouts['tansho'][nums[0]] = pay
-                elif th_text == '複勝' and len(nums) >= 1: payouts['fukusho'][nums[0]] = pay
-                elif th_text == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
-                elif th_text == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
+                if current_kind == '単勝' and len(nums) >= 1: payouts['tansho'][nums[0]] = pay
+                elif current_kind == '複勝' and len(nums) >= 1: payouts['fukusho'][nums[0]] = pay
+                elif current_kind == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
+                elif current_kind == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
     except: pass
 
     return payouts
