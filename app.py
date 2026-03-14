@@ -336,93 +336,90 @@ def get_payouts(race_id):
 
 def get_all_payouts(race_id):
     payouts = {'tansho': {}, 'fukusho': {}, 'umaren': {}, 'wide': {}}
+    headers = {"User-Agent": "Mozilla/5.0"}
     
     # 🌟 1. まずは「netkeiba」から取得を試みる
     url_nk = f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
     try:
         res = requests.get(url_nk, headers=headers, timeout=10)
-        html_bytes = res.content
+        res.encoding = res.apparent_encoding # 文字化け防止
+        soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 【最強の文字コード自動判別】生データ(Byte)から「単勝」を探して文字化けを完全封殺
-        if "単勝".encode('utf-8') in html_bytes: html_text = html_bytes.decode('utf-8', errors='ignore')
-        elif "単勝".encode('euc-jp') in html_bytes: html_text = html_bytes.decode('euc-jp', errors='ignore')
-        else: html_text = res.text
-        
-        soup = BeautifulSoup(html_text, 'html.parser')
         tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01', re.I))
+        if not tables: tables = soup.find_all('table', summary='払い戻し')
         
         for tbl in tables:
             for tr in tbl.find_all('tr'):
-                # 行のテキストから券種を判定
-                tr_text = tr.text.replace('\n', '').replace(' ', '')
-                if '単勝' in tr_text: kind = '単勝'
-                elif '複勝' in tr_text: kind = '複勝'
-                elif '馬連' in tr_text: kind = '馬連'
-                elif 'ワイド' in tr_text: kind = 'ワイド'
+                th = tr.find('th')
+                if not th: continue
+                
+                th_text = re.sub(r'\s+', '', th.text)
+                th_class = " ".join(th.get('class', [])).lower()
+                
+                kind = None
+                if 'tansho' in th_class or '単勝' in th_text: kind = '単勝'
+                elif 'fukusho' in th_class or '複勝' in th_text: kind = '複勝'
+                elif 'umaren' in th_class or '馬連' in th_text: kind = '馬連'
+                elif 'wide' in th_class or 'ワイド' in th_text: kind = 'ワイド'
                 else: continue
                 
-                res_td = tr.find('td', class_=re.compile(r'Result', re.I))
-                pay_td = tr.find('td', class_=re.compile(r'Payout', re.I))
+                res_td = tr.find('td', class_=re.compile(r'Result', re.I)) or (tr.find_all('td')[0] if len(tr.find_all('td'))>0 else None)
+                pay_td = tr.find('td', class_=re.compile(r'Payout', re.I)) or (tr.find_all('td')[1] if len(tr.find_all('td'))>1 else None)
                 if not res_td or not pay_td: continue
                 
-                # 🌟 複雑なタグ(div, li, br)をすべて「改行」に置換し、強引に平坦化する
-                r_html = str(res_td).replace('<br>', '\n').replace('<br/>', '\n').replace('</div>', '\n').replace('</li>', '\n')
-                p_html = str(pay_td).replace('<br>', '\n').replace('<br/>', '\n').replace('</div>', '\n').replace('</li>', '\n')
+                # 🌟 最強のパース: stripped_strings でHTMLタグを完全に無視して文字のリストにする
+                r_lines = list(res_td.stripped_strings)
+                p_lines = list(pay_td.stripped_strings)
                 
-                r_lines = [BeautifulSoup(x, 'html.parser').text.strip() for x in r_html.split('\n') if BeautifulSoup(x, 'html.parser').text.strip()]
-                p_lines = [BeautifulSoup(x, 'html.parser').text.strip() for x in p_html.split('\n') if BeautifulSoup(x, 'html.parser').text.strip()]
+                # 金額と馬番のクレンジング
+                r_clean, p_clean = [], []
+                for p in p_lines:
+                    val = re.sub(r'\D', '', p)
+                    if val: p_clean.append(int(val))
                 
-                for r_txt, p_txt in zip(r_lines, p_lines):
-                    pay_val = re.sub(r'\D', '', p_txt)
-                    if not pay_val: continue
-                    pay = int(pay_val)
-                    
-                    nums = [int(x) for x in re.findall(r'\d+', r_txt)]
-                    if not nums: continue
-                    
+                for r in r_lines:
+                    nums = [int(x) for x in re.findall(r'\d+', r)]
+                    if nums: r_clean.append(nums)
+                
+                # 完璧にペアリングして辞書に格納
+                for nums, pay in zip(r_clean, p_clean):
                     if kind == '単勝': payouts['tansho'][nums[0]] = pay
                     elif kind == '複勝': payouts['fukusho'][nums[0]] = pay
                     elif kind == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
                     elif kind == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
-    except: pass
+                    
+        if payouts['tansho']: return payouts
+    except Exception as e: pass
 
-    # 🌟 2. netkeibaが空っぽ(エラー)の場合、最終兵器「Yahoo!競馬」からぶっこ抜く
-    if not payouts['tansho']:
-        try:
-            # netkeibaのレースIDの先頭「20」を削ると、偶然にもYahoo競馬のIDになる
-            yahoo_id = str(race_id)[2:] 
-            url_yh = f"https://sports.yahoo.co.jp/keiba/race/result/{yahoo_id}/"
-            res_y = requests.get(url_yh, headers=headers, timeout=10)
-            soup_y = BeautifulSoup(res_y.text, 'html.parser')
+    # 🌟 2. netkeibaがダメならYahoo競馬から（裏ルート）
+    try:
+        yahoo_id = str(race_id)[2:]
+        url_yh = f"https://sports.yahoo.co.jp/keiba/race/result/{yahoo_id}/"
+        res_y = requests.get(url_yh, headers=headers, timeout=10)
+        soup_y = BeautifulSoup(res_y.text, 'html.parser')
+        
+        for tr in soup_y.find_all('tr'):
+            th = tr.find('th')
+            if not th: continue
+            th_text = th.text.strip()
+            if th_text not in ['単勝', '複勝', '馬連', 'ワイド']: continue
             
-            for tr in soup_y.find_all('tr'):
-                th = tr.find('th')
-                if not th: continue
-                th_text = th.text.strip()
-                if th_text not in ['単勝', '複勝', '馬連', 'ワイド']: continue
-                
-                tds = tr.find_all('td')
-                if len(tds) < 2: continue
-                
-                r_html = str(tds[0]).replace('<br>', '\n').replace('<br/>', '\n')
-                p_html = str(tds[1]).replace('<br>', '\n').replace('<br/>', '\n')
-                
-                r_lines = [BeautifulSoup(x, 'html.parser').text.strip() for x in r_html.split('\n') if BeautifulSoup(x, 'html.parser').text.strip()]
-                p_lines = [BeautifulSoup(x, 'html.parser').text.strip() for x in p_html.split('\n') if BeautifulSoup(x, 'html.parser').text.strip()]
-                
-                for r_txt, p_txt in zip(r_lines, p_lines):
-                    pay_val = re.sub(r'\D', '', p_txt)
-                    if not pay_val: continue
-                    pay = int(pay_val)
-                    
-                    nums = [int(x) for x in re.findall(r'\d+', r_txt)]
-                    if not nums: continue
-                    
-                    if th_text == '単勝': payouts['tansho'][nums[0]] = pay
-                    elif th_text == '複勝': payouts['fukusho'][nums[0]] = pay
-                    elif th_text == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
-                    elif th_text == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
-        except: pass
+            tds = tr.find_all('td')
+            if len(tds) < 2: continue
+            
+            r_lines = list(tds[0].stripped_strings)
+            p_lines = list(tds[1].stripped_strings)
+            
+            r_clean = [[int(x) for x in re.findall(r'\d+', r)] for r in r_lines if re.findall(r'\d+', r)]
+            p_clean = [int(re.sub(r'\D', '', p)) for p in p_lines if re.sub(r'\D', '', p)]
+            
+            for nums, pay in zip(r_clean, p_clean):
+                if not nums: continue
+                if th_text == '単勝': payouts['tansho'][nums[0]] = pay
+                elif th_text == '複勝': payouts['fukusho'][nums[0]] = pay
+                elif th_text == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
+                elif th_text == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
+    except: pass
 
     return payouts
 
