@@ -334,6 +334,55 @@ def get_payouts(race_id):
         except: pass
     return tansho_dict, fukusho_dict
 
+# --- ここから追加 ---
+def get_all_payouts(race_id):
+    payouts = {'tansho': {}, 'fukusho': {}, 'umaren': {}, 'wide': {}}
+    urls = [f"https://race.netkeiba.com/race/result.html?race_id={race_id}", f"https://db.netkeiba.com/race/{race_id}/"]
+    for url in urls:
+        try:
+            res = requests.get(url, headers=headers, timeout=10); res.encoding = 'euc-jp'
+            soup = BeautifulSoup(res.text, 'html.parser')
+            tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01'))
+            if not tables: tables = soup.find_all('table', summary='払い戻し')
+            
+            for tbl in tables:
+                for tr in tbl.find_all('tr'):
+                    th = tr.find('th')
+                    if not th: continue
+                    kind = th.text.strip()
+                    if kind not in ['単勝', '複勝', '馬連', 'ワイド']: continue
+                    
+                    res_td = tr.find('td', class_=re.compile(r'Result')) or (tr.find_all('td')[0] if len(tr.find_all('td'))>0 else None)
+                    pay_td = tr.find('td', class_=re.compile(r'Payout')) or (tr.find_all('td')[1] if len(tr.find_all('td'))>1 else None)
+                    if not res_td or not pay_td: continue
+                    
+                    res_html = str(res_td).replace('<br />', '\n').replace('<br/>', '\n')
+                    r_lines = [s.strip() for s in BeautifulSoup(res_html, 'html.parser').strings if s.strip()]
+                    pay_html = str(pay_td).replace('<br />', '\n').replace('<br/>', '\n')
+                    p_lines = [s.strip() for s in BeautifulSoup(pay_html, 'html.parser').strings if s.strip() and re.sub(r'\D', '', s)]
+                    
+                    for r_txt, p_txt in zip(r_lines, p_lines):
+                        pay = int(re.sub(r'\D', '', p_txt)) if re.sub(r'\D', '', p_txt) else 0
+                        if pay == 0: continue
+                        
+                        if kind in ['単勝', '複勝']:
+                            num_match = re.search(r'\d+', r_txt)
+                            if num_match:
+                                num = int(num_match.group(0))
+                                if kind == '単勝': payouts['tansho'][num] = pay
+                                if kind == '複勝': payouts['fukusho'][num] = pay
+                                
+                        elif kind in ['馬連', 'ワイド']:
+                            nums = [int(x) for x in re.findall(r'\d+', r_txt)]
+                            if len(nums) == 2:
+                                key = tuple(sorted(nums))
+                                if kind == '馬連': payouts['umaren'][key] = pay
+                                if kind == 'ワイド': payouts['wide'][key] = pay
+                                
+            if payouts['tansho']: break
+        except Exception as e: pass
+    return payouts
+
 def get_odds_from_soup(s_soup):
     o_dict = {}
     tgt_table = s_soup.select_one('.Shutuba_Table') or s_soup.select_one('.RaceTable01') or s_soup.select_one('.race_table_01') or s_soup.select_one('#All_Result_Table')
@@ -660,14 +709,18 @@ def run_real_prediction(race_id, race_date_str):
 # ==========================================
 # 4. メインUI構成
 # ==========================================
+# ==========================================
+# 4. メインUI構成
+# ==========================================
 st.sidebar.markdown("## 🕹️ keiba-ebye メニュー")
 action = st.sidebar.radio("機能を選択", [
     "⏩ 次のレースを予想", 
     "📜 本日の全レース予想", 
     "📅 今週末の全レース予想", 
     "🔍 レースを指定して予想", 
+    "📝 1日の振り返り (答え合わせ)", # 🌟 ここに新メニュー追加
     "🧪 性能試験 (バックテスト)",
-    "📈 AIの調子 (直近1ヶ月の回収率)" # 🌟 ここを変更
+    "📈 AIの調子 (直近1ヶ月の回収率)" 
 ])
 
 tokyo_tz = pytz.timezone('Asia/Tokyo')
@@ -682,7 +735,6 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
     tab1, tab2, tab3 = st.tabs(["📊 予想一覧", "💡 展開・買い目", "🔍 性能詳細"])
     
     with tab1:
-        # 🌟 自信度をトップに表示
         if "鉄板" in confidence_text: st.success(confidence_text)
         elif "波乱" in confidence_text: st.error(confidence_text)
         else: st.info(confidence_text)
@@ -718,7 +770,6 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
     else:
         if action == "⏩ 次のレースを予想":
             st.subheader("🕒 まもなく出走するレース")
-            # 🌟 レース一覧を発走時刻順に並べ直してから探す（中京1R問題解決）
             races_sorted_by_time = sorted(todays_races, key=lambda x: x['time'])
             next_race = next((r for r in races_sorted_by_time if r['time'] > now), None)
             
@@ -786,6 +837,113 @@ elif action == "📅 今週末の全レース予想":
             if results_for_txt:
                 st.download_button(f"📥 {target_date[4:6]}/{target_date[6:]} 予想レポート(.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_weekend_{target_date}.txt", mime="text/plain")
 
+# 🌟 新規追加：1日の振り返り機能
+elif action == "📝 1日の振り返り (答え合わせ)":
+    st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
+    target_date = st.date_input("振り返りたい日付を選択", datetime.date.today() - datetime.timedelta(days=1))
+    
+    if st.button("🚀 振り返り実行！", type="primary"):
+        with st.spinner(f'{target_date.strftime("%Y/%m/%d")} のレースデータと結果を取得・集計中...'):
+            races = get_todays_races(target_date.strftime('%Y%m%d'))
+            if not races:
+                st.error("指定した日付のレースが見つかりません。")
+            else:
+                my_bar = st.progress(0, text="集計中...")
+                
+                stats = {
+                    'honmei_races': 0, 'honmei_tan_hits': 0, 'honmei_tan_return': 0, 'honmei_fuku_hits': 0, 'honmei_fuku_return': 0,
+                    'umaren_races': 0, 'umaren_invest': 0, 'umaren_hits': 0, 'umaren_return': 0,
+                    'wide_ana_races': 0, 'wide_ana_invest': 0, 'wide_ana_hits': 0, 'wide_ana_return': 0,
+                    'ev_invest': 0, 'ev_tan_hits': 0, 'ev_tan_return': 0, 'ev_fuku_hits': 0, 'ev_fuku_return': 0
+                }
+                
+                for i, r in enumerate(races):
+                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'))
+                    payouts = get_all_payouts(r['id'])
+                    
+                    if res_df is not None and payouts['tansho']:
+                        honmei = res_df.iloc[0]['馬番']
+                        
+                        # 1. 本命成績
+                        stats['honmei_races'] += 1
+                        if honmei in payouts['tansho']:
+                            stats['honmei_tan_hits'] += 1
+                            stats['honmei_tan_return'] += payouts['tansho'][honmei]
+                        if honmei in payouts['fukusho']:
+                            stats['honmei_fuku_hits'] += 1
+                            stats['honmei_fuku_return'] += payouts['fukusho'][honmei]
+                            
+                        # 2. 馬連（1位から2〜5位へ4点流し）
+                        if len(res_df) >= 5:
+                            himo_list = res_df.iloc[1:5]['馬番'].tolist()
+                            stats['umaren_races'] += 1
+                            stats['umaren_invest'] += len(himo_list) * 100
+                            for himo in himo_list:
+                                key = tuple(sorted([honmei, himo]))
+                                if key in payouts['umaren']:
+                                    stats['umaren_hits'] += 1
+                                    stats['umaren_return'] += payouts['umaren'][key]
+                                    
+                        # 3. 穴馬ワイド（1位から、5位以下で期待値1.5以上の穴馬へ流し）
+                        ana_list = res_df[(res_df.index >= 4) & (res_df['期待値'] >= 1.5)]['馬番'].tolist()
+                        if ana_list:
+                            stats['wide_ana_races'] += 1
+                            stats['wide_ana_invest'] += len(ana_list) * 100
+                            for ana in ana_list:
+                                key = tuple(sorted([honmei, ana]))
+                                if key in payouts['wide']:
+                                    stats['wide_ana_hits'] += 1
+                                    stats['wide_ana_return'] += payouts['wide'][key]
+                                    
+                        # 4. 上位5頭の期待値1.5以上ベタ買い
+                        ev_list = res_df[(res_df.index < 5) & (res_df['期待値'] >= 1.5)]['馬番'].tolist()
+                        if ev_list:
+                            stats['ev_invest'] += len(ev_list) * 100
+                            for ev in ev_list:
+                                if ev in payouts['tansho']:
+                                    stats['ev_tan_hits'] += 1
+                                    stats['ev_tan_return'] += payouts['tansho'][ev]
+                                if ev in payouts['fukusho']:
+                                    stats['ev_fuku_hits'] += 1
+                                    stats['ev_fuku_return'] += payouts['fukusho'][ev]
+                                    
+                    time.sleep(0.5)
+                    my_bar.progress((i + 1) / len(races))
+                
+                st.markdown("---")
+                st.markdown(f"### 🏆 {target_date.strftime('%Y/%m/%d')} レース振り返りレポート")
+                st.markdown(f"**対象レース数: {stats['honmei_races']} レース**")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.success("🎯 【本命(◎) 単勝・複勝成績】")
+                    tan_rate = (stats['honmei_tan_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
+                    fuku_rate = (stats['honmei_fuku_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
+                    tan_hit_rate = (stats['honmei_tan_hits'] / stats['honmei_races'] * 100) if stats['honmei_races'] > 0 else 0
+                    fuku_hit_rate = (stats['honmei_fuku_hits'] / stats['honmei_races'] * 100) if stats['honmei_races'] > 0 else 0
+                    
+                    st.write(f"- **単勝 的中率**: {tan_hit_rate:.1f}% ({stats['honmei_tan_hits']}R)")
+                    st.write(f"- **単勝 回収率**: **{tan_rate:.1f}%**")
+                    st.write(f"- **複勝 的中率**: {fuku_hit_rate:.1f}% ({stats['honmei_fuku_hits']}R)")
+                    st.write(f"- **複勝 回収率**: **{fuku_rate:.1f}%**")
+                    
+                with col2:
+                    st.info("🔗 【馬券シミュレーション】")
+                    uma_rate = (stats['umaren_return'] / stats['umaren_invest'] * 100) if stats['umaren_invest'] > 0 else 0
+                    st.write(f"- **馬連流し (◎ → 2〜5番手へ4点)**")
+                    st.write(f"  投資: ¥{stats['umaren_invest']:,} / 回収率: **{uma_rate:.1f}%** (的中 {stats['umaren_hits']}R)")
+                    
+                    wide_rate = (stats['wide_ana_return'] / stats['wide_ana_invest'] * 100) if stats['wide_ana_invest'] > 0 else 0
+                    st.write(f"- **穴馬ワイド (◎ → 期待値特大の穴馬へ)**")
+                    st.write(f"  該当: {stats['wide_ana_races']}R / 回収率: **{wide_rate:.1f}%** (的中 {stats['wide_ana_hits']}回)")
+                    
+                st.warning("🔥 【上位5頭内 期待値1.5以上馬 ベタ買い】")
+                ev_tan_rate = (stats['ev_tan_return'] / stats['ev_invest'] * 100) if stats['ev_invest'] > 0 else 0
+                ev_fuku_rate = (stats['ev_fuku_return'] / stats['ev_invest'] * 100) if stats['ev_invest'] > 0 else 0
+                st.write(f"- 該当数: {int(stats['ev_invest']/100)} 頭")
+                st.write(f"- **単勝 回収率**: **{ev_tan_rate:.1f}%** (的中 {stats['ev_tan_hits']}頭)")
+                st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
+
 elif action == "🧪 性能試験 (バックテスト)":
     test_date = st.date_input("テストする日付を選択", datetime.date.today() - datetime.timedelta(days=3))
     if st.button("🔥 バックテスト実行！", type="primary"):
@@ -820,7 +978,6 @@ elif action == "🧪 性能試験 (バックテスト)":
                 if results_for_txt:
                     st.download_button("📥 結果をダウンロード (.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.txt", mime="text/plain")
 
-# 🌟 AUC評価タブを「直近の回収率」タブに変更
 elif action == "📈 AIの調子 (直近1ヶ月の回収率)":
     st.markdown("### 🏆 現在のAIの調子（過去30日間の検証結果）")
     st.metric(label="📊 本命ベタ買い 単勝回収率", value=f"{recent_return_rate:.1f}%")
