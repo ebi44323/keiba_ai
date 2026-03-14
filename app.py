@@ -339,36 +339,46 @@ def get_all_payouts(race_id):
     urls = [f"https://race.netkeiba.com/race/result.html?race_id={race_id}", f"https://db.netkeiba.com/race/{race_id}/"]
     for url in urls:
         try:
-            # 🌟 文字化け対策: res.content（生データ）でAIに自動判定させる
             res = requests.get(url, headers=headers, timeout=10)
-            soup = BeautifulSoup(res.content, 'html.parser')
-            tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01'))
+            # 🌟 強制的にエンコーディングを自動推定させ、文字化けを極限まで減らす
+            res.encoding = res.apparent_encoding 
+            soup = BeautifulSoup(res.text, 'html.parser')
+            
+            tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01', re.I))
             if not tables: tables = soup.find_all('table', summary='払い戻し')
             
             for tbl in tables:
                 for tr in tbl.find_all('tr'):
                     th = tr.find('th')
                     if not th: continue
-                    # 空白を除去して「単勝」などを確実に見つける
-                    kind = re.sub(r'\s+', '', th.text.strip())
-                    if kind not in ['単勝', '複勝', '馬連', 'ワイド']: continue
                     
-                    res_td = tr.find('td', class_=re.compile(r'Result')) or (tr.find_all('td')[0] if len(tr.find_all('td'))>0 else None)
-                    pay_td = tr.find('td', class_=re.compile(r'Payout')) or (tr.find_all('td')[1] if len(tr.find_all('td'))>1 else None)
+                    # 🌟 必殺技: 日本語の文字化けを無視し、HTMLの「クラス名(Tansho等)」で直接判定する！
+                    th_class = " ".join(th.get('class', [])).lower()
+                    th_text = re.sub(r'\s+', '', th.text)
+                    
+                    kind = None
+                    if 'tansho' in th_class or '単勝' in th_text: kind = '単勝'
+                    elif 'fukusho' in th_class or '複勝' in th_text: kind = '複勝'
+                    elif 'umaren' in th_class or '馬連' in th_text: kind = '馬連'
+                    elif 'wide' in th_class or 'ワイド' in th_text: kind = 'ワイド'
+                    
+                    if not kind: continue
+                    
+                    res_td = tr.find('td', class_=re.compile(r'Result', re.I)) or (tr.find_all('td')[0] if len(tr.find_all('td'))>0 else None)
+                    pay_td = tr.find('td', class_=re.compile(r'Payout', re.I)) or (tr.find_all('td')[1] if len(tr.find_all('td'))>1 else None)
                     if not res_td or not pay_td: continue
                     
-                    # 🌟 堅牢なテキスト抽出 (新旧デザイン両対応)
-                    res_divs = res_td.find_all('div', class_=re.compile(r'Inner_Result', re.I))
-                    pay_divs = pay_td.find_all('div', class_=re.compile(r'Inner_Payout', re.I))
+                    r_lis = res_td.find_all('li')
+                    p_lis = pay_td.find_all('li')
                     
-                    if res_divs and pay_divs and len(res_divs) == len(pay_divs):
-                        r_texts = [d.get_text(separator=' ') for d in res_divs]
-                        p_texts = [d.get_text(separator=' ') for d in pay_divs]
+                    if r_lis and p_lis and len(r_lis) == len(p_lis):
+                        r_texts = [li.text for li in r_lis]
+                        p_texts = [li.text for li in p_lis]
                     else:
                         r_html = str(res_td).replace('<br />', '<br>').replace('<br/>', '<br>')
                         p_html = str(pay_td).replace('<br />', '<br>').replace('<br/>', '<br>')
-                        r_texts = [BeautifulSoup(x, 'html.parser').get_text(separator=' ') for x in r_html.split('<br>')]
-                        p_texts = [BeautifulSoup(x, 'html.parser').get_text(separator=' ') for x in p_html.split('<br>')]
+                        r_texts = [BeautifulSoup(x, 'html.parser').text for x in r_html.split('<br>')]
+                        p_texts = [BeautifulSoup(x, 'html.parser').text for x in p_html.split('<br>')]
                     
                     for r_txt, p_txt in zip(r_texts, p_texts):
                         pay_match = re.sub(r'\D', '', p_txt)
