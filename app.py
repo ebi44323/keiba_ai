@@ -1165,7 +1165,7 @@ elif action == "🐴 愛馬の成長記録":
     st.subheader("🐴 愛馬のAI能力評価・成長記録")
     st.markdown("出資馬や推し馬の名前を入力すると、過去のレースにおけるAI指標（スピード指数など）の推移をグラフ化します。")
     
-    horse_name = st.text_input("🔍 馬名を入力してください (例: イクイノックス, アーモンドアイ)")
+    horse_name = st.text_input("🔍 馬名を入力してください (例: イクイノックス, コスモフリーゲンなど)")
     
     if st.button("成長記録を表示", type="primary") and horse_name:
         with st.spinner(f"過去の全レースデータベースから {horse_name} のデータを検索中..."):
@@ -1181,7 +1181,7 @@ elif action == "🐴 愛馬の成長記録":
                     df_horse = df_hist[df_hist['馬名'] == horse_name].copy()
                     
                     if df_horse.empty:
-                        st.warning(f"データベースに「{horse_name}」の過去レース記録が見つかりませんでした。（地方競馬のみ、または古すぎる可能性があります）")
+                        st.warning(f"データベースに「{horse_name}」の過去レース記録が見つかりませんでした。")
                     else:
                         # 日付でソート
                         if '日付' in df_horse.columns:
@@ -1190,50 +1190,60 @@ elif action == "🐴 愛馬の成長記録":
                         
                         st.success(f"✅ {len(df_horse)}戦分のデータが見つかりました！")
                         
-                        # グラフ化する指標を数値化して用意
-                        cols_to_plot = []
-                                                
-                        # 🌟 データベース内の「能力」を示す最強の列を活用！
-                        if '補正タイム偏差' in df_horse.columns:
-                            df_horse['能力指数(補正タイム偏差)'] = pd.to_numeric(df_horse['補正タイム偏差'], errors='coerce')
-                            cols_to_plot.append('能力指数(補正タイム偏差)')
-                            
-                        if '上り偏差' in df_horse.columns:
-                            df_horse['末脚の鋭さ(上り偏差)'] = pd.to_numeric(df_horse['上り偏差'], errors='coerce')
-                            cols_to_plot.append('末脚の鋭さ(上り偏差)')
+                        # 🌟 列名の揺れを吸収 (当日馬体重 or 馬体重、 上り or 上がり3F)
+                        weight_col = '当日馬体重' if '当日馬体重' in df_horse.columns else '馬体重' if '馬体重' in df_horse.columns else None
+                        agari_col = '上り' if '上り' in df_horse.columns else '上がり3F' if '上がり3F' in df_horse.columns else None
                         
-                        # その他の指標を数値化
-                        for col in ['着順', '人気', '単勝']:
-                            if col in df_horse.columns:
+                        # 数値化処理
+                        numeric_cols = ['補正タイム偏差', '上り偏差', '着順', '人気', '単勝', weight_col, agari_col]
+                        for col in numeric_cols:
+                            if col and col in df_horse.columns:
                                 df_horse[col] = pd.to_numeric(df_horse[col], errors='coerce')
                         
-                        if not cols_to_plot:
-                            st.error("グラフ化可能な数値データが見つかりませんでした。")
-                            with st.expander("🔍 データベースに存在する列名一覧"):
-                                st.write(df_horse.columns.tolist())
-                        else:
-                            # x軸を日付にしてグラフ描画
-                            chart_df = df_horse.set_index('日付')[cols_to_plot]
+                        chart_df = df_horse.set_index('日付')
+                        
+                        st.markdown(f"### 📈 {horse_name} の能力・実績推移")
+                        st.info("💡 **なぜ名馬なのに指数が下がるの？**\nイクイノックスのような超一流馬は、レース途中で「もう勝てる」と判断して手綱を緩めたり（持ったままゴール）、スローペースからの瞬発力勝負になったりすると、全力のタイムが出ないため「補正タイム偏差（全体時計の評価）」が下がることがあります。そのため、上がり3Fの絶対タイムや通過順位と合わせて評価するのがプロの分析です。")
+                        
+                        # 🌟 グラフのスケール違い問題を解決するため、タブで分割！
+                        tab1, tab2, tab3, tab4 = st.tabs(["🚀 能力偏差", "💨 上がり3F(絶対値)", "⚖️ 馬体重推移", "👑 着順・人気"])
+                        
+                        with tab1:
+                            st.markdown("※ 上に行くほど優秀なパフォーマンスです。")
+                            plot_cols = [c for c in ['補正タイム偏差', '上り偏差'] if c in chart_df.columns]
+                            if plot_cols: st.line_chart(chart_df[plot_cols])
+                            else: st.write("データがありません")
                             
-                            st.markdown(f"### 📈 {horse_name} の能力推移グラフ")
-                            st.markdown("※ グラフが上にいくほど、他馬と比べてパフォーマンスが高かった（優秀だった）ことを示します。")
-                            st.line_chart(chart_df)
+                        with tab2:
+                            st.markdown("※ **タイムが低い（グラフが下に行く）ほど鋭い末脚**を使っています。")
+                            if agari_col and agari_col in chart_df.columns: st.line_chart(chart_df[[agari_col]])
+                            else: st.write("データがありません")
                             
-                            # 詳細データテーブル
-                            st.markdown("#### 📜 過去のレース詳細データ")
-                            # 存在する列だけをピックアップ
-                            display_cols = ['日付', 'レース名', '着順', '人気', '単勝', '斤量', '騎手', '能力指数(補正タイム偏差)', '末脚の鋭さ(上り偏差)']
+                        with tab3:
+                            st.markdown("※ 馬体の成長や、長距離輸送での馬体減などが分かります。")
+                            if weight_col and weight_col in chart_df.columns: st.line_chart(chart_df[[weight_col]])
+                            else: st.write("データがありません")
                             
-                            # 単勝をオッズとして分かりやすくリネーム
-                            if '単勝' in df_horse.columns:
-                                df_horse = df_horse.rename(columns={'単勝': '単勝オッズ'})
-                                display_cols[display_cols.index('単勝')] = '単勝オッズ'
-                                
-                            show_cols = [c for c in display_cols if c in df_horse.columns]
+                        with tab4:
+                            st.markdown("※ **数字が低い（グラフが下に行く）ほど上位**です。")
+                            rank_cols = [c for c in ['着順', '人気'] if c in chart_df.columns]
+                            if rank_cols: st.line_chart(chart_df[rank_cols])
+                            else: st.write("データがありません")
+                        
+                        # 詳細データテーブル
+                        st.markdown("#### 📜 過去のレース詳細データ")
+                        display_cols = ['日付', 'レース名', '着順', '人気', '単勝', weight_col, '騎手', '通過', agari_col, '補正タイム偏差', '上り偏差']
+                        
+                        # オッズ表示を分かりやすくリネーム
+                        if '単勝' in df_horse.columns:
+                            df_horse = df_horse.rename(columns={'単勝': '単勝オッズ'})
+                            display_cols[display_cols.index('単勝')] = '単勝オッズ'
                             
-                            # 表示用に日付を文字列に戻す
-                            df_horse['日付'] = df_horse['日付'].dt.strftime('%Y/%m/%d')
-                            st.dataframe(df_horse[show_cols].reset_index(drop=True), use_container_width=True)
+                        show_cols = [c for c in display_cols if c and c in df_horse.columns]
+                        
+                        show_df = df_horse.copy()
+                        show_df['日付'] = show_df['日付'].dt.strftime('%Y/%m/%d')
+                        st.dataframe(show_df[show_cols].reset_index(drop=True), use_container_width=True)
                             
             except Exception as e:
                 st.error(f"データの読み込み中にエラーが発生しました: {e}")
