@@ -1192,32 +1192,43 @@ elif action == "🐴 愛馬の成長記録":
                         
                         # グラフ化する指標を数値化して用意
                         cols_to_plot = []
+                                                
+                        # 🌟 データベース内の「能力」を示す最強の列を活用！
+                        if '補正タイム偏差' in df_horse.columns:
+                            df_horse['能力指数(補正タイム偏差)'] = pd.to_numeric(df_horse['補正タイム偏差'], errors='coerce')
+                            cols_to_plot.append('能力指数(補正タイム偏差)')
+                            
+                        if '上り偏差' in df_horse.columns:
+                            df_horse['末脚の鋭さ(上り偏差)'] = pd.to_numeric(df_horse['上り偏差'], errors='coerce')
+                            cols_to_plot.append('末脚の鋭さ(上り偏差)')
                         
-                        # 🌟 過去データ用の生の列名に変更
-                        if 'スピード指数' in df_horse.columns:
-                            df_horse['スピード指数'] = pd.to_numeric(df_horse['スピード指数'], errors='coerce')
-                            cols_to_plot.append('スピード指数')
-                        
-                        # その他の指標があれば追加
-                        for col in ['上がり3F', '着順', '賞金']:
+                        # その他の指標を数値化
+                        for col in ['着順', '人気', '単勝']:
                             if col in df_horse.columns:
                                 df_horse[col] = pd.to_numeric(df_horse[col], errors='coerce')
                         
                         if not cols_to_plot:
-                            st.error("グラフ化可能な数値データ（スピード指数等）が見つかりませんでした。")
-                            with st.expander("🔍 データベースに存在する列名一覧（ここを開いて確認してください）"):
+                            st.error("グラフ化可能な数値データが見つかりませんでした。")
+                            with st.expander("🔍 データベースに存在する列名一覧"):
                                 st.write(df_horse.columns.tolist())
                         else:
                             # x軸を日付にしてグラフ描画
                             chart_df = df_horse.set_index('日付')[cols_to_plot]
                             
                             st.markdown(f"### 📈 {horse_name} の能力推移グラフ")
+                            st.markdown("※ グラフが上にいくほど、他馬と比べてパフォーマンスが高かった（優秀だった）ことを示します。")
                             st.line_chart(chart_df)
                             
                             # 詳細データテーブル
                             st.markdown("#### 📜 過去のレース詳細データ")
-                            # 表示したい列をピックアップ
-                            display_cols = ['日付', 'レース名', '着順', '斤量', '騎手', 'オッズ', 'スピード指数', '上がり3F']
+                            # 存在する列だけをピックアップ
+                            display_cols = ['日付', 'レース名', '着順', '人気', '単勝', '斤量', '騎手', '能力指数(補正タイム偏差)', '末脚の鋭さ(上り偏差)']
+                            
+                            # 単勝をオッズとして分かりやすくリネーム
+                            if '単勝' in df_horse.columns:
+                                df_horse = df_horse.rename(columns={'単勝': '単勝オッズ'})
+                                display_cols[display_cols.index('単勝')] = '単勝オッズ'
+                                
                             show_cols = [c for c in display_cols if c in df_horse.columns]
                             
                             # 表示用に日付を文字列に戻す
