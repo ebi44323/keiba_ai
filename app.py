@@ -1195,30 +1195,38 @@ elif action == "🐴 愛馬の成長記録":
                         agari_col = '上り' if '上り' in df_horse.columns else '上がり3F' if '上がり3F' in df_horse.columns else None
                         
                         # 数値化処理
-                        numeric_cols = ['補正タイム偏差', 'タイム差', '着順', '人気', '単勝', weight_col, agari_col]
+                        numeric_cols = ['補正タイム偏差', '上り偏差', 'タイム差', '着順', '人気', '単勝', weight_col, agari_col]
                         for col in numeric_cols:
                             if col and col in df_horse.columns:
                                 df_horse[col] = pd.to_numeric(df_horse[col], errors='coerce')
                         
+                        # 🌟 独自指標（AIタイム指数）の生成！ebiさんのアイデアを採用！
+                        if '補正タイム偏差' in df_horse.columns:
+                            # 偏差（マイナスほど速い）を、50基準の指数（大きいほど強い）に大改造！
+                            df_horse['タイム指数(AI換算)'] = 50 - (df_horse['補正タイム偏差'] * 10)
+                        if '上り偏差' in df_horse.columns:
+                            df_horse['上がり指数(AI換算)'] = 50 - (df_horse['上り偏差'] * 10)
+                            
                         chart_df = df_horse.set_index('日付')
                         
                         st.markdown(f"### 📈 {horse_name} の能力・実績推移")
-                        st.info("💡 **能力指標（補正タイム偏差）について**\nこのデータベースの『補正タイム偏差』は「50」基準ではなく、「0.0」を中心とした標準スコア（Zスコア）等で計算されています。基本的には**数値が高い（グラフが上に行く）ほど優秀なパフォーマンス**です。\nただし、超一流馬は道中でスローペースに付き合ったり、最後手綱を緩めてゴールしたりすると全体時計が遅くなり、この指数が低く出ることがあります。\n\n💡 **勝ったレースの「タイム差」が0.0になる理由**\nデータの『タイム差』は「1着馬から何秒遅れたか」で計算されています。そのため、自分が1着のレースは常に「0.0秒（遅れなし）」となり、2着馬を何秒突き放したかは表現されない仕様となっています。")
+                        st.info("💡 **【大進化】AI専用「タイム指数」を実装！**\nデータベースの「補正タイム偏差」は、実はタイムの速さを表すZスコア（マイナスになるほど速い）でした。これを一般的な競馬のスピード指数と同じように**「50を平均とし、数字が大きいほど強い（速い）」**という『タイム指数』に変換しました！\nこれで名馬が成長していく『右肩上がりの軌跡』がハッキリと可視化されます！")
                         
                         import altair as alt
                         
-                        tab1, tab2, tab3, tab4 = st.tabs(["🚀 能力偏差", "💨 上がり3F & タイム差", "⚖️ 馬体重推移", "👑 着順・人気"])
+                        tab1, tab2, tab3, tab4 = st.tabs(["🚀 AIタイム指数(総合力)", "💨 上がり3F & タイム差", "⚖️ 馬体重推移", "👑 着順・人気"])
                         
                         with tab1:
-                            st.markdown("※ **「0.0」を基準** とした相対評価です。グラフが **上に行くほど優秀** です。")
-                            if '補正タイム偏差' in chart_df.columns:
-                                st.line_chart(chart_df[['補正タイム偏差']])
+                            st.markdown("※ **「50」が平均クラス** です。グラフが **上に行く（60、70と増える）ほど優秀** なパフォーマンスを示します。")
+                            idx_cols = [c for c in ['タイム指数(AI換算)', '上がり指数(AI換算)'] if c in chart_df.columns]
+                            if idx_cols:
+                                st.line_chart(chart_df[idx_cols])
                             else: st.write("データがありません")
                             
                         with tab2:
-                            st.markdown("※ スケールが異なるため上下に分割しています。どちらも **グラフが上に行く（タイムが短い/差が0.0に近い）ほど優秀** です。")
+                            st.markdown("※ どちらも **グラフが上に行く（タイムが短い / 差が0.0に近い）ほど優秀** です。\n※ タイム差は「1着馬から何秒遅れたか」のため、1着で勝利したレースは常に一番上の「0.0」になります。")
                             
-                            # 上がり3Fのグラフ（Y軸反転）
+                            # 上がり3Fのグラフ（Y軸反転のみを正しく適用して1周回るのを防止）
                             if agari_col and agari_col in chart_df.columns:
                                 agari_data = chart_df[[agari_col]].dropna().reset_index()
                                 if not agari_data.empty:
@@ -1226,19 +1234,19 @@ elif action == "🐴 愛馬の成長記録":
                                     max_a = agari_data[agari_col].max() + 0.5
                                     c1 = alt.Chart(agari_data).mark_line(point=True, color='#FFA500').encode(
                                         x=alt.X('日付:T', title=''),
-                                        y=alt.Y(f'{agari_col}:Q', scale=alt.Scale(reverse=True, domain=[max_a, min_a]), title=f'{agari_col} (秒)'),
+                                        y=alt.Y(f'{agari_col}:Q', scale=alt.Scale(domain=[min_a, max_a], reverse=True), title=f'{agari_col} (秒)'),
                                         tooltip=['日付:T', f'{agari_col}:Q']
                                     ).interactive()
                                     st.altair_chart(c1, use_container_width=True)
                             
-                            # タイム差のグラフ（Y軸反転、1着なら一番上の0.0になる）
+                            # タイム差のグラフ
                             if 'タイム差' in chart_df.columns:
                                 td_data = chart_df[['タイム差']].dropna().reset_index()
                                 if not td_data.empty:
                                     max_t = td_data['タイム差'].max() + 0.2
                                     c2 = alt.Chart(td_data).mark_line(point=True, color='#FF4B4B').encode(
                                         x=alt.X('日付:T', title='日付'),
-                                        y=alt.Y('タイム差:Q', scale=alt.Scale(reverse=True, domain=[max_t, 0]), title='タイム差 (秒)'),
+                                        y=alt.Y('タイム差:Q', scale=alt.Scale(domain=[0, max_t], reverse=True), title='タイム差 (秒)'),
                                         tooltip=['日付:T', 'タイム差:Q']
                                     ).interactive()
                                     st.altair_chart(c2, use_container_width=True)
@@ -1260,7 +1268,7 @@ elif action == "🐴 愛馬の成長記録":
                             else: st.write("データがありません")
                             
                         with tab4:
-                            st.markdown("※ グラフが **上に行くほど上位（1着/1番人気）** を示します。")
+                            st.markdown("※ グラフが **上に行くほど上位（1着 / 1番人気）** を示します。")
                             rank_cols = [c for c in ['着順', '人気'] if c in chart_df.columns]
                             if rank_cols:
                                 rank_data = chart_df[rank_cols].dropna().reset_index()
@@ -1268,11 +1276,10 @@ elif action == "🐴 愛馬の成長記録":
                                     max_val = rank_data[rank_cols].max().max()
                                     max_scale = max(18, max_val + 1)
                                     
-                                    # Altairを使って1位が一番上になるようにY軸を反転、不要な0を排除
                                     melted = rank_data.melt('日付', value_vars=rank_cols, var_name='項目', value_name='順位')
                                     c4 = alt.Chart(melted).mark_line(point=True).encode(
                                         x=alt.X('日付:T', title='日付'),
-                                        y=alt.Y('順位:Q', scale=alt.Scale(reverse=True, domain=[max_scale, 1]), title='順位'),
+                                        y=alt.Y('順位:Q', scale=alt.Scale(domain=[1, max_scale], reverse=True), title='順位'),
                                         color='項目:N',
                                         tooltip=['日付:T', '項目:N', '順位:Q']
                                     ).interactive()
@@ -1280,20 +1287,25 @@ elif action == "🐴 愛馬の成長記録":
                                 else: st.write("有効な着順・人気データがありません")
                             else: st.write("データがありません")
                         
-                        # 詳細データテーブル
                         st.markdown("#### 📜 過去のレース詳細データ")
-                        display_cols = ['日付', 'レース名', '着順', '人気', '単勝', weight_col, '騎手', '通過', agari_col, '補正タイム偏差', 'タイム差']
+                        display_cols = ['日付', 'レース名', '着順', '人気', '単勝', weight_col, '騎手', '通過', agari_col, 'タイム指数(AI換算)', '上がり指数(AI換算)', 'タイム差']
                         
-                        # オッズ表示を分かりやすくリネーム
                         if '単勝' in df_horse.columns:
                             df_horse = df_horse.rename(columns={'単勝': '単勝オッズ'})
-                            display_cols[display_cols.index('単勝')] = '単勝オッズ'
+                            if '単勝' in display_cols:
+                                display_cols[display_cols.index('単勝')] = '単勝オッズ'
                             
                         show_cols = [c for c in display_cols if c and c in df_horse.columns]
                         
                         show_df = df_horse.copy()
                         show_df['日付'] = show_df['日付'].dt.strftime('%Y/%m/%d')
-                        st.dataframe(show_df[show_cols].reset_index(drop=True), use_container_width=True)
+                        
+                        # 🌟 指数を小数第1位まで綺麗にフォーマット
+                        format_dict = {}
+                        if 'タイム指数(AI換算)' in show_df.columns: format_dict['タイム指数(AI換算)'] = '{:.1f}'
+                        if '上がり指数(AI換算)' in show_df.columns: format_dict['上がり指数(AI換算)'] = '{:.1f}'
+                        
+                        st.dataframe(show_df[show_cols].reset_index(drop=True).style.format(format_dict), use_container_width=True)
                             
             except Exception as e:
                 st.error(f"データの読み込み中にエラーが発生しました: {e}")
