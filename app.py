@@ -1202,7 +1202,6 @@ elif action == "🐴 愛馬の成長記録":
                         for col in ['上がり3F', '着順', '賞金']:
                             if col in df_horse.columns:
                                 df_horse[col] = pd.to_numeric(df_horse[col], errors='coerce')
-                                # 着順だけは別グラフにした方が綺麗ですが、一旦一緒に表示できるようにします
                         
                         if not cols_to_plot:
                             st.error("グラフ化可能な数値データ（スピード指数等）が見つかりませんでした。")
@@ -1224,3 +1223,6 @@ elif action == "🐴 愛馬の成長記録":
                             # 表示用に日付を文字列に戻す
                             df_horse['日付'] = df_horse['日付'].dt.strftime('%Y/%m/%d')
                             st.dataframe(df_horse[show_cols].reset_index(drop=True), use_container_width=True)
+                            
+            except Exception as e:
+                st.error(f"データの読み込み中にエラーが発生しました: {e}")
