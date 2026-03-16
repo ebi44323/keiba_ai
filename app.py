@@ -1077,7 +1077,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
 
 # 🌟 新機能: 長期成績のグラフ表示メニュー
-elif action == "📈 AIの調子 (直近1ヶ月の回収率)" or action == "📈 長期成績分析": 
+elif action == "📈 AIの調子 (直近1ヶ月の回収率)" or action == "📈 長期成績分析 (AIの成長記録)": 
     st.subheader("📈 AIの長期成績分析 (日々の成長記録)")
     csv_file = "ai_daily_history.csv"
     if not os.path.exists(csv_file):
@@ -1089,16 +1089,18 @@ elif action == "📈 AIの調子 (直近1ヶ月の回収率)" or action == "📈
         for col in ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']:
             if col not in history_df.columns: history_df[col] = 0.0
             
-        # 🌟 日付をインデックスに設定（時刻が表示されるのを防ぎ、X軸をスッキリさせる）
+        # 🌟 日付をインデックスに設定
         history_df = history_df.set_index('日付')
         
-        st.markdown("日々の振り返りを実行すると、ここに自動で成績がセーブされていきます。")
-        st.dataframe(history_df.style.format({
-            '本命単勝回収率': '{:.1f}%', '本命複勝回収率': '{:.1f}%', '穴馬単勝回収率': '{:.1f}%', '穴馬複勝回収率': '{:.1f}%'
-        }), use_container_width=True)
+        # 🌟 ここがポイント！CSVに過去の不要な列が残っていても、この4つだけを強制抽出する
+        display_cols = ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']
+        show_df = history_df[display_cols].copy()
         
-        # 🌟 4項目のグラフを表示
-        st.line_chart(history_df[['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']])
+        st.markdown("日々の振り返りを実行すると、ここに自動で成績がセーブされていきます。")
+        st.dataframe(show_df.style.format('{:.1f}%'), use_container_width=True)
+        
+        # 🌟 グラフにも抽出した4項目だけを渡す
+        st.line_chart(show_df)
 
 elif action == "🧪 性能試験 (バックテスト)":
     test_date = st.date_input("テストする日付を選択", datetime.date.today() - datetime.timedelta(days=3))
