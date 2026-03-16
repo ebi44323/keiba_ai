@@ -116,12 +116,6 @@ def prepare_model_and_data():
     df['前走_最終コーナー'] = pd.to_numeric(df['前走_通過'].fillna('').astype(str).apply(lambda x: str(x).split('-')[-1] if '-' in str(x) else (str(x) if str(x).isdigit() else np.nan)), errors='coerce')
     df['2走前_最終コーナー'] = pd.to_numeric(df['2走前_通過'].fillna('').astype(str).apply(lambda x: str(x).split('-')[-1] if '-' in str(x) else (str(x) if str(x).isdigit() else np.nan)), errors='coerce')
     
-    def classify_style(pos):
-        if pd.isna(pos): return '不明'
-        if pos <= 2.5: return '逃げ'
-        elif pos <= 5.5: return '先行'
-        elif pos <= 9.5: return '差し'
-        else: return '追込'
     df['脚質カテゴリ'] = df['前走_最終コーナー'].apply(classify_style)
 
     df['前走逃げフラグ'] = (df['前走_最終コーナー'] <= 2).astype(int)
@@ -157,14 +151,6 @@ def prepare_model_and_data():
     df_valid = df.dropna(subset=['着順', '単勝']).copy()
     df_valid['馬券内'] = (df_valid['着順'] <= 3).astype(int)
 
-    num_features = [
-        '枠番', '馬番', '年齢', '馬体重_num', '距離', '斤量', '休養日数', 
-        '前走_着順', '2走前_着順', '3走前_着順', '過去3走平均着順', 
-        '前走_スピード指数', '2走前_スピード指数', '3走前_スピード指数', '過去3走平均スピード指数',
-        '近5走_中央値スピード指数', '近5走_最高スピード指数', '上昇度_スピード指数',
-        '出走頭数', '位置取りショック', '同レース逃げ馬頭数', '同レース先行馬頭数', 'コース適性_着順パーセント' 
-    ]
-    cat_features = ['競馬場', '馬場', '芝/ダート', '性別', '脚質カテゴリ', '父', '父系', '母', '母系', '母父', '母父系', '騎手', '調教師', '調教師_騎手'] 
 
     cat_categories_dict = {}
     for col in cat_features:
@@ -187,7 +173,6 @@ def prepare_model_and_data():
 
     te_dicts = {}
     global_mean = train_df['馬券内'].mean()
-    te_cols = ['騎手', '調教師', '父', '調教師_騎手']
     for col in te_cols:
         te_dicts[col] = train_df.groupby(col)['馬券内'].mean().to_dict()
         train_df[f'{col}_TE'] = train_df[col].map(te_dicts[col]).fillna(global_mean)
@@ -705,12 +690,6 @@ def run_real_prediction(race_id, race_date_str):
         df_test['前走_通過'] = df_test['最新_通過'] if '最新_通過' in df_test.columns else np.nan
         df_test['前走_最終コーナー'] = pd.to_numeric(df_test['前走_通過'].fillna('').astype(str).apply(lambda x: str(x).split('-')[-1] if '-' in str(x) else (str(x) if str(x).isdigit() else np.nan)), errors='coerce')
         
-        def classify_style(pos):
-            if pd.isna(pos): return '不明'
-            if pos <= 2.5: return '逃げ'
-            elif pos <= 5.5: return '先行'
-            elif pos <= 9.5: return '差し'
-            else: return '追込'
         df_test['脚質カテゴリ'] = df_test['前走_最終コーナー'].apply(classify_style)
         
         df_test['前走逃げフラグ'] = (df_test['前走_最終コーナー'] <= 2).astype(int)
@@ -752,6 +731,38 @@ def run_real_prediction(race_id, race_date_str):
 
         marks = ['◎', '〇', '▲', '△', '☆'] + [''] * (len(df_test) - 5)
         df_test['印'] = marks[:len(df_test)]
+        # ========================================================
+        # 🌟 ここからSHAP値（AI推し理由）の抽出！追加ライブラリ不要の裏ワザ！
+        # ========================================================
+        try:
+            # 現在のコードが「model」か「modelsのリスト（アンサンブル）」かを自動判定
+            target_model = models[0] if 'models' in locals() and isinstance(models, list) else model
+            target_features = features if 'features' in locals() else X_test.columns
+            
+            # ◎本命馬（1番目にソートされた馬）のデータを取得
+            best_horse_name = df_test.iloc[0]['馬名']
+            
+            # pred_contrib=True で各特徴量の「予測への貢献度」を算出
+            # ※元のデータフレームから本命馬の1行だけを抜き出して推論
+            X_best = df_test.iloc[[0]][target_features]
+            shap_contribs = target_model.predict(X_best, pred_contrib=True)
+            
+            # 最後の列はベーススコアなので除外
+            best_contrib = shap_contribs[0, :-1] 
+            
+            # 貢献度トップ3の特徴量インデックスを取得
+            top3_indices = np.argsort(best_contrib)[::-1][:3]
+            reasons = [target_features[i] for i in top3_indices]
+            
+            shap_text = f"\n\n🤖 **AIの推し理由 (SHAP分析)**\n◎ **{best_horse_name}** が本命の最大の理由は、**「{reasons[0]}」「{reasons[1]}」「{reasons[2]}」** が他馬より圧倒的に高く評価されたからです！"
+            
+            # 買い目テキスト(reco)に追加
+            if 'reco' in locals():
+                reco += shap_text
+        except Exception as e:
+            # 万が一エラーが起きてもアプリを止めずに通常の買い目だけを表示する
+            print(f"SHAP抽出エラー: {e}")
+        # ========================================================
 
         p1, p2 = df_test.loc[0, '勝率(AI予測)'], df_test.loc[1, '勝率(AI予測)']
         score_diff = p1 - p2
