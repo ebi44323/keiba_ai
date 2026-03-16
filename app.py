@@ -1192,16 +1192,22 @@ elif action == "🐴 愛馬の成長記録":
                         
                         # グラフ化する指標を数値化して用意
                         cols_to_plot = []
-                        if '近5走_中央値スピード指数' in df_horse.columns:
-                            df_horse['本来の能力(スピード指数)'] = pd.to_numeric(df_horse['近5走_中央値スピード指数'], errors='coerce')
-                            cols_to_plot.append('本来の能力(スピード指数)')
                         
-                        if '上昇度_スピード指数' in df_horse.columns:
-                            df_horse['成長度(上昇度)'] = pd.to_numeric(df_horse['上昇度_スピード指数'], errors='coerce')
-                            cols_to_plot.append('成長度(上昇度)')
-                            
+                        # 🌟 過去データ用の生の列名に変更
+                        if 'スピード指数' in df_horse.columns:
+                            df_horse['スピード指数'] = pd.to_numeric(df_horse['スピード指数'], errors='coerce')
+                            cols_to_plot.append('スピード指数')
+                        
+                        # その他の指標があれば追加
+                        for col in ['上がり3F', '着順', '賞金']:
+                            if col in df_horse.columns:
+                                df_horse[col] = pd.to_numeric(df_horse[col], errors='coerce')
+                                # 着順だけは別グラフにした方が綺麗ですが、一旦一緒に表示できるようにします
+                        
                         if not cols_to_plot:
                             st.error("グラフ化可能な数値データ（スピード指数等）が見つかりませんでした。")
+                            with st.expander("🔍 データベースに存在する列名一覧（ここを開いて確認してください）"):
+                                st.write(df_horse.columns.tolist())
                         else:
                             # x軸を日付にしてグラフ描画
                             chart_df = df_horse.set_index('日付')[cols_to_plot]
@@ -1211,13 +1217,10 @@ elif action == "🐴 愛馬の成長記録":
                             
                             # 詳細データテーブル
                             st.markdown("#### 📜 過去のレース詳細データ")
-                            # 表示したい列をピックアップ（存在するものだけ）
-                            display_cols = ['日付', 'レース名', '着順', '斤量', '騎手', 'オッズ'] + cols_to_plot
+                            # 表示したい列をピックアップ
+                            display_cols = ['日付', 'レース名', '着順', '斤量', '騎手', 'オッズ', 'スピード指数', '上がり3F']
                             show_cols = [c for c in display_cols if c in df_horse.columns]
                             
                             # 表示用に日付を文字列に戻す
                             df_horse['日付'] = df_horse['日付'].dt.strftime('%Y/%m/%d')
                             st.dataframe(df_horse[show_cols].reset_index(drop=True), use_container_width=True)
-                            
-            except Exception as e:
-                st.error(f"データの読み込み中にエラーが発生しました: {e}")
