@@ -1077,7 +1077,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
 
 # 🌟 新機能: 長期成績のグラフ表示メニュー
-elif action == "📈 AIの調子 (直近1ヶ月の回収率)" or action == "📈 長期成績分析 (AIの成長記録)": 
+elif action == "📈 AIの調子 (直近1ヶ月の回収率)" or action == "📈 長期成績分析": 
     st.subheader("📈 AIの長期成績分析 (日々の成長記録)")
     csv_file = "ai_daily_history.csv"
     if not os.path.exists(csv_file):
