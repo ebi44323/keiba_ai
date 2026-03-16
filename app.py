@@ -11,6 +11,7 @@ import datetime
 import pytz
 import traceback
 import time
+from features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
@@ -788,8 +789,6 @@ def run_real_prediction(race_id, race_date_str):
         if has_unraced:
             confidence_text = f"🛑 【見送り推奨・未出走混在】 過去データのない馬が含まれており、AIの予測精度が担保できません。"
             reco = f"⚠️ **購入見送り** (データ不足によるリスク大)\n※観戦に留めるか、どうしても買う場合は◎ {top1_umaban}番 の単複を少額で。"
-            # 実戦での事故を防ぐため、期待値を強制リセット（資金配分をすべて『見送り(0円)』にするストッパー）
-            df_test['期待値'] = 0.0
             
         elif p1 >= 0.25 and score_diff >= 0.10:
             confidence_text = f"💎 【鉄板レース】 ◎が抜けた存在({p1*100:.1f}%)！ 軸は不動です。"
@@ -847,6 +846,8 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
         
         # 🌟 新機能: 資金配分（ケリー基準）による推奨ベット額計算
         def calc_kelly_bet(row):
+            # 🌟 追加：テキストに「見送り」が含まれていれば、期待値が高くても強制ストップ！
+            if "見送り" in confidence_text: return 0
             if row['期待値'] < 1.0: return 0
             p = row['勝率']
             b = row['オッズ'] - 1.0
@@ -1137,6 +1138,9 @@ elif action == "📈 AIの調子 (直近1ヶ月の回収率)" or action == "📈
         # 🌟 グラフにも抽出した4項目だけを渡す
         st.line_chart(show_df)
 
+# ==========================================
+# 🌟 性能試験 (バックテスト) 機能
+# ==========================================
 elif action == "🧪 性能試験 (バックテスト)":
     test_date = st.date_input("テストする日付を選択", datetime.date.today() - datetime.timedelta(days=3))
     if st.button("🔥 バックテスト実行！", type="primary"):
@@ -1147,20 +1151,54 @@ elif action == "🧪 性能試験 (バックテスト)":
                 my_bar = st.progress(0, text="集計中...")
                 total_invest, total_return_t, total_return_f, ev_hits = 0, 0, 0, 0
                 results_for_txt = []
+                
+                # 🌟 【追加】条件別分析のためのデータ保管庫
+                analysis_records = []
+
                 for i, r in enumerate(test_races):
                     with st.expander(f"🏁 {r['place']} {r['num']}R"):
                         res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d'))
                         t_dict, f_dict = get_payouts(r['id'])
+                        
                         if res_df is not None and t_dict:
                             display_result(res_df, topics, reco, pace_text, conf_text)
                             results_for_txt.append({'date': test_date.strftime('%Y年%m月%d日'), 'place': place, 'num': r['num'], 'track': track_type, 'dist': dist, 'pace': pace_text, 'confidence': conf_text, 'df': res_df, 'topics': topics, 'reco': reco})
+                            
+                            # 距離をカテゴリに変換
+                            try:
+                                d = int(dist)
+                                if d <= 1400: d_cat = "短距離 (〜1400m)"
+                                elif d <= 1600: d_cat = "マイル (1600m)"
+                                elif d <= 2200: d_cat = "中距離 (1800〜2200m)"
+                                else: d_cat = "長距離 (2400m〜)"
+                            except:
+                                d_cat = "不明"
+
+                            # 期待値1.5以上の上位5頭に100円ずつベットしたと仮定
                             for _, horse in res_df[(res_df.index < 5) & (res_df['期待値'] >= 1.5)].iterrows():
-                                total_invest += 100
-                                if horse['馬番'] in t_dict: total_return_t += t_dict[horse['馬番']]
-                                if horse['馬番'] in f_dict: total_return_f += f_dict[horse['馬番']]; ev_hits += 1
+                                invest = 100
+                                total_invest += invest
+                                
+                                ret_t = t_dict[horse['馬番']] if horse['馬番'] in t_dict else 0
+                                ret_f = f_dict[horse['馬番']] if horse['馬番'] in f_dict else 0
+                                
+                                total_return_t += ret_t
+                                total_return_f += ret_f
+                                if ret_f > 0: ev_hits += 1
+                                
+                                # 🌟 【追加】1ベットごとの成績を記録
+                                analysis_records.append({
+                                    '競馬場': place,
+                                    '芝/ダート': track_type,
+                                    '距離帯': d_cat,
+                                    '投資額': invest,
+                                    '単勝回収': ret_t,
+                                    '複勝回収': ret_f
+                                })
                         else: display_error_log(err_log)
                     time.sleep(1.0)
                     my_bar.progress((i + 1) / len(test_races))
+                
                 st.markdown("---")
                 st.markdown("### 🏆 バックテスト 集計レポート")
                 if total_invest > 0:
@@ -1168,6 +1206,53 @@ elif action == "🧪 性能試験 (バックテスト)":
                     c1.metric("総投資額", f"¥{total_invest:,}")
                     c2.metric("単勝 回収率", f"{(total_return_t / total_invest * 100):.1f}%", f"¥{total_return_t:,}")
                     c3.metric("複勝 回収率", f"{(total_return_f / total_invest * 100):.1f}%", f"的中 {ev_hits}回")
+                    
+                    # ==========================================
+                    # 🌟 【新機能】条件別パフォーマンス分析
+                    # ==========================================
+                    if analysis_records:
+                        st.markdown("---")
+                        st.markdown("### 📊 AIの得意条件分析 (セグメント別回収率)")
+                        st.info("💡 回収率が100%を超えている得意な条件（競馬場・距離など）を見つけ出し、実際の馬券購入時にその条件だけを狙い撃ちすることで、全体の収支を劇的に向上させることができます。")
+                        
+                        df_ana = pd.DataFrame(analysis_records)
+                        
+                        # 集計用の共通関数
+                        def make_summary(df, group_col):
+                            res = df.groupby(group_col).agg(
+                                対象馬=('投資額', 'count'),
+                                投資額=('投資額', 'sum'),
+                                単勝回収=('単勝回収', 'sum'),
+                                複勝回収=('複勝回収', 'sum')
+                            )
+                            res['単勝回収率(%)'] = (res['単勝回収'] / res['投資額']) * 100
+                            res['複勝回収率(%)'] = (res['複勝回収'] / res['投資額']) * 100
+                            return res[['対象馬', '投資額', '単勝回収率(%)', '複勝回収率(%)']]
+
+                        # 条件ごとにタブで分けて表示
+                        tab_track, tab_place, tab_dist = st.tabs(["⛰️ 芝 / ダート", "🏟️ 競馬場", "📏 距離帯"])
+                        
+                        # 色付け用の関数（回収率100%超えをハイライト）
+                        def highlight_100(val):
+                            if isinstance(val, (int, float)) and val >= 100:
+                                return 'color: #FF4B4B; font-weight: bold; background-color: rgba(255, 75, 75, 0.1);'
+                            return ''
+
+                        with tab_track:
+                            df_track = make_summary(df_ana, '芝/ダート')
+                            st.dataframe(df_track.style.format({'単勝回収率(%)': '{:.1f}%', '複勝回収率(%)': '{:.1f}%'}).applymap(highlight_100, subset=['単勝回収率(%)', '複勝回収率(%)']), use_container_width=True)
+                            
+                        with tab_place:
+                            df_place = make_summary(df_ana, '競馬場')
+                            st.dataframe(df_place.style.format({'単勝回収率(%)': '{:.1f}%', '複勝回収率(%)': '{:.1f}%'}).applymap(highlight_100, subset=['単勝回収率(%)', '複勝回収率(%)']), use_container_width=True)
+                            
+                        with tab_dist:
+                            df_dist = make_summary(df_ana, '距離帯')
+                            # 距離順に並べ替え
+                            sort_order = ["短距離 (〜1400m)", "マイル (1600m)", "中距離 (1800〜2200m)", "長距離 (2400m〜)", "不明"]
+                            df_dist = df_dist.reindex([x for x in sort_order if x in df_dist.index])
+                            st.dataframe(df_dist.style.format({'単勝回収率(%)': '{:.1f}%', '複勝回収率(%)': '{:.1f}%'}).applymap(highlight_100, subset=['単勝回収率(%)', '複勝回収率(%)']), use_container_width=True)
+
                 if results_for_txt:
                     st.download_button("📥 結果をダウンロード (.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.txt", mime="text/plain")
 
