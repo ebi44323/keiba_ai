@@ -1027,7 +1027,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 shiba_rate = (stats['shiba_return'] / (stats['shiba_races'] * 100) * 100) if stats['shiba_races'] > 0 else 0
                 dart_rate = (stats['dart_return'] / (stats['dart_races'] * 100) * 100) if stats['dart_races'] > 0 else 0
 
-　　　　　　　　　# 🌟 新機能: CSVへ自動セーブ
+                # 🌟 新機能: CSVへ自動セーブ
                 csv_file = "ai_daily_history.csv"
                 daily_data = pd.DataFrame([{
                     '日付': target_date.strftime('%Y/%m/%d'),
