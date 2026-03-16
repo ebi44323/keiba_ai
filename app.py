@@ -760,16 +760,27 @@ def run_real_prediction(race_id, race_date_str):
         himo_umabans = df_test.loc[1:4, '馬番'].astype(str).tolist() if len(df_test) >= 5 else df_test.loc[1:, '馬番'].astype(str).tolist()
         himo_str = "・".join(himo_umabans)
         
+        # 🌟 新機能：未出走馬が含まれる危険なレースか判定
+        has_unraced = ('新馬' in race_text) or ('未出走' in race_text) or df_test['前走_着順'].isna().any()
+
         ana_horse_nums = []
         topics_list = []
         for rank, row in df_test.iterrows():
-            if rank >= 4 and row['期待値'] >= 1.5:
+            # 危険レースの場合は穴馬トピックも封印する
+            if not has_unraced and rank >= 4 and row['期待値'] >= 1.5:
                 topics_list.append(f"📌 {row['馬名']} (期待値特大の穴馬！)")
                 if f"{row['馬番']}番" not in ana_horse_nums: ana_horse_nums.append(f"{row['馬番']}番")
 
         ana_str = "・".join(str(n) for n in ana_horse_nums[:3]) if ana_horse_nums else ""
 
-        if p1 >= 0.25 and score_diff >= 0.10:
+        # 🌟 危険レースは見送りアラートを出し、資金配分（ケリー基準）を強制ストップする
+        if has_unraced:
+            confidence_text = f"🛑 【見送り推奨・未出走混在】 過去データのない馬が含まれており、AIの予測精度が担保できません。"
+            reco = f"⚠️ **購入見送り** (データ不足によるリスク大)\n※観戦に留めるか、どうしても買う場合は◎ {top1_umaban}番 の単複を少額で。"
+            # 実戦での事故を防ぐため、期待値を強制リセット（資金配分をすべて『見送り(0円)』にするストッパー）
+            df_test['期待値'] = 0.0
+            
+        elif p1 >= 0.25 and score_diff >= 0.10:
             confidence_text = f"💎 【鉄板レース】 ◎が抜けた存在({p1*100:.1f}%)！ 軸は不動です。"
             reco = f"🎯 【本命・単勝勝負】 ◎ {top1_umaban}番 の単勝。\n  🔗 馬単・3連単: {top1_umaban}着固定 → 相手: {himo_str}"
             if ana_str: reco += f"\n  💣 余裕があれば穴馬({ana_str}番)へのヒモ流しも推奨。"
