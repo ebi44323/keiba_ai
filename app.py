@@ -799,7 +799,7 @@ action = st.sidebar.radio("機能を選択", [
     "🔍 レースを指定して予想", 
     "📝 1日の振り返り (答え合わせ)", # 🌟 ここに新メニュー追加
     "🧪 性能試験 (バックテスト)",
-    "📈 AIの調子 (直近1ヶ月の回収率)" 
+    "📈 長期成績分析" 
 ])
 
 tokyo_tz = pytz.timezone('Asia/Tokyo')
@@ -1027,20 +1027,27 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 shiba_rate = (stats['shiba_return'] / (stats['shiba_races'] * 100) * 100) if stats['shiba_races'] > 0 else 0
                 dart_rate = (stats['dart_return'] / (stats['dart_races'] * 100) * 100) if stats['dart_races'] > 0 else 0
 
-                # 🌟 新機能: CSVへ自動セーブ
+　　　　　　　　　# 🌟 新機能: CSVへ自動セーブ
                 csv_file = "ai_daily_history.csv"
                 daily_data = pd.DataFrame([{
                     '日付': target_date.strftime('%Y/%m/%d'),
                     '本命単勝回収率': round(tan_rate, 1),
-                    '穴馬ワイド回収率': round(wide_rate, 1),
-                    'EV馬単勝回収率': round(ev_tan_rate, 1)
+                    '本命複勝回収率': round(fuku_rate, 1),
+                    '穴馬単勝回収率': round(ev_tan_rate, 1),
+                    '穴馬複勝回収率': round(ev_fuku_rate, 1)
                 }])
                 if os.path.exists(csv_file):
                     existing_df = pd.read_csv(csv_file)
+                    # 以前のデータ（列名が違う場合）との互換性を保つ処理
+                    for col in ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']:
+                        if col not in existing_df.columns:
+                            existing_df[col] = 0.0
+                            
                     existing_df = existing_df[existing_df['日付'] != target_date.strftime('%Y/%m/%d')] # 重複回避
                     updated_df = pd.concat([existing_df, daily_data])
                     updated_df.to_csv(csv_file, index=False)
-                else: daily_data.to_csv(csv_file, index=False)
+                else: 
+                    daily_data.to_csv(csv_file, index=False)
 
                 st.markdown("---")
                 st.markdown(f"### 🏆 {target_date.strftime('%Y/%m/%d')} レース振り返りレポート")
@@ -1070,22 +1077,28 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
 
 # 🌟 新機能: 長期成績のグラフ表示メニュー
-elif action == "📈 AIの調子 (直近1ヶ月の回収率)" or action == "📈 長期成績分析 (AIの成長記録)": # サイドバーの名前変更に対応
+elif action == "📈 AIの調子 (直近1ヶ月の回収率)" or action == "📈 長期成績分析 (AIの成長記録)": 
     st.subheader("📈 AIの長期成績分析 (日々の成長記録)")
     csv_file = "ai_daily_history.csv"
     if not os.path.exists(csv_file):
         st.warning("まだデータがありません。サイドメニューの「1日の振り返り」を実行してデータを蓄積してください！")
     else:
         history_df = pd.read_csv(csv_file)
-        history_df['日付'] = pd.to_datetime(history_df['日付'])
-        history_df = history_df.sort_values('日付')
+        
+        # 不足している列があれば0で埋める（エラー防止）
+        for col in ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']:
+            if col not in history_df.columns: history_df[col] = 0.0
+            
+        # 🌟 日付をインデックスに設定（時刻が表示されるのを防ぎ、X軸をスッキリさせる）
+        history_df = history_df.set_index('日付')
         
         st.markdown("日々の振り返りを実行すると、ここに自動で成績がセーブされていきます。")
         st.dataframe(history_df.style.format({
-            '本命単勝回収率': '{:.1f}%', '穴馬ワイド回収率': '{:.1f}%', 'EV馬単勝回収率': '{:.1f}%'
-        }), use_container_width=True, hide_index=True)
+            '本命単勝回収率': '{:.1f}%', '本命複勝回収率': '{:.1f}%', '穴馬単勝回収率': '{:.1f}%', '穴馬複勝回収率': '{:.1f}%'
+        }), use_container_width=True)
         
-        st.line_chart(history_df.set_index('日付')[['本命単勝回収率', '穴馬ワイド回収率', 'EV馬単勝回収率']])
+        # 🌟 4項目のグラフを表示
+        st.line_chart(history_df[['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']])
 
 elif action == "🧪 性能試験 (バックテスト)":
     test_date = st.date_input("テストする日付を選択", datetime.date.today() - datetime.timedelta(days=3))
