@@ -13,6 +13,7 @@ import time
 import json
 import joblib
 import logging
+import random
 
 # ── features_engine から共通定義をインポート ──────────────────────────────
 from features_engine import (
@@ -231,7 +232,21 @@ with st.spinner('keiba-ebye フルパワーAIエンジンを起動・学習中..
      ped_dict, known_jockeys, known_trainers,
      te_dicts, global_mean, recent_return_rate) = prepare_model_and_data()
 
-headers = {"User-Agent": "Mozilla/5.0"}
+import random
+
+_UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+]
+
+def get_headers():
+    return {"User-Agent": random.choice(_UA_LIST)}
+
+# 後方互換のために残す (api_headers などで直接使っている箇所用)
+headers = get_headers()
 
 # ==========================================
 # 2. スクレイピング ＆ アナリティクス関数群
@@ -248,7 +263,7 @@ def get_todays_races(date_str=None):
     ]
     for url in urls_to_try:
         try:
-            res = requests.get(url, headers=headers, timeout=10)
+            res = requests.get(url, headers=get_headers(), timeout=10)
             soup = BeautifulSoup(res.content, 'html.parser')
             for a_tag in soup.find_all('a', href=re.compile(r'race_id=(\d{12})')):
                 r_id = re.search(r'race_id=(\d{12})', a_tag.get('href')).group(1)
@@ -276,7 +291,7 @@ def get_todays_races(date_str=None):
     if not races:
         url = f'https://db.netkeiba.com/race/list/{target_date_str}/'
         try:
-            res = requests.get(url, headers=headers, timeout=10)
+            res = requests.get(url, headers=get_headers(), timeout=10)
             soup = BeautifulSoup(res.content, 'html.parser')
             ids = set(re.findall(r'/race/(\d{12})', res.text))
             for r_id in ids:
@@ -301,7 +316,7 @@ def get_payouts(race_id):
     urls = [f"https://race.netkeiba.com/race/result.html?race_id={race_id}", f"https://db.netkeiba.com/race/{race_id}/"]
     for url in urls:
         try:
-            res = requests.get(url, headers=headers, timeout=10); res.encoding = 'euc-jp'
+            res = requests.get(url, headers=get_headers(), timeout=10); res.encoding = 'euc-jp'
             soup = BeautifulSoup(res.text, 'html.parser')
             tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01'))
             if not tables: tables = soup.find_all('table', summary='払い戻し')
@@ -336,7 +351,7 @@ def get_all_payouts(race_id):
 
     for url in [f"https://race.netkeiba.com/race/result.html?race_id={race_id}", f"https://db.netkeiba.com/race/{race_id}/"]:
         try:
-            res = requests.get(url, headers=headers, timeout=10)
+            res = requests.get(url, headers=get_headers(), timeout=10)
             html_text = res.content.decode('euc-jp', errors='ignore')
             soup = BeautifulSoup(html_text, 'html.parser')
             tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01', re.I))
@@ -384,7 +399,7 @@ def get_all_payouts(race_id):
     try:
         yahoo_id = str(race_id)[2:]
         url_yh = f"https://sports.yahoo.co.jp/keiba/race/result/{yahoo_id}/"
-        res_y = requests.get(url_yh, headers=headers, timeout=10)
+        res_y = requests.get(url_yh, headers=get_headers(), timeout=10)
         soup_y = BeautifulSoup(res_y.text, 'html.parser')
         current_kind = None
         for tr in soup_y.find_all('tr'):
@@ -453,7 +468,7 @@ def run_real_prediction(race_id, race_date_str):
             "Referer": f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}",
             "X-Requested-With": "XMLHttpRequest"
         }
-        r_api = requests.get(odds_api_url, headers=api_headers, timeout=5)
+        r_api = requests.get(odds_api_url, headers=headers, timeout=5)
         api_data = json.loads(r_api.text)
         if 'data' in api_data and 'odds' in api_data['data'] and '1' in api_data['data']['odds']:
             for uma_num, odds_list in api_data['data']['odds']['1'].items():
@@ -467,7 +482,7 @@ def run_real_prediction(race_id, race_date_str):
         try:
             yahoo_race_id = str(race_id)[2:]
             yahoo_url = f"https://sports.yahoo.co.jp/keiba/race/odds/tfw/{yahoo_race_id}/"
-            r_yahoo = requests.get(yahoo_url, headers=headers, timeout=5)
+            r_yahoo = requests.get(yahoo_url, headers=get_headers(), timeout=5)
             soup_y = BeautifulSoup(r_yahoo.text, 'html.parser')
             for tr in soup_y.find_all('tr'):
                 tds = tr.find_all('td')
@@ -489,7 +504,7 @@ def run_real_prediction(race_id, race_date_str):
         f'https://db.netkeiba.com/race/{race_id}/'
     ]:
         try:
-            r = requests.get(fetch_url, headers=headers, timeout=10); r.encoding = 'euc-jp'
+            r = requests.get(fetch_url, headers=get_headers(), timeout=10); r.encoding = 'euc-jp'
             soup = BeautifulSoup(r.text, 'html.parser')
             if soup.select_one('.Shutuba_Table') or soup.select_one('.RaceTable01') or soup.select_one('.race_table_01') or soup.select_one('#All_Result_Table'):
                 html_text = r.text
@@ -963,7 +978,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     else:
                         if res_df is None: st.error(f"❌ {r['place']}{r['num']}R: 予想処理失敗")
                         elif not payouts['tansho']: st.warning(f"⚠️ {r['place']}{r['num']}R: 払い戻し取得失敗")
-                    time.sleep(0.5)
+                    time.sleep(1.0)
                     my_bar.progress((i + 1) / len(races))
 
                 tan_rate  = (stats['honmei_tan_return']  / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
@@ -1109,7 +1124,7 @@ elif action == "🧪 性能試験 (バックテスト)":
                             'ケリー回収': int(tan_pay * kelly_bet / 100) if tan_pay > 0 and kelly_bet > 0 else 0,
                         })
                         results_for_txt.append({'date': r['date_obj'].strftime('%Y年%m月%d日'), 'place': place, 'num': r['num'], 'track': track_type, 'dist': dist, 'pace': pace_text, 'confidence': conf_text, 'df': res_df, 'topics': topics, 'reco': reco})
-                    time.sleep(0.8)
+                    time.sleep(2.0)
                     my_bar.progress((i + 1) / len(all_races))
 
             if not bt_records:
