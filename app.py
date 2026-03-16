@@ -1165,7 +1165,7 @@ elif action == "🐴 愛馬の成長記録":
     st.subheader("🐴 愛馬のAI能力評価・成長記録")
     st.markdown("出資馬や推し馬の名前を入力すると、過去のレースにおけるAI指標（スピード指数など）の推移をグラフ化します。")
     
-    horse_name = st.text_input("🔍 馬名を入力してください (例: イクイノックス, コスモフリーゲンなど)")
+    horse_name = st.text_input("🔍 馬名を入力してください (例: イクイノックス, アーモンドアイ)")
     
     if st.button("成長記録を表示", type="primary") and horse_name:
         with st.spinner(f"過去の全レースデータベースから {horse_name} のデータを検索中..."):
@@ -1190,12 +1190,12 @@ elif action == "🐴 愛馬の成長記録":
                         
                         st.success(f"✅ {len(df_horse)}戦分のデータが見つかりました！")
                         
-                        # 🌟 列名の揺れを吸収 (当日馬体重 or 馬体重、 上り or 上がり3F)
+                        # 🌟 列名の揺れを吸収
                         weight_col = '当日馬体重' if '当日馬体重' in df_horse.columns else '馬体重' if '馬体重' in df_horse.columns else None
                         agari_col = '上り' if '上り' in df_horse.columns else '上がり3F' if '上がり3F' in df_horse.columns else None
                         
                         # 数値化処理
-                        numeric_cols = ['補正タイム偏差', '上り偏差', '着順', '人気', '単勝', weight_col, agari_col]
+                        numeric_cols = ['補正タイム偏差', 'タイム差', '着順', '人気', '単勝', weight_col, agari_col]
                         for col in numeric_cols:
                             if col and col in df_horse.columns:
                                 df_horse[col] = pd.to_numeric(df_horse[col], errors='coerce')
@@ -1205,23 +1205,37 @@ elif action == "🐴 愛馬の成長記録":
                         st.markdown(f"### 📈 {horse_name} の能力・実績推移")
                         st.info("💡 **なぜ名馬なのに指数が下がるの？**\nイクイノックスのような超一流馬は、レース途中で「もう勝てる」と判断して手綱を緩めたり（持ったままゴール）、スローペースからの瞬発力勝負になったりすると、全力のタイムが出ないため「補正タイム偏差（全体時計の評価）」が下がることがあります。そのため、上がり3Fの絶対タイムや通過順位と合わせて評価するのがプロの分析です。")
                         
-                        # 🌟 グラフのスケール違い問題を解決するため、タブで分割！
-                        tab1, tab2, tab3, tab4 = st.tabs(["🚀 能力偏差", "💨 上がり3F(絶対値)", "⚖️ 馬体重推移", "👑 着順・人気"])
+                        import altair as alt
+                        
+                        tab1, tab2, tab3, tab4 = st.tabs(["🚀 能力偏差", "💨 上がり3F & タイム差", "⚖️ 馬体重推移", "👑 着順・人気"])
                         
                         with tab1:
                             st.markdown("※ 上に行くほど優秀なパフォーマンスです。")
-                            plot_cols = [c for c in ['補正タイム偏差', '上り偏差'] if c in chart_df.columns]
-                            if plot_cols: st.line_chart(chart_df[plot_cols])
+                            if '補正タイム偏差' in chart_df.columns:
+                                st.line_chart(chart_df[['補正タイム偏差']])
                             else: st.write("データがありません")
                             
                         with tab2:
-                            st.markdown("※ **タイムが低い（グラフが下に行く）ほど鋭い末脚**を使っています。")
-                            if agari_col and agari_col in chart_df.columns: st.line_chart(chart_df[[agari_col]])
+                            st.markdown("※ **上がり3F** は絶対的なキレ味、**タイム差** は1着馬との差（0.0なら1着）を示します。どちらもグラフが下に行くほど優秀です。")
+                            plot_t2 = [c for c in [agari_col, 'タイム差'] if c and c in chart_df.columns]
+                            if plot_t2: st.line_chart(chart_df[plot_t2])
                             else: st.write("データがありません")
                             
                         with tab3:
                             st.markdown("※ 馬体の成長や、長距離輸送での馬体減などが分かります。")
-                            if weight_col and weight_col in chart_df.columns: st.line_chart(chart_df[[weight_col]])
+                            if weight_col and weight_col in chart_df.columns:
+                                weight_data = chart_df[[weight_col]].replace(0, np.nan).dropna().reset_index()
+                                if not weight_data.empty:
+                                    # 🌟 その馬の体重に合わせてY軸をズームアップ！
+                                    min_w = max(300, weight_data[weight_col].min() - 15)
+                                    max_w = weight_data[weight_col].max() + 15
+                                    c = alt.Chart(weight_data).mark_line(point=True).encode(
+                                        x=alt.X('日付:T', title='日付'),
+                                        y=alt.Y(f'{weight_col}:Q', scale=alt.Scale(domain=[min_w, max_w]), title='馬体重(kg)'),
+                                        tooltip=['日付:T', f'{weight_col}:Q']
+                                    ).interactive()
+                                    st.altair_chart(c, use_container_width=True)
+                                else: st.write("有効な馬体重データがありません")
                             else: st.write("データがありません")
                             
                         with tab4:
@@ -1232,7 +1246,7 @@ elif action == "🐴 愛馬の成長記録":
                         
                         # 詳細データテーブル
                         st.markdown("#### 📜 過去のレース詳細データ")
-                        display_cols = ['日付', 'レース名', '着順', '人気', '単勝', weight_col, '騎手', '通過', agari_col, '補正タイム偏差', '上り偏差']
+                        display_cols = ['日付', 'レース名', '着順', '人気', '単勝', weight_col, '騎手', '通過', agari_col, '補正タイム偏差', 'タイム差']
                         
                         # オッズ表示を分かりやすくリネーム
                         if '単勝' in df_horse.columns:
