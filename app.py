@@ -950,7 +950,8 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     'umaren_races': 0, 'umaren_invest': 0, 'umaren_hits': 0, 'umaren_return': 0,
                     'wide_ana_races': 0, 'wide_ana_invest': 0, 'wide_ana_hits': 0, 'wide_ana_return': 0,
                     'ev_invest': 0, 'ev_tan_hits': 0, 'ev_tan_return': 0, 'ev_fuku_hits': 0, 'ev_fuku_return': 0,
-                    'shiba_races': 0, 'shiba_return': 0, 'dart_races': 0, 'dart_return': 0 # 🌟 条件分析用
+                    'shiba_races': 0, 'shiba_return': 0, 'dart_races': 0, 'dart_return': 0,
+                    'exp_races': 0, 'exp_return': 0, 'new_races': 0, 'new_return': 0 # 🌟 未出走分離用
                 }
                 
                 for i, r in enumerate(races):
@@ -960,16 +961,26 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     if res_df is not None and payouts['tansho']:
                         honmei = res_df.iloc[0]['馬番']
                         
+                        # 🌟 未出走馬がいるか判定 (前走_着順がNaNの馬がいるか、レース名に新馬が含まれるか)
+                        has_unraced = ('新馬' in r['title']) or ('未出走' in r['title']) or (res_df['前走_着順'].isna().any() if '前走_着順' in res_df.columns else False)
+                        
                         # 1. 本命成績 ＆ 🌟 条件別成績
                         stats['honmei_races'] += 1
                         if track_type == "芝": stats['shiba_races'] += 1
                         elif track_type == "ダート": stats['dart_races'] += 1
                         
+                        if has_unraced: stats['new_races'] += 1
+                        else: stats['exp_races'] += 1
+                        
                         if honmei in payouts['tansho']:
                             stats['honmei_tan_hits'] += 1
                             stats['honmei_tan_return'] += payouts['tansho'][honmei]
+                            
                             if track_type == "芝": stats['shiba_return'] += payouts['tansho'][honmei]
                             elif track_type == "ダート": stats['dart_return'] += payouts['tansho'][honmei]
+                            
+                            if has_unraced: stats['new_return'] += payouts['tansho'][honmei]
+                            else: stats['exp_return'] += payouts['tansho'][honmei]
                             
                         if honmei in payouts['fukusho']:
                             stats['honmei_fuku_hits'] += 1
@@ -1026,8 +1037,10 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 ev_fuku_rate = (stats['ev_fuku_return'] / stats['ev_invest'] * 100) if stats['ev_invest'] > 0 else 0
                 shiba_rate = (stats['shiba_return'] / (stats['shiba_races'] * 100) * 100) if stats['shiba_races'] > 0 else 0
                 dart_rate = (stats['dart_return'] / (stats['dart_races'] * 100) * 100) if stats['dart_races'] > 0 else 0
+                exp_rate = (stats['exp_return'] / (stats['exp_races'] * 100) * 100) if stats['exp_races'] > 0 else 0
+                new_rate = (stats['new_return'] / (stats['new_races'] * 100) * 100) if stats['new_races'] > 0 else 0
 
-                # 🌟 新機能: CSVへ自動セーブ
+                # CSVセーブ
                 csv_file = "ai_daily_history.csv"
                 daily_data = pd.DataFrame([{
                     '日付': target_date.strftime('%Y/%m/%d'),
@@ -1038,16 +1051,12 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 }])
                 if os.path.exists(csv_file):
                     existing_df = pd.read_csv(csv_file)
-                    # 以前のデータ（列名が違う場合）との互換性を保つ処理
                     for col in ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']:
-                        if col not in existing_df.columns:
-                            existing_df[col] = 0.0
-                            
-                    existing_df = existing_df[existing_df['日付'] != target_date.strftime('%Y/%m/%d')] # 重複回避
+                        if col not in existing_df.columns: existing_df[col] = 0.0
+                    existing_df = existing_df[existing_df['日付'] != target_date.strftime('%Y/%m/%d')] 
                     updated_df = pd.concat([existing_df, daily_data])
                     updated_df.to_csv(csv_file, index=False)
-                else: 
-                    daily_data.to_csv(csv_file, index=False)
+                else: daily_data.to_csv(csv_file, index=False)
 
                 st.markdown("---")
                 st.markdown(f"### 🏆 {target_date.strftime('%Y/%m/%d')} レース振り返りレポート")
@@ -1063,6 +1072,9 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     st.markdown("---")
                     st.write(f"🌱 **芝** 回収率: {shiba_rate:.1f}% ({stats['shiba_races']}R)")
                     st.write(f"🏜️ **ダート** 回収率: {dart_rate:.1f}% ({stats['dart_races']}R)")
+                    st.markdown("---")
+                    st.write(f"📚 **既走馬のみ** 回収率: **{exp_rate:.1f}%** ({stats['exp_races']}R)")
+                    st.write(f"🔰 **未出走混在** 回収率: **{new_rate:.1f}%** ({stats['new_races']}R)")
                     
                 with col2:
                     st.info("🔗 【馬券シミュレーション】")
