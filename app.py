@@ -1163,9 +1163,9 @@ elif action == "🧪 性能試験 (バックテスト)":
 # 🌟 新機能: 一口馬主・推し馬向け 成長記録グラフ
 elif action == "🐴 愛馬の成長記録":
     st.subheader("🐴 愛馬のAI能力評価・成長記録")
-    st.markdown("出資馬や推し馬の名前を入力すると、過去のレースにおけるAI指標（スピード指数など）の推移をグラフ化します。")
+    st.markdown("出資馬や推し馬の名前を入力すると、過去のレースにおけるAI指標や成績の推移をグラフ化します。")
     
-    horse_name = st.text_input("🔍 馬名を入力してください (例: イクイノックス, アーモンドアイ)")
+    horse_name = st.text_input("🔍 馬名を入力してください (例: イクイノックス, ドウデュース)")
     
     if st.button("成長記録を表示", type="primary") and horse_name:
         with st.spinner(f"過去の全レースデータベースから {horse_name} のデータを検索中..."):
@@ -1203,30 +1203,51 @@ elif action == "🐴 愛馬の成長記録":
                         chart_df = df_horse.set_index('日付')
                         
                         st.markdown(f"### 📈 {horse_name} の能力・実績推移")
-                        st.info("💡 **なぜ名馬なのに指数が下がるの？**\nイクイノックスのような超一流馬は、レース途中で「もう勝てる」と判断して手綱を緩めたり（持ったままゴール）、スローペースからの瞬発力勝負になったりすると、全力のタイムが出ないため「補正タイム偏差（全体時計の評価）」が下がることがあります。そのため、上がり3Fの絶対タイムや通過順位と合わせて評価するのがプロの分析です。")
+                        st.info("💡 **能力指標（偏差）の見方**\n【補正タイム偏差】は、その日の馬場状態やペースなどを加味し、その馬がどれだけ優秀な時計で走ったかを「50」を基準（平均）として数値化したものです。数値が高いほどハイレベルなパフォーマンスを示します。\nただし、スローペースでの瞬発力勝負や、圧勝により最後手綱を緩めた場合などは全体時計が遅くなり数値が低く出る傾向があるため、【上がり3F】（終いのキレ味）や【タイム差】（1着馬との差）と合わせて総合的に評価するのがプロの分析です。")
                         
                         import altair as alt
                         
                         tab1, tab2, tab3, tab4 = st.tabs(["🚀 能力偏差", "💨 上がり3F & タイム差", "⚖️ 馬体重推移", "👑 着順・人気"])
                         
                         with tab1:
-                            st.markdown("※ 上に行くほど優秀なパフォーマンスです。")
+                            st.markdown("※ グラフが **上に行くほど優秀なパフォーマンス** です。")
                             if '補正タイム偏差' in chart_df.columns:
                                 st.line_chart(chart_df[['補正タイム偏差']])
                             else: st.write("データがありません")
                             
                         with tab2:
-                            st.markdown("※ **上がり3F** は絶対的なキレ味、**タイム差** は1着馬との差（0.0なら1着）を示します。どちらもグラフが下に行くほど優秀です。")
-                            plot_t2 = [c for c in [agari_col, 'タイム差'] if c and c in chart_df.columns]
-                            if plot_t2: st.line_chart(chart_df[plot_t2])
-                            else: st.write("データがありません")
+                            st.markdown("※ スケールが異なるため上下に分割しています。どちらも **グラフが上に行く（タイムが短い/差が0.0に近い）ほど優秀** です。")
                             
+                            # 上がり3Fのグラフ（Y軸反転）
+                            if agari_col and agari_col in chart_df.columns:
+                                agari_data = chart_df[[agari_col]].dropna().reset_index()
+                                if not agari_data.empty:
+                                    min_a = agari_data[agari_col].min() - 0.5
+                                    max_a = agari_data[agari_col].max() + 0.5
+                                    c1 = alt.Chart(agari_data).mark_line(point=True, color='#FFA500').encode(
+                                        x=alt.X('日付:T', title=''),
+                                        y=alt.Y(f'{agari_col}:Q', scale=alt.Scale(reverse=True, domain=[max_a, min_a]), title=f'{agari_col} (秒)'),
+                                        tooltip=['日付:T', f'{agari_col}:Q']
+                                    ).interactive()
+                                    st.altair_chart(c1, use_container_width=True)
+                            
+                            # タイム差のグラフ（Y軸反転、1着なら一番上の0.0になる）
+                            if 'タイム差' in chart_df.columns:
+                                td_data = chart_df[['タイム差']].dropna().reset_index()
+                                if not td_data.empty:
+                                    max_t = td_data['タイム差'].max() + 0.2
+                                    c2 = alt.Chart(td_data).mark_line(point=True, color='#FF4B4B').encode(
+                                        x=alt.X('日付:T', title='日付'),
+                                        y=alt.Y('タイム差:Q', scale=alt.Scale(reverse=True, domain=[max_t, 0]), title='タイム差 (秒)'),
+                                        tooltip=['日付:T', 'タイム差:Q']
+                                    ).interactive()
+                                    st.altair_chart(c2, use_container_width=True)
+                                    
                         with tab3:
                             st.markdown("※ 馬体の成長や、長距離輸送での馬体減などが分かります。")
                             if weight_col and weight_col in chart_df.columns:
                                 weight_data = chart_df[[weight_col]].replace(0, np.nan).dropna().reset_index()
                                 if not weight_data.empty:
-                                    # 🌟 その馬の体重に合わせてY軸をズームアップ！
                                     min_w = max(300, weight_data[weight_col].min() - 15)
                                     max_w = weight_data[weight_col].max() + 15
                                     c = alt.Chart(weight_data).mark_line(point=True).encode(
@@ -1239,9 +1260,24 @@ elif action == "🐴 愛馬の成長記録":
                             else: st.write("データがありません")
                             
                         with tab4:
-                            st.markdown("※ **数字が低い（グラフが下に行く）ほど上位**です。")
+                            st.markdown("※ グラフが **上に行くほど上位（1着/1番人気）** を示します。")
                             rank_cols = [c for c in ['着順', '人気'] if c in chart_df.columns]
-                            if rank_cols: st.line_chart(chart_df[rank_cols])
+                            if rank_cols:
+                                rank_data = chart_df[rank_cols].dropna().reset_index()
+                                if not rank_data.empty:
+                                    max_val = rank_data[rank_cols].max().max()
+                                    max_scale = max(18, max_val + 1)
+                                    
+                                    # Altairを使って1位が一番上になるようにY軸を反転、不要な0を排除
+                                    melted = rank_data.melt('日付', value_vars=rank_cols, var_name='項目', value_name='順位')
+                                    c4 = alt.Chart(melted).mark_line(point=True).encode(
+                                        x=alt.X('日付:T', title='日付'),
+                                        y=alt.Y('順位:Q', scale=alt.Scale(reverse=True, domain=[max_scale, 1]), title='順位'),
+                                        color='項目:N',
+                                        tooltip=['日付:T', '項目:N', '順位:Q']
+                                    ).interactive()
+                                    st.altair_chart(c4, use_container_width=True)
+                                else: st.write("有効な着順・人気データがありません")
                             else: st.write("データがありません")
                         
                         # 詳細データテーブル
