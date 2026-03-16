@@ -808,9 +808,10 @@ action = st.sidebar.radio("機能を選択", [
     "📜 本日の全レース予想", 
     "📅 今週末の全レース予想", 
     "🔍 レースを指定して予想", 
-    "📝 1日の振り返り (答え合わせ)", # 🌟 ここに新メニュー追加
+    "📝 1日の振り返り (答え合わせ)",
     "🧪 性能試験 (バックテスト)",
     "📈 長期成績分析" 
+    "🐴 愛馬の成長記録"
 ])
 
 tokyo_tz = pytz.timezone('Asia/Tokyo')
@@ -1158,3 +1159,65 @@ elif action == "🧪 性能試験 (バックテスト)":
                     c3.metric("複勝 回収率", f"{(total_return_f / total_invest * 100):.1f}%", f"的中 {ev_hits}回")
                 if results_for_txt:
                     st.download_button("📥 結果をダウンロード (.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.txt", mime="text/plain")
+
+# 🌟 新機能: 一口馬主・推し馬向け 成長記録グラフ
+elif action == "🐴 愛馬の成長記録":
+    st.subheader("🐴 愛馬のAI能力評価・成長記録")
+    st.markdown("出資馬や推し馬の名前を入力すると、過去のレースにおけるAI指標（スピード指数など）の推移をグラフ化します。")
+    
+    horse_name = st.text_input("🔍 馬名を入力してください (例: イクイノックス, アーモンドアイ)")
+    
+    if st.button("成長記録を表示", type="primary") and horse_name:
+        with st.spinner(f"過去の全レースデータベースから {horse_name} のデータを検索中..."):
+            try:
+                # 🌟 過去の学習データ(ZIP)を読み込む
+                data_file = 'learning_data_perfect_tier.zip'
+                if not os.path.exists(data_file):
+                    st.error(f"データベースファイル ({data_file}) が見つかりません。")
+                else:
+                    df_hist = pd.read_csv(data_file, compression='zip', dtype=str)
+                    
+                    # 馬名でフィルタリング (完全一致)
+                    df_horse = df_hist[df_hist['馬名'] == horse_name].copy()
+                    
+                    if df_horse.empty:
+                        st.warning(f"データベースに「{horse_name}」の過去レース記録が見つかりませんでした。（地方競馬のみ、または古すぎる可能性があります）")
+                    else:
+                        # 日付でソート
+                        if '日付' in df_horse.columns:
+                            df_horse['日付'] = pd.to_datetime(df_horse['日付'], errors='coerce')
+                            df_horse = df_horse.sort_values('日付').dropna(subset=['日付'])
+                        
+                        st.success(f"✅ {len(df_horse)}戦分のデータが見つかりました！")
+                        
+                        # グラフ化する指標を数値化して用意
+                        cols_to_plot = []
+                        if '近5走_中央値スピード指数' in df_horse.columns:
+                            df_horse['本来の能力(スピード指数)'] = pd.to_numeric(df_horse['近5走_中央値スピード指数'], errors='coerce')
+                            cols_to_plot.append('本来の能力(スピード指数)')
+                        
+                        if '上昇度_スピード指数' in df_horse.columns:
+                            df_horse['成長度(上昇度)'] = pd.to_numeric(df_horse['上昇度_スピード指数'], errors='coerce')
+                            cols_to_plot.append('成長度(上昇度)')
+                            
+                        if not cols_to_plot:
+                            st.error("グラフ化可能な数値データ（スピード指数等）が見つかりませんでした。")
+                        else:
+                            # x軸を日付にしてグラフ描画
+                            chart_df = df_horse.set_index('日付')[cols_to_plot]
+                            
+                            st.markdown(f"### 📈 {horse_name} の能力推移グラフ")
+                            st.line_chart(chart_df)
+                            
+                            # 詳細データテーブル
+                            st.markdown("#### 📜 過去のレース詳細データ")
+                            # 表示したい列をピックアップ（存在するものだけ）
+                            display_cols = ['日付', 'レース名', '着順', '斤量', '騎手', 'オッズ'] + cols_to_plot
+                            show_cols = [c for c in display_cols if c in df_horse.columns]
+                            
+                            # 表示用に日付を文字列に戻す
+                            df_horse['日付'] = df_horse['日付'].dt.strftime('%Y/%m/%d')
+                            st.dataframe(df_horse[show_cols].reset_index(drop=True), use_container_width=True)
+                            
+            except Exception as e:
+                st.error(f"データの読み込み中にエラーが発生しました: {e}")
