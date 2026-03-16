@@ -1179,11 +1179,11 @@ elif action == "🐴 愛馬の成長記録":
                     # 🌟 カンニング防止フィルター (タイムマシン機能)
                     # ========================================================
                     if '日付' in df_hist.columns:
-                    df_hist['日付'] = pd.to_datetime(df_hist['日付'], errors='coerce')
-                    target_dt = pd.to_datetime(race_date_str)
+                        df_hist['日付'] = pd.to_datetime(df_hist['日付'], errors='coerce')
+                        target_dt = pd.to_datetime(race_date_str)
             
-                    # テストするレースの日付より「過去」のデータだけを残し、未来の記憶を消去する！
-                      df_hist = df_hist[df_hist['日付'] < target_dt].copy()
+                        # テストするレースの日付より「過去」のデータだけを残し、未来の記憶を消去する！
+                        df_hist = df_hist[df_hist['日付'] < target_dt].copy()
                     # ========================================================
                     df_horse = df_hist[df_hist['馬名'] == horse_name].copy()
                     
