@@ -1195,7 +1195,6 @@ elif action == "🐴 愛馬の成長記録":
                                 df_horse[col] = pd.to_numeric(df_horse[col], errors='coerce')
                         
                         if '補正タイム偏差' in df_horse.columns:
-                            # タイム指数への換算 (Zスコアを50基準の指数に変換)
                             df_horse['タイム指数'] = 50 - (df_horse['補正タイム偏差'] * 10)
                             
                         chart_df = df_horse.set_index('日付')
@@ -1294,15 +1293,15 @@ elif action == "🐴 愛馬の成長記録":
                                 display_cols[display_cols.index('単勝')] = '単勝オッズ'
                             
                         show_cols = [c for c in display_cols if c and c in df_horse.columns]
-                        
                         show_df = df_horse.copy()
                         show_df['日付'] = show_df['日付'].dt.strftime('%Y/%m/%d')
                         
-                        format_dict = {}
-                        if 'タイム指数' in show_df.columns: format_dict['タイム指数'] = '{:.1f}'
-                        if 'タイム差' in show_df.columns: format_dict['タイム差'] = '{:.1f}'
+                        # 🌟 表の桁数を強制的に丸める処理を追加
+                        for col in ['タイム指数', 'タイム差', '単勝オッズ', agari_col]:
+                            if col in show_df.columns:
+                                show_df[col] = pd.to_numeric(show_df[col], errors='coerce').round(1)
                         
-                        st.dataframe(show_df[show_cols].reset_index(drop=True).style.format(format_dict), use_container_width=True)
+                        st.dataframe(show_df[show_cols].reset_index(drop=True), use_container_width=True)
                             
             except Exception as e:
                 st.error(f"データの読み込み中にエラーが発生しました: {e}")
