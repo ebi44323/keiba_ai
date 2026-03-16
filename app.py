@@ -5,6 +5,8 @@ import lightgbm as lgb
 import requests
 from bs4 import BeautifulSoup
 import re
+import os
+import pandas as pd
 import datetime
 import pytz
 import traceback
@@ -789,9 +791,6 @@ def run_real_prediction(race_id, race_date_str):
 # ==========================================
 # 4. メインUI構成
 # ==========================================
-# ==========================================
-# 4. メインUI構成
-# ==========================================
 st.sidebar.markdown("## 🕹️ keiba-ebye メニュー")
 action = st.sidebar.radio("機能を選択", [
     "⏩ 次のレースを予想", 
@@ -822,8 +821,24 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
         def highlight_ev(row): return ['background-color: rgba(255, 99, 71, 0.3)' if row['期待値'] >= 1.5 else '' for _ in row]
         show_df = df_res[['印', '馬番', '馬名', '脚質カテゴリ', '単勝オッズ', '勝率(AI予測)', '複勝率(AI予測)', '期待値']].copy()
         show_df = show_df.rename(columns={'勝率(AI予測)': '勝率', '複勝率(AI予測)': '複勝率', '単勝オッズ': 'オッズ', '脚質カテゴリ': '脚質'})
+        
+        # 🌟 新機能: 資金配分（ケリー基準）による推奨ベット額計算
+        def calc_kelly_bet(row):
+            if row['期待値'] < 1.0: return 0
+            p = row['勝率']
+            b = row['オッズ'] - 1.0
+            if b <= 0: return 0
+            f_star = p - ((1.0 - p) / b)
+            # 安全のためケリー基準の1/4を採用し、予算1万円に対する金額を算出(100円単位)
+            bet = int(max(0, f_star * 0.25) * 10000 / 100) * 100 
+            return min(bet, 3000) # 1レース1頭の上限は3000円ストッパー
+            
+        show_df['推奨ベット(予算1万円)'] = show_df.apply(calc_kelly_bet, axis=1).astype(str) + "円"
+        show_df.loc[show_df['推奨ベット(予算1万円)'] == "0円", '推奨ベット(予算1万円)'] = "見送り"
+        
         show_df['勝率'] = (show_df['勝率'] * 100).map('{:.1f}%'.format)
         show_df['複勝率'] = (show_df['複勝率'] * 100).map('{:.1f}%'.format)
+        
         st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}', 'オッズ': '{:.1f}'}), use_container_width=True, hide_index=True)
         
     with tab2:
@@ -843,6 +858,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
             'コース適性(%)': '{:.2f}',
             '位置取りショック': '{:.1f}'
         }), use_container_width=True, hide_index=True)
+
 
 if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想", "🔍 レースを指定して予想"]:
     todays_races = get_todays_races()
@@ -933,7 +949,8 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     'honmei_races': 0, 'honmei_tan_hits': 0, 'honmei_tan_return': 0, 'honmei_fuku_hits': 0, 'honmei_fuku_return': 0,
                     'umaren_races': 0, 'umaren_invest': 0, 'umaren_hits': 0, 'umaren_return': 0,
                     'wide_ana_races': 0, 'wide_ana_invest': 0, 'wide_ana_hits': 0, 'wide_ana_return': 0,
-                    'ev_invest': 0, 'ev_tan_hits': 0, 'ev_tan_return': 0, 'ev_fuku_hits': 0, 'ev_fuku_return': 0
+                    'ev_invest': 0, 'ev_tan_hits': 0, 'ev_tan_return': 0, 'ev_fuku_hits': 0, 'ev_fuku_return': 0,
+                    'shiba_races': 0, 'shiba_return': 0, 'dart_races': 0, 'dart_return': 0 # 🌟 条件分析用
                 }
                 
                 for i, r in enumerate(races):
@@ -943,11 +960,17 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     if res_df is not None and payouts['tansho']:
                         honmei = res_df.iloc[0]['馬番']
                         
-                        # 1. 本命成績
+                        # 1. 本命成績 ＆ 🌟 条件別成績
                         stats['honmei_races'] += 1
+                        if track_type == "芝": stats['shiba_races'] += 1
+                        elif track_type == "ダート": stats['dart_races'] += 1
+                        
                         if honmei in payouts['tansho']:
                             stats['honmei_tan_hits'] += 1
                             stats['honmei_tan_return'] += payouts['tansho'][honmei]
+                            if track_type == "芝": stats['shiba_return'] += payouts['tansho'][honmei]
+                            elif track_type == "ダート": stats['dart_return'] += payouts['tansho'][honmei]
+                            
                         if honmei in payouts['fukusho']:
                             stats['honmei_fuku_hits'] += 1
                             stats['honmei_fuku_return'] += payouts['fukusho'][honmei]
@@ -986,16 +1009,39 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                                     stats['ev_fuku_hits'] += 1
                                     stats['ev_fuku_return'] += payouts['fukusho'][ev]
                     else:
-                        # 🌟 もし集計できなかった場合は理由を画面に表示する
                         if res_df is None:
-                            st.error(f"❌ {r['place']}{r['num']}R: 予想AIの処理に失敗しました。")
-                            if err_log: st.write(err_log)
+                            st.error(f"❌ {r['place']}{r['num']}R: 予想処理失敗")
                         elif not payouts['tansho']:
-                            st.warning(f"⚠️ {r['place']}{r['num']}R: 払い戻し情報が取得できません。")
+                            st.warning(f"⚠️ {r['place']}{r['num']}R: 払い戻し取得失敗")
                                     
                     time.sleep(0.5)
                     my_bar.progress((i + 1) / len(races))
                 
+                # 計算
+                tan_rate = (stats['honmei_tan_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
+                fuku_rate = (stats['honmei_fuku_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
+                uma_rate = (stats['umaren_return'] / stats['umaren_invest'] * 100) if stats['umaren_invest'] > 0 else 0
+                wide_rate = (stats['wide_ana_return'] / stats['wide_ana_invest'] * 100) if stats['wide_ana_invest'] > 0 else 0
+                ev_tan_rate = (stats['ev_tan_return'] / stats['ev_invest'] * 100) if stats['ev_invest'] > 0 else 0
+                ev_fuku_rate = (stats['ev_fuku_return'] / stats['ev_invest'] * 100) if stats['ev_invest'] > 0 else 0
+                shiba_rate = (stats['shiba_return'] / (stats['shiba_races'] * 100) * 100) if stats['shiba_races'] > 0 else 0
+                dart_rate = (stats['dart_return'] / (stats['dart_races'] * 100) * 100) if stats['dart_races'] > 0 else 0
+
+                # 🌟 新機能: CSVへ自動セーブ
+                csv_file = "ai_daily_history.csv"
+                daily_data = pd.DataFrame([{
+                    '日付': target_date.strftime('%Y/%m/%d'),
+                    '本命単勝回収率': round(tan_rate, 1),
+                    '穴馬ワイド回収率': round(wide_rate, 1),
+                    'EV馬単勝回収率': round(ev_tan_rate, 1)
+                }])
+                if os.path.exists(csv_file):
+                    existing_df = pd.read_csv(csv_file)
+                    existing_df = existing_df[existing_df['日付'] != target_date.strftime('%Y/%m/%d')] # 重複回避
+                    updated_df = pd.concat([existing_df, daily_data])
+                    updated_df.to_csv(csv_file, index=False)
+                else: daily_data.to_csv(csv_file, index=False)
+
                 st.markdown("---")
                 st.markdown(f"### 🏆 {target_date.strftime('%Y/%m/%d')} レース振り返りレポート")
                 st.markdown(f"**対象レース数: {stats['honmei_races']} レース**")
@@ -1003,32 +1049,43 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 col1, col2 = st.columns(2)
                 with col1:
                     st.success("🎯 【本命(◎) 単勝・複勝成績】")
-                    tan_rate = (stats['honmei_tan_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
-                    fuku_rate = (stats['honmei_fuku_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
-                    tan_hit_rate = (stats['honmei_tan_hits'] / stats['honmei_races'] * 100) if stats['honmei_races'] > 0 else 0
-                    fuku_hit_rate = (stats['honmei_fuku_hits'] / stats['honmei_races'] * 100) if stats['honmei_races'] > 0 else 0
-                    
-                    st.write(f"- **単勝 的中率**: {tan_hit_rate:.1f}% ({stats['honmei_tan_hits']}R)")
+                    st.write(f"- **単勝 的中率**: {(stats['honmei_tan_hits'] / stats['honmei_races'] * 100):.1f}% ({stats['honmei_tan_hits']}R)")
                     st.write(f"- **単勝 回収率**: **{tan_rate:.1f}%**")
-                    st.write(f"- **複勝 的中率**: {fuku_hit_rate:.1f}% ({stats['honmei_fuku_hits']}R)")
+                    st.write(f"- **複勝 的中率**: {(stats['honmei_fuku_hits'] / stats['honmei_races'] * 100):.1f}% ({stats['honmei_fuku_hits']}R)")
                     st.write(f"- **複勝 回収率**: **{fuku_rate:.1f}%**")
+                    st.markdown("---")
+                    st.write(f"🌱 **芝** 回収率: {shiba_rate:.1f}% ({stats['shiba_races']}R)")
+                    st.write(f"🏜️ **ダート** 回収率: {dart_rate:.1f}% ({stats['dart_races']}R)")
                     
                 with col2:
                     st.info("🔗 【馬券シミュレーション】")
-                    uma_rate = (stats['umaren_return'] / stats['umaren_invest'] * 100) if stats['umaren_invest'] > 0 else 0
                     st.write(f"- **馬連流し (◎ → 2〜5番手へ4点)**")
                     st.write(f"  投資: ¥{stats['umaren_invest']:,} / 回収率: **{uma_rate:.1f}%** (的中 {stats['umaren_hits']}R)")
-                    
-                    wide_rate = (stats['wide_ana_return'] / stats['wide_ana_invest'] * 100) if stats['wide_ana_invest'] > 0 else 0
                     st.write(f"- **穴馬ワイド (◎ → 期待値特大の穴馬へ)**")
                     st.write(f"  該当: {stats['wide_ana_races']}R / 回収率: **{wide_rate:.1f}%** (的中 {stats['wide_ana_hits']}回)")
-                    
-                st.warning("🔥 【上位5頭内 期待値1.5以上馬 ベタ買い】")
-                ev_tan_rate = (stats['ev_tan_return'] / stats['ev_invest'] * 100) if stats['ev_invest'] > 0 else 0
-                ev_fuku_rate = (stats['ev_fuku_return'] / stats['ev_invest'] * 100) if stats['ev_invest'] > 0 else 0
-                st.write(f"- 該当数: {int(stats['ev_invest']/100)} 頭")
-                st.write(f"- **単勝 回収率**: **{ev_tan_rate:.1f}%** (的中 {stats['ev_tan_hits']}頭)")
-                st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
+                    st.markdown("---")
+                    st.warning("🔥 【上位5頭内 期待値1.5以上馬 ベタ買い】")
+                    st.write(f"- 該当数: {int(stats['ev_invest']/100)} 頭")
+                    st.write(f"- **単勝 回収率**: **{ev_tan_rate:.1f}%** (的中 {stats['ev_tan_hits']}頭)")
+                    st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
+
+# 🌟 新機能: 長期成績のグラフ表示メニュー
+elif action == "📈 AIの調子 (直近1ヶ月の回収率)" or action == "📈 長期成績分析 (AIの成長記録)": # サイドバーの名前変更に対応
+    st.subheader("📈 AIの長期成績分析 (日々の成長記録)")
+    csv_file = "ai_daily_history.csv"
+    if not os.path.exists(csv_file):
+        st.warning("まだデータがありません。サイドメニューの「1日の振り返り」を実行してデータを蓄積してください！")
+    else:
+        history_df = pd.read_csv(csv_file)
+        history_df['日付'] = pd.to_datetime(history_df['日付'])
+        history_df = history_df.sort_values('日付')
+        
+        st.markdown("日々の振り返りを実行すると、ここに自動で成績がセーブされていきます。")
+        st.dataframe(history_df.style.format({
+            '本命単勝回収率': '{:.1f}%', '穴馬ワイド回収率': '{:.1f}%', 'EV馬単勝回収率': '{:.1f}%'
+        }), use_container_width=True, hide_index=True)
+        
+        st.line_chart(history_df.set_index('日付')[['本命単勝回収率', '穴馬ワイド回収率', 'EV馬単勝回収率']])
 
 elif action == "🧪 性能試験 (バックテスト)":
     test_date = st.date_input("テストする日付を選択", datetime.date.today() - datetime.timedelta(days=3))
@@ -1063,16 +1120,3 @@ elif action == "🧪 性能試験 (バックテスト)":
                     c3.metric("複勝 回収率", f"{(total_return_f / total_invest * 100):.1f}%", f"的中 {ev_hits}回")
                 if results_for_txt:
                     st.download_button("📥 結果をダウンロード (.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.txt", mime="text/plain")
-
-elif action == "📈 AIの調子 (直近1ヶ月の回収率)":
-    st.markdown("### 🏆 現在のAIの調子（過去30日間の検証結果）")
-    st.metric(label="📊 本命ベタ買い 単勝回収率", value=f"{recent_return_rate:.1f}%")
-    
-    if recent_return_rate >= 100:
-        st.success("🔥 絶好調！AIの予測をそのまま買うだけでもプラス収支が出ています！")
-    elif recent_return_rate >= 80:
-        st.info("👍 非常に優秀な状態です！『期待値の高い馬』に絞ったり、馬連などで十分プラスが狙えます。")
-    else:
-        st.warning("⚠️ やや下振れ中。鉄板レースのみに絞るか、波乱レースの穴馬狙いに徹するのがおすすめです。")
-    
-    st.markdown("※この数字は「過去30日間の実際のレース結果」と「AIの1番手評価馬」をカンニングなしで照らし合わせたリアルな回収率です。")
