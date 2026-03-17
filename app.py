@@ -828,6 +828,17 @@ action = st.sidebar.radio("機能を選択", [
     "🐴 愛馬の成長記録",
 ])
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 💰 軍資金シミュレーター")
+sim_budget     = st.sidebar.number_input("軍資金 (円)", 5000, 500000, 30000, 5000,
+                   help="1日の総予算。ケリー基準でここから各レースに配分します。")
+sim_ev_filter  = st.sidebar.slider("購入する期待値の下限", 1.0, 3.0, 1.2, 0.1,
+                   help="この期待値以上の馬だけを買います。高いほど厳選。")
+sim_kelly_frac = st.sidebar.slider("ケリー係数", 0.1, 1.0, 0.25, 0.05,
+                   help="1.0=フルケリー(高リスク) 0.25=推奨(安定)")
+sim_max_per_race = st.sidebar.slider("1レース最大投資額 (軍資金の%)", 5, 40, 20, 5,
+                   help="1レースに軍資金の何%まで使うか上限を設定します。") / 100
+
 tokyo_tz = pytz.timezone('Asia/Tokyo')
 now = datetime.datetime.now(tokyo_tz)
 
@@ -841,54 +852,149 @@ def display_error_log(err_log):
 
 def display_result(df_res, topics, reco, pace_text, confidence_text):
     tab1, tab2, tab3, tab4 = st.tabs(["📊 予想一覧", "💡 展開・買い目", "🔍 性能詳細", "🎰 複合馬券EV"])
-    
+
     with tab1:
         if "鉄板" in confidence_text: st.success(confidence_text)
         elif "波乱" in confidence_text: st.error(confidence_text)
         else: st.info(confidence_text)
-        
-        def highlight_ev(row): return ['background-color: rgba(255, 99, 71, 0.3)' if row['期待値'] >= 1.5 else '' for _ in row]
-        show_df = df_res[['印', '馬番', '馬名', '脚質カテゴリ', '単勝オッズ', '勝率(AI予測)', '複勝率(AI予測)', '期待値']].copy()
-        show_df = show_df.rename(columns={'勝率(AI予測)': '勝率', '複勝率(AI予測)': '複勝率', '単勝オッズ': 'オッズ', '脚質カテゴリ': '脚質'})
-        
-        # 🌟 新機能: 資金配分（ケリー基準）による推奨ベット額計算
-        def calc_kelly_bet(row):
-            # 🌟 追加：テキストに「見送り」が含まれていれば、期待値が高くても強制ストップ！
+
+        # ── 軍資金シミュレーター（サイドバーの設定値を使用）─────
+        def calc_kelly_sim(p_raw, odds_raw):
+            """サイドバーの軍資金・ケリー係数・EV下限・レース上限を適用"""
             if "見送り" in confidence_text: return 0
-            if row['期待値'] < 1.0: return 0
-            p = row['勝率']
-            b = row['オッズ'] - 1.0
+            try:
+                p   = float(str(p_raw).replace('%','')) / 100 if '%' in str(p_raw) else float(p_raw)
+                b   = float(odds_raw) - 1.0
+            except: return 0
             if b <= 0: return 0
-            f_star = p - ((1.0 - p) / b)
-            # 安全のためケリー基準の1/4を採用し、予算1万円に対する金額を算出(100円単位)
-            bet = int(max(0, f_star * 0.25) * 10000 / 100) * 100 
-            return min(bet, 3000) # 1レース1頭の上限は3000円ストッパー
-            
-        show_df['推奨ベット(予算1万円)'] = show_df.apply(calc_kelly_bet, axis=1).astype(str) + "円"
-        show_df.loc[show_df['推奨ベット(予算1万円)'] == "0円", '推奨ベット(予算1万円)'] = "見送り"
-        
-        show_df['勝率'] = (show_df['勝率'] * 100).map('{:.1f}%'.format)
+            ev = p * float(odds_raw)
+            if ev < sim_ev_filter: return 0
+            f_star = p - (1.0 - p) / b
+            if f_star <= 0: return 0
+            raw_bet = f_star * sim_kelly_frac * sim_budget
+            max_bet = sim_budget * sim_max_per_race
+            bet = int(min(raw_bet, max_bet) / 100) * 100
+            return max(0, bet)
+
+        show_df = df_res[['印','馬番','馬名','脚質カテゴリ','単勝オッズ','勝率(AI予測)','複勝率(AI予測)','期待値']].copy()
+        show_df = show_df.rename(columns={'勝率(AI予測)':'勝率','複勝率(AI予測)':'複勝率','単勝オッズ':'オッズ','脚質カテゴリ':'脚質'})
+
+        # 軍資金シミュレーター列
+        bets = []
+        for _, row in show_df.iterrows():
+            bet = calc_kelly_sim(row['勝率'], row['オッズ'])
+            bets.append(f"¥{bet:,}" if bet > 0 else "見送り")
+        show_df['💰推奨ベット'] = bets
+
+        total_bet = sum(
+            int(b.replace('¥','').replace(',','')) for b in bets if b != "見送り"
+        )
+        if total_bet > 0:
+            st.caption(f"💰 このレースの推奨投資合計: **¥{total_bet:,}** / 軍資金¥{sim_budget:,}の {total_bet/sim_budget*100:.1f}%")
+
+        show_df['勝率']  = (show_df['勝率'] * 100).map('{:.1f}%'.format)
         show_df['複勝率'] = (show_df['複勝率'] * 100).map('{:.1f}%'.format)
-        
-        st.dataframe(show_df.style.apply(highlight_ev, axis=1).format({'期待値': '{:.2f}', 'オッズ': '{:.1f}'}), use_container_width=True, hide_index=True)
-        
+
+        def highlight_row(row):
+            bet_str = row.get('💰推奨ベット', '見送り')
+            if bet_str != '見送り' and row['期待値'] >= 1.5:
+                return ['background-color: rgba(255,99,71,0.2)'] * len(row)
+            if bet_str != '見送り':
+                return ['background-color: rgba(255,200,0,0.1)'] * len(row)
+            return [''] * len(row)
+
+        st.dataframe(
+            show_df.style.apply(highlight_row, axis=1)
+                   .format({'期待値':'{:.2f}','オッズ':'{:.1f}'}),
+            use_container_width=True, hide_index=True
+        )
+
     with tab2:
         st.info(f"**🏇 展開予想:**\n{pace_text}")
-        ev_horses = df_res[(df_res.index < 5) & (df_res['期待値'] >= 1.5)]
-        if not ev_horses.empty: st.error(f"💰 **【期待値レーダー発動】** {', '.join(ev_horses['馬名'].tolist())} に強烈なオッズ妙味あり！")
+        ev_horses = df_res[(df_res.index < 5) & (df_res['期待値'] >= sim_ev_filter)]
+        if not ev_horses.empty:
+            st.error(f"💰 **【期待値レーダー発動】** {', '.join(ev_horses['馬名'].tolist())} に妙味あり！")
         if topics: st.warning("**📝 要注目トピック馬:**\n\n" + "\n".join(topics))
         st.success(f"**🤖 AI推奨買い目:**\n\n{reco}")
-        
+
     with tab3:
-        detail_df = df_res[['馬番', '馬名', '騎手', '調教師', '近5走_中央値スピード指数', '上昇度_スピード指数', 'コース適性_着順パーセント', '位置取りショック']].copy()
-        detail_df = detail_df.rename(columns={'コース適性_着順パーセント': 'コース適性(%)', '近5走_中央値スピード指数': '本来の指数(中央値)', '上昇度_スピード指数': '成長度・復調度'})
-        st.markdown("※『コース適性(%)』は数字が低い（0に近い）ほどそのコースが得意なことを示します。")
-        st.dataframe(detail_df.style.format({
-            '本来の指数(中央値)': '{:.1f}', 
-            '成長度・復調度': '{:.1f}', 
-            'コース適性(%)': '{:.2f}',
-            '位置取りショック': '{:.1f}'
-        }), use_container_width=True, hide_index=True)
+        # ── 性能詳細タブ（強化版）─────────────────────────────
+        st.markdown("#### 📐 AI評価スコア詳細")
+        st.caption("各馬のAI内部スコアを可視化します。スピード指数・上昇度・コース適性・脚質の4軸で評価。")
+
+        detail_cols_map = {
+            '近5走_中央値スピード指数': '地力(中央値)',
+            '近5走_最高スピード指数':   '最高ポテンシャル',
+            '上昇度_スピード指数':       '上昇度',
+            'コース適性_着順パーセント': 'コース適性(低いほど◎)',
+            '位置取りショック':          '位置取り変化',
+            '休養日数':                  '休養日数',
+            '直近3走着順パーセント':     '近3走安定度',
+            '乗り替わりフラグ':          '乗替',
+            '馬場替わりフラグ':          '馬場変',
+            '距離変更フラグ':            '距離変',
+        }
+        avail = {k:v for k,v in detail_cols_map.items() if k in df_res.columns}
+        detail_df = df_res[['馬番','馬名','騎手','調教師'] + list(avail.keys())].copy()
+        detail_df = detail_df.rename(columns=avail)
+
+        fmt = {}
+        for col in ['地力(中央値)','最高ポテンシャル','上昇度','コース適性(低いほど◎)',
+                    '位置取り変化','近3走安定度']:
+            if col in detail_df.columns: fmt[col] = '{:.2f}'
+        if '休養日数' in detail_df.columns: fmt['休養日数'] = '{:.0f}日'
+
+        def highlight_detail(row):
+            styles = [''] * len(row)
+            cols = list(row.index)
+            # 上昇度が高い馬を強調
+            if '上昇度' in cols:
+                idx = cols.index('上昇度')
+                try:
+                    if float(row['上昇度']) >= 2.0:
+                        styles[idx] = 'color:#FF4B4B; font-weight:bold'
+                    elif float(row['上昇度']) <= -2.0:
+                        styles[idx] = 'color:#888'
+                except: pass
+            # 乗替・馬場変・距離変フラグ
+            for flag_col in ['乗替','馬場変','距離変']:
+                if flag_col in cols:
+                    idx = cols.index(flag_col)
+                    try:
+                        if int(row[flag_col]) == 1:
+                            styles[idx] = 'color:#FFA500; font-weight:bold'
+                    except: pass
+            return styles
+
+        st.dataframe(
+            detail_df.style.apply(highlight_detail, axis=1).format(fmt),
+            use_container_width=True, hide_index=True
+        )
+
+        # ── スピード指数バーチャート ─────────────────────────
+        if '近5走_中央値スピード指数' in df_res.columns:
+            st.markdown("#### 📊 地力比較チャート")
+            import altair as alt
+            chart_data = df_res[['馬名','近5走_中央値スピード指数','近5走_最高スピード指数','上昇度_スピード指数']].copy() if '近5走_最高スピード指数' in df_res.columns else df_res[['馬名','近5走_中央値スピード指数']].copy()
+            chart_data = chart_data.dropna(subset=['近5走_中央値スピード指数'])
+            chart_data = chart_data.sort_values('近5走_中央値スピード指数', ascending=False).head(10)
+
+            base = alt.Chart(chart_data).encode(
+                y=alt.Y('馬名:N', sort='-x', title=''),
+            )
+            bar_median = base.mark_bar(color='#4B8BFF', opacity=0.8).encode(
+                x=alt.X('近5走_中央値スピード指数:Q', title='スピード指数'),
+                tooltip=['馬名','近5走_中央値スピード指数']
+            )
+            chart = bar_median.properties(height=max(200, len(chart_data)*28))
+            if '近5走_最高スピード指数' in chart_data.columns:
+                bar_max = base.mark_tick(color='#FF4B4B', thickness=2).encode(
+                    x='近5走_最高スピード指数:Q',
+                    tooltip=['馬名','近5走_最高スピード指数']
+                )
+                chart = (bar_median + bar_max).properties(height=max(200, len(chart_data)*28))
+            st.altair_chart(chart, use_container_width=True)
+            st.caption("青バー=近5走中央値（地力）/ 赤ティック=近5走最高値（ポテンシャル）")
 
     with tab4:
         st.markdown("AI勝率から計算した複合馬券の理論期待値です。**1.0以上**が購入検討ライン。")
@@ -1210,31 +1316,106 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     st.write(f"- **単勝 回収率**: **{ev_tan_rate:.1f}%** (的中 {stats['ev_tan_hits']}頭)")
                     st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
 
-# 🌟 新機能: 長期成績のグラフ表示メニュー
-elif action == "📈 AIの調子 (直近1ヶ月の回収率)" or action == "📈 長期成績分析": 
-    st.subheader("📈 AIの長期成績分析 (日々の成長記録)")
+elif action == "📈 長期成績分析":
+    st.subheader("📈 長期成績分析")
+    import altair as alt
     csv_file = "ai_daily_history.csv"
     if not os.path.exists(csv_file):
-        st.warning("まだデータがありません。サイドメニューの「1日の振り返り」を実行してデータを蓄積してください！")
+        st.info("まだデータがありません。「1日の振り返り」を実行するとここにデータが蓄積されます。")
     else:
         history_df = pd.read_csv(csv_file)
-        
-        # 不足している列があれば0で埋める（エラー防止）
-        for col in ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']:
+        for col in ['本命単勝回収率','本命複勝回収率','穴馬単勝回収率','穴馬複勝回収率']:
             if col not in history_df.columns: history_df[col] = 0.0
-            
-        # 🌟 日付をインデックスに設定
-        history_df = history_df.set_index('日付')
-        
-        # 🌟 ここがポイント！CSVに過去の不要な列が残っていても、この4つだけを強制抽出する
-        display_cols = ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']
-        show_df = history_df[display_cols].copy()
-        
-        st.markdown("日々の振り返りを実行すると、ここに自動で成績がセーブされていきます。")
-        st.dataframe(show_df.style.format('{:.1f}%'), use_container_width=True)
-        
-        # 🌟 グラフにも抽出した4項目だけを渡す
-        st.line_chart(show_df)
+        history_df['日付'] = pd.to_datetime(history_df['日付'], errors='coerce')
+        history_df = history_df.dropna(subset=['日付']).sort_values('日付').reset_index(drop=True)
+
+        if len(history_df) == 0:
+            st.warning("有効なデータがありません。")
+        else:
+            # ── KPI サマリー ─────────────────────────────────
+            n  = len(history_df)
+            avg_tan  = history_df['本命単勝回収率'].mean()
+            avg_fuku = history_df['本命複勝回収率'].mean()
+            avg_ana  = history_df['穴馬単勝回収率'].mean()
+            over100_tan  = (history_df['本命単勝回収率'] >= 100).sum()
+            over100_fuku = (history_df['本命複勝回収率'] >= 100).sum()
+
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("📅 集計日数",     f"{n}日")
+            k2.metric("📈 本命単勝 平均", f"{avg_tan:.1f}%",
+                      delta=f"{avg_tan-100:+.1f}%", delta_color="normal")
+            k3.metric("📊 本命複勝 平均", f"{avg_fuku:.1f}%",
+                      delta=f"{avg_fuku-100:+.1f}%", delta_color="normal")
+            k4.metric("🔥 穴馬単勝 平均", f"{avg_ana:.1f}%",
+                      delta=f"{avg_ana-100:+.1f}%", delta_color="normal")
+            k5.metric("✅ 単勝100%超え日", f"{over100_tan}日 / {n}日",
+                      f"{over100_tan/n*100:.0f}%")
+
+            st.markdown("---")
+
+            # ── 移動平均オプション ────────────────────────────
+            ma_window = st.slider("移動平均ウィンドウ (日)", 1, min(10, n), min(3, n), 1)
+
+            # ── 折れ線グラフ ─────────────────────────────────
+            plot_cols = ['本命単勝回収率','本命複勝回収率','穴馬単勝回収率','穴馬複勝回収率']
+            history_df['日付_str'] = history_df['日付'].dt.strftime('%Y/%m/%d')
+
+            # 移動平均を計算
+            for col in plot_cols:
+                history_df[f'{col}_MA'] = history_df[col].rolling(ma_window, min_periods=1).mean()
+
+            melted = history_df.melt(
+                '日付_str',
+                value_vars=[f'{c}_MA' for c in plot_cols],
+                var_name='指標', value_name='回収率(%)'
+            )
+            melted['指標'] = melted['指標'].str.replace('_MA','')
+
+            rule100 = alt.Chart(pd.DataFrame({'y':[100]})).mark_rule(
+                color='gray', strokeDash=[4,4], opacity=0.6
+            ).encode(y='y:Q')
+
+            line = alt.Chart(melted).mark_line(point=True).encode(
+                x=alt.X('日付_str:N', sort=None, title='日付'),
+                y=alt.Y('回収率(%):Q', title='回収率 (%)'),
+                color=alt.Color('指標:N', legend=alt.Legend(orient='bottom')),
+                tooltip=['日付_str','指標','回収率(%)']
+            ).properties(height=320)
+            st.altair_chart(line + rule100, use_container_width=True)
+            st.caption(f"灰色破線 = 100%（損益分岐点）/ {ma_window}日移動平均を表示中")
+
+            st.markdown("---")
+            st.markdown("#### 📋 日別詳細テーブル")
+
+            # 値でセルを色付け
+            def color_rate(val):
+                try:
+                    v = float(val)
+                    if v >= 120: return 'background-color:rgba(255,75,75,0.2);color:#c00;font-weight:bold'
+                    if v >= 100: return 'background-color:rgba(255,165,0,0.15);color:#a60'
+                    if v < 70:  return 'background-color:rgba(100,100,100,0.08);color:#999'
+                except: pass
+                return ''
+
+            show_table = history_df[['日付_str'] + plot_cols].copy()
+            show_table = show_table.rename(columns={'日付_str':'日付'}).sort_values('日付', ascending=False)
+            st.dataframe(
+                show_table.style.applymap(color_rate, subset=plot_cols)
+                          .format({c:'{:.1f}%' for c in plot_cols}),
+                use_container_width=True, hide_index=True
+            )
+
+            # ── 月別集計 ─────────────────────────────────────
+            if len(history_df) >= 2:
+                st.markdown("#### 📅 月別集計")
+                history_df['年月'] = history_df['日付'].dt.to_period('M').astype(str)
+                monthly = history_df.groupby('年月')[plot_cols].mean().round(1)
+                monthly['対象日数'] = history_df.groupby('年月').size()
+                st.dataframe(
+                    monthly.style.applymap(color_rate, subset=plot_cols)
+                           .format({c:'{:.1f}%' for c in plot_cols}),
+                    use_container_width=True
+                )
 
 # ==========================================
 # 🌟 性能試験 (バックテスト) 機能
