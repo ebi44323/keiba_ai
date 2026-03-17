@@ -10,14 +10,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           lfs: true
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          # 1. 過去の履歴（亡霊）を一旦リセットして真っさらにする
+          rm -rf .git
+          git init
+          git branch -M main
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
+          
+          # 2. ZIPファイル等を正しく大容量ファイル（LFS）として登録し直す
           git lfs install
-          git lfs migrate import --yes --include="*.zip,*.joblib"
-          git push --force https://ebi44323:$HF_TOKEN@huggingface.co/spaces/ebi44323/keiba-ebye main
+          git lfs track "*.zip"
+          git lfs track "*.joblib"
+          
+          # 3. 今ある最新のファイルだけを包んで、Hugging Faceへ強制転送！
+          git add .
+          git commit -m "Deploy from GitHub"
+          git remote add hf https://ebi44323:$HF_TOKEN@huggingface.co/spaces/ebi44323/keiba-ebye
+          git push --force hf main
