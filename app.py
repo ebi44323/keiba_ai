@@ -193,6 +193,17 @@ def prepare_model_and_data():
         n_estimators=500, learning_rate=0.01, num_leaves=63, max_bin=255, cat_smooth=10,
         random_state=42, importance_type='gain', colsample_bytree=0.7, subsample=0.8
     )
+    # =========================================================
+    # 🌟 最後のモグラ叩き！文字データを「数値」に強制変換する！
+    for col in num_features:
+        if col in train_df.columns:
+            train_df[col] = pd.to_numeric(train_df[col], errors='coerce')
+        # 検証用データ（test_dfやvalid_df）がある場合もまとめて変換
+        if 'test_df' in locals() and col in test_df.columns:
+            test_df[col] = pd.to_numeric(test_df[col], errors='coerce')
+        if 'valid_df' in locals() and col in valid_df.columns:
+            valid_df[col] = pd.to_numeric(valid_df[col], errors='coerce')
+    # =========================================================
     model.fit(
         train_df[features], train_df['馬券内'], 
         group=train_groups,
