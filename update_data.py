@@ -159,11 +159,66 @@ def scrape_one_race(rid, date_str):
         rname_tag = soup.find('h1',class_='RaceName') or soup.find('div',class_='RaceName') or soup.find('h1')
         race_name = re.sub(r'\s+','',rname_tag.text) if rname_tag else f"{place}{int(rid[10:12])}R"
 
-        zenhan = kohan = np.nan
-        ptbl = soup.find('table', summary='ペース')
-        if ptbl:
-            ms = re.findall(r'\d+\.\d+', ptbl.find_all('td')[0].text if ptbl.find_all('td') else '')
-            if len(ms) >= 2: zenhan, kohan = float(ms[0]), float(ms[-1])
+        # ── ペース・ラップタイム取得 ────────────────────────────────
+        # 前半3F/前半ペース値 = 前半最初の1F(200m)ラップタイム
+        # 後半3F              = 後半ラスト2F(400m)合計
+        # 後半ペース値        = 後半600mの合計タイム
+        # ※ netkeibaの summary='ペース' は現在のページでは存在しない場合が多い
+        zenhan = kohan = zenhan_pace = kohan_pace_val = np.nan
+
+        def extract_laps(s):
+            """
+            ラップタイムをページから取得する。
+            複数セレクタを試みてラップ列を見つける。
+            返値: list of float (1F=200mごとのタイム) または []
+            """
+            # 方法1: summary='ペース' テーブル（旧形式）
+            ptbl = s.find('table', summary='ペース')
+            if ptbl:
+                full_text = ptbl.get_text()
+                nums = re.findall(r'\d{1,2}\.\d', full_text)
+                if len(nums) >= 4:
+                    return [float(x) for x in nums]
+
+            # 方法2: class に 'lap' 'pace' 'corner' を含むテーブル
+            for tbl in s.find_all('table'):
+                cls = ' '.join(tbl.get('class', [])).lower()
+                if any(k in cls for k in ['lap', 'pace', 'corner', 'time']):
+                    nums = re.findall(r'\d{1,2}\.\d', tbl.get_text())
+                    if len(nums) >= 4:
+                        # タイム列との区別: ラップは10-15秒程度
+                        laps = [float(n) for n in nums if 9.0 <= float(n) <= 16.0]
+                        if len(laps) >= 4:
+                            return laps
+
+            # 方法3: ページ全体からラップタイム列パターンを抽出
+            # 形式: "12.3 - 11.8 - 12.0 - 11.9 - 11.5 - 11.7" 等
+            page_text = s.get_text()
+            # ハイフン区切りの連続するラップタイム
+            for pattern in [
+                r'(\d{1,2}\.\d)(?:\s*[-－]\s*\d{1,2}\.\d){3,}',
+                r'(\d{1,2}\.\d)(?:\s+\d{1,2}\.\d){3,}',
+            ]:
+                m = re.search(pattern, page_text)
+                if m:
+                    laps = [float(x) for x in re.findall(r'\d{1,2}\.\d', m.group(0))]
+                    if len(laps) >= 4 and all(9.0 <= x <= 16.0 for x in laps):
+                        return laps
+
+            return []
+
+        try:
+            laps = extract_laps(soup)
+            if laps and len(laps) >= 4:
+                half = len(laps) // 2
+                zenhan        = laps[0]                    # 前半最初の1Fタイム
+                zenhan_pace   = laps[0]                    # 前半ペース値 = 同じ
+                kohan_total   = sum(laps[half:half+3])     # 後半最初の3F合計 = 後半ペース値
+                kohan         = sum(laps[-2:])             # 後半ラスト2F = 後半3F
+                kohan_pace_val = kohan_total
+            # ラップ取得失敗時は上り(上がり3F)から推算する（行レベルで後で適用）
+        except:
+            pass
 
         ths = [th.text.strip().replace('\n','') for th in table.find_all('th')]
         def gi(kws):
@@ -211,8 +266,8 @@ def scrape_one_race(rid, date_str):
                     '競馬場':place, '芝/ダート':ttype, '距離':dist,
                     '天候':tenki, '馬場':baba, 'レース名':race_name,
                     '通過':g(tsuka_i), '上り':g(agari_i),
-                    '前半ペース値':zenhan, '後半ペース値':kohan,
                     '前半3F':zenhan, '後半3F':kohan,
+                    '前半ペース値':zenhan_pace, '後半ペース値':kohan_pace_val,
                     '回り':VENUE_MAWARI.get(place,'不明'),
                     'コース地形':VENUE_CHIKEI.get(place,'不明'),
                 })

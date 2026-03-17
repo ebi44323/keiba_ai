@@ -1791,12 +1791,16 @@ elif action == "🏇 騎手・調教師フォーム分析":
         st.error(f"フォーム分析エラー: {e}")
 
 elif action == "🐴 愛馬の成長記録":
-    st.subheader("🐴 愛馬のAI能力評価・成長記録")
-    st.markdown("過去のレースにおけるAI指標や成績の推移を時系列でグラフ化します。")
-    
-    horse_name = st.text_input("🔍 馬名を入力してください (例: ドウデュース, リバティアイランド)")
-    
-    if st.button("成長記録を表示", type="primary") and horse_name:
+    st.subheader("🐴 愛馬の成長記録 & AIスカウティング")
+    import altair as alt
+
+    col_inp1, col_inp2 = st.columns([3, 1])
+    with col_inp1:
+        horse_name = st.text_input("🔍 馬名を入力", placeholder="例: ドウデュース、リバティアイランド")
+    with col_inp2:
+        show_n = st.number_input("最近N戦を表示", 5, 50, 20, 5)
+
+    if st.button("📊 成長記録を表示", type="primary") and horse_name:
         with st.spinner(f"{horse_name} のデータを検索中..."):
             try:
                 data_file = 'learning_data_perfect_tier.zip'
@@ -1804,143 +1808,191 @@ elif action == "🐴 愛馬の成長記録":
                     st.error(f"データベースファイル ({data_file}) が見つかりません。")
                 else:
                     df_hist = pd.read_csv(data_file, compression='zip', dtype=str)
-                    # ========================================================
-                    # 🌟 カンニング防止フィルター (タイムマシン機能)
-                    # ========================================================
-                    if '日付' in df_hist.columns:
-                        df_hist['日付'] = pd.to_datetime(df_hist['日付'], errors='coerce')
-                        # target_dt = pd.to_datetime(race_date_str)
-            
-                        # テストするレースの日付より「過去」のデータだけを残し、未来の記憶を消去する！
-                        # df_hist = df_hist[df_hist['日付'] < target_dt].copy()
-                    # ========================================================
+                    df_hist['日付'] = pd.to_datetime(df_hist['日付'], format='mixed', errors='coerce')
                     df_horse = df_hist[df_hist['馬名'] == horse_name].copy()
-                    
+
                     if df_horse.empty:
-                        st.warning(f"データベースに「{horse_name}」の過去レース記録が見つかりませんでした。")
+                        # 部分一致検索
+                        candidates = df_hist[df_hist['馬名'].str.contains(horse_name, na=False)]['馬名'].unique()
+                        if len(candidates) > 0:
+                            st.warning(f"「{horse_name}」は見つかりませんでした。似た名前: {', '.join(candidates[:5])}")
+                        else:
+                            st.warning(f"「{horse_name}」は見つかりませんでした。")
                     else:
-                        if '日付' in df_horse.columns:
-                            df_horse['日付'] = pd.to_datetime(df_horse['日付'], errors='coerce')
-                            df_horse = df_horse.sort_values('日付').dropna(subset=['日付'])
-                        
-                        st.success(f"✅ {len(df_horse)}戦分のデータを取得しました。")
-                        
-                        weight_col = '当日馬体重' if '当日馬体重' in df_horse.columns else '馬体重' if '馬体重' in df_horse.columns else None
-                        agari_col = '上り' if '上り' in df_horse.columns else '上がり3F' if '上がり3F' in df_horse.columns else None
-                        
-                        numeric_cols = ['補正タイム偏差', 'タイム差', '着順', '人気', '単勝', weight_col, agari_col]
-                        for col in numeric_cols:
-                            if col and col in df_horse.columns:
+                        df_horse = df_horse.sort_values('日付').dropna(subset=['日付'])
+                        df_horse = df_horse.tail(show_n).copy()
+
+                        # 数値変換
+                        for col in ['着順','人気','単勝','上り','当日馬体重','馬体重増減',
+                                    '補正タイム偏差','タイム差','距離','斤量','枠番','馬番']:
+                            if col in df_horse.columns:
                                 df_horse[col] = pd.to_numeric(df_horse[col], errors='coerce')
-                        
+
+                        # タイム指数計算
                         if '補正タイム偏差' in df_horse.columns:
-                            df_horse['タイム指数'] = 50 - (df_horse['補正タイム偏差'] * 10)
-                            
-                        chart_df = df_horse.set_index('日付')
-                        
-                        st.markdown(f"### 📈 {horse_name} の実績推移")
-                        st.info("💡 **指標の解説**\n- **タイム指数**: 走破タイム、ペース、馬場状態を補正し「50」を平均として算出した能力値です。数値が高いほど優秀です。\n- **タイム差**: 1着馬とのゴールタイム差（秒）です。1着勝利時は「0.0」となります。\n※ スローペースの瞬発力勝負等では、実力馬でもタイム指数が低く算出される場合があります。")
-                        
-                        import altair as alt
-                        
-                        tab1, tab2, tab3, tab4 = st.tabs(["🚀 タイム指数", "💨 上がり3F & タイム差", "⚖️ 馬体重推移", "👑 着順・人気"])
-                        
-                        with tab1:
-                            st.markdown("※ 数値が高い（グラフが上に行く）ほど優秀なパフォーマンスです。")
-                            if 'タイム指数' in chart_df.columns:
-                                idx_data = chart_df[['タイム指数']].dropna().reset_index()
-                                if not idx_data.empty:
-                                    min_idx = idx_data['タイム指数'].min() - 5
-                                    max_idx = idx_data['タイム指数'].max() + 5
-                                    c1 = alt.Chart(idx_data).mark_line(point=True).encode(
-                                        x=alt.X('日付:T', title='日付'),
-                                        y=alt.Y('タイム指数:Q', scale=alt.Scale(domain=[min_idx, max_idx]), title='タイム指数'),
-                                        tooltip=['日付:T', 'タイム指数:Q']
-                                    ).interactive()
-                                    st.altair_chart(c1, use_container_width=True)
-                                else: st.write("有効なタイム指数データがありません。")
-                            else: st.write("データがありません。")
-                            
-                        with tab2:
-                            st.markdown("※ 数値が低い（タイムが短い / 差が0.0に近い）ほど優秀です。どちらもY軸を反転しています。")
-                            
-                            if agari_col and agari_col in chart_df.columns:
-                                agari_data = chart_df[[agari_col]].dropna().reset_index()
-                                if not agari_data.empty:
-                                    min_a = agari_data[agari_col].min() - 0.5
-                                    max_a = agari_data[agari_col].max() + 0.5
-                                    ca = alt.Chart(agari_data).mark_line(point=True, color='#FFA500').encode(
-                                        x=alt.X('日付:T', title=''),
-                                        y=alt.Y(f'{agari_col}:Q', scale=alt.Scale(domain=[min_a, max_a], reverse=True), title=f'{agari_col} (秒)'),
-                                        tooltip=['日付:T', f'{agari_col}:Q']
-                                    ).interactive()
-                                    st.altair_chart(ca, use_container_width=True)
-                            
-                            if 'タイム差' in chart_df.columns:
-                                td_data = chart_df[['タイム差']].dropna().reset_index()
-                                if not td_data.empty:
-                                    max_t = td_data['タイム差'].max() + 0.2
-                                    ct = alt.Chart(td_data).mark_line(point=True, color='#FF4B4B').encode(
-                                        x=alt.X('日付:T', title='日付'),
-                                        y=alt.Y('タイム差:Q', scale=alt.Scale(domain=[0, max_t], reverse=True), title='タイム差 (秒)'),
-                                        tooltip=['日付:T', 'タイム差:Q']
-                                    ).interactive()
-                                    st.altair_chart(ct, use_container_width=True)
-                                    
-                        with tab3:
-                            st.markdown("※ 体重の増減を示します。")
-                            if weight_col and weight_col in chart_df.columns:
-                                weight_data = chart_df[[weight_col]].replace(0, np.nan).dropna().reset_index()
-                                if not weight_data.empty:
-                                    min_w = max(300, weight_data[weight_col].min() - 10)
-                                    max_w = weight_data[weight_col].max() + 10
-                                    cw = alt.Chart(weight_data).mark_line(point=True).encode(
-                                        x=alt.X('日付:T', title='日付'),
-                                        y=alt.Y(f'{weight_col}:Q', scale=alt.Scale(domain=[min_w, max_w]), title='馬体重(kg)'),
-                                        tooltip=['日付:T', f'{weight_col}:Q']
-                                    ).interactive()
-                                    st.altair_chart(cw, use_container_width=True)
-                                else: st.write("有効な馬体重データがありません。")
-                            else: st.write("データがありません。")
-                            
-                        with tab4:
-                            st.markdown("※ 数値が低い（1着 / 1番人気に近い）ほど上位に表示されます。")
-                            rank_cols = [c for c in ['着順', '人気'] if c in chart_df.columns]
-                            if rank_cols:
-                                rank_data = chart_df[rank_cols].dropna().reset_index()
-                                if not rank_data.empty:
-                                    max_val = rank_data[rank_cols].max().max()
-                                    max_scale = max(18, max_val + 1)
-                                    
-                                    melted = rank_data.melt('日付', value_vars=rank_cols, var_name='項目', value_name='順位')
-                                    cr = alt.Chart(melted).mark_line(point=True).encode(
-                                        x=alt.X('日付:T', title='日付'),
-                                        y=alt.Y('順位:Q', scale=alt.Scale(domain=[1, max_scale], reverse=True), title='順位'),
-                                        color='項目:N',
-                                        tooltip=['日付:T', '項目:N', '順位:Q']
-                                    ).interactive()
-                                    st.altair_chart(cr, use_container_width=True)
-                                else: st.write("有効な着順・人気データがありません。")
-                            else: st.write("データがありません。")
-                        
-                        st.markdown("#### 📜 レース詳細データ")
-                        display_cols = ['日付', 'レース名', '着順', '人気', '単勝', weight_col, '騎手', '通過', agari_col, 'タイム指数', 'タイム差']
-                        
-                        if '単勝' in df_horse.columns:
-                            df_horse = df_horse.rename(columns={'単勝': '単勝オッズ'})
-                            if '単勝' in display_cols:
-                                display_cols[display_cols.index('単勝')] = '単勝オッズ'
-                            
-                        show_cols = [c for c in display_cols if c and c in df_horse.columns]
-                        show_df = df_horse.copy()
-                        show_df['日付'] = show_df['日付'].dt.strftime('%Y/%m/%d')
-                        
-                        # 🌟 表の桁数を強制的に丸める処理を追加
-                        for col in ['タイム指数', 'タイム差', '単勝オッズ', agari_col]:
-                            if col in show_df.columns:
-                                show_df[col] = pd.to_numeric(show_df[col], errors='coerce').round(1)
-                        
-                        st.dataframe(show_df[show_cols].reset_index(drop=True), use_container_width=True)
-                            
+                            df_horse['タイム指数'] = (50 - df_horse['補正タイム偏差'] * 10).round(1)
+
+                        df_horse['日付_str'] = df_horse['日付'].dt.strftime('%Y/%m/%d')
+
+                        st.success(f"✅ {len(df_horse)}戦分のデータ（直近{show_n}戦）を表示中")
+
+                        # ── サマリーカード ──────────────────────────────
+                        total_n = len(df_horse)
+                        wins    = (df_horse['着順'] == 1).sum()
+                        top3    = (df_horse['着順'] <= 3).sum()
+                        avg_pop = df_horse['人気'].mean()
+                        avg_idx = df_horse['タイム指数'].mean() if 'タイム指数' in df_horse.columns else None
+                        best_idx = df_horse['タイム指数'].max() if 'タイム指数' in df_horse.columns else None
+
+                        k1,k2,k3,k4,k5 = st.columns(5)
+                        k1.metric("🏅 成績",     f"{wins}勝/{total_n}戦",
+                                  f"複勝 {top3}/{total_n}")
+                        k2.metric("🎯 勝率",      f"{wins/total_n*100:.1f}%",
+                                  f"複勝率 {top3/total_n*100:.1f}%")
+                        k3.metric("👥 平均人気", f"{avg_pop:.1f}番人気")
+                        if avg_idx: k4.metric("📊 平均タイム指数", f"{avg_idx:.1f}")
+                        if best_idx: k5.metric("🚀 最高タイム指数", f"{best_idx:.1f}")
+
+                        st.markdown("---")
+
+                        # ── タブ構成 ───────────────────────────────────
+                        tab_idx, tab_agari, tab_weight, tab_rank, tab_table = st.tabs([
+                            "📈 タイム指数", "💨 末脚・タイム差", "⚖️ 馬体重", "👑 着順・人気", "📋 詳細テーブル"
+                        ])
+
+                        def make_line(data, x, y, color='#4B8BFF', title='', reverse_y=False, zero_line=False):
+                            if data.empty: return None
+                            scale = alt.Scale(reverse=reverse_y)
+                            chart = alt.Chart(data).mark_line(point=True, color=color).encode(
+                                x=alt.X(f'{x}:N', sort=None, title='日付'),
+                                y=alt.Y(f'{y}:Q', scale=scale, title=title),
+                                tooltip=[f'{x}:N', f'{y}:Q']
+                            ).interactive()
+                            if zero_line:
+                                rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(
+                                    color='gray', strokeDash=[4,4]).encode(y='y:Q')
+                                return chart + rule
+                            return chart
+
+                        with tab_idx:
+                            st.caption("数値が高いほど優秀なパフォーマンスです。")
+                            if 'タイム指数' in df_horse.columns:
+                                d = df_horse[['日付_str','タイム指数','競馬場','芝/ダート','距離','着順']].dropna(subset=['タイム指数'])
+                                if not d.empty:
+                                    chart = alt.Chart(d).mark_line(point=True).encode(
+                                        x=alt.X('日付_str:N', sort=None, title=''),
+                                        y=alt.Y('タイム指数:Q', title='タイム指数'),
+                                        color=alt.condition(
+                                            alt.datum['着順'] == 1,
+                                            alt.value('#FF4B4B'),
+                                            alt.value('#4B8BFF')
+                                        ),
+                                        tooltip=['日付_str','タイム指数','競馬場','芝/ダート','距離','着順']
+                                    ).interactive().properties(height=280)
+                                    st.altair_chart(chart, use_container_width=True)
+                                    st.caption("赤点 = 1着")
+                            else:
+                                st.info("タイム指数データがありません（補正タイム偏差列が必要）")
+
+                        with tab_agari:
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                st.caption("上がり3F (低いほど末脚切れる)")
+                                if '上り' in df_horse.columns:
+                                    d = df_horse[['日付_str','上り']].dropna(subset=['上り'])
+                                    if not d.empty:
+                                        c = make_line(d,'日付_str','上り','#FFA500','上がり3F(秒)',reverse_y=True)
+                                        if c: st.altair_chart(c, use_container_width=True)
+                            with col_b:
+                                st.caption("1着タイム差 (0.0=1着)")
+                                if 'タイム差' in df_horse.columns:
+                                    d = df_horse[['日付_str','タイム差']].dropna(subset=['タイム差'])
+                                    if not d.empty:
+                                        c = make_line(d,'日付_str','タイム差','#FF4B4B','タイム差(秒)',reverse_y=True)
+                                        if c: st.altair_chart(c, use_container_width=True)
+
+                        with tab_weight:
+                            col_w1, col_w2 = st.columns(2)
+                            wt_col = '当日馬体重' if '当日馬体重' in df_horse.columns else None
+                            with col_w1:
+                                st.caption("馬体重推移 (kg)")
+                                if wt_col:
+                                    d = df_horse[['日付_str', wt_col]].replace(0, np.nan).dropna(subset=[wt_col])
+                                    if not d.empty:
+                                        c = make_line(d,'日付_str', wt_col,'#4BFF8B','馬体重(kg)')
+                                        if c: st.altair_chart(c, use_container_width=True)
+                                else:
+                                    st.info("馬体重データなし")
+                            with col_w2:
+                                st.caption("馬体重増減 (前走比)")
+                                if '馬体重増減' in df_horse.columns:
+                                    d = df_horse[['日付_str','馬体重増減']].dropna(subset=['馬体重増減'])
+                                    if not d.empty:
+                                        c = make_line(d,'日付_str','馬体重増減','#888','増減(kg)',zero_line=True)
+                                        if c: st.altair_chart(c, use_container_width=True)
+
+                        with tab_rank:
+                            st.caption("数値が低い（1位に近い）ほど上位。Y軸反転。")
+                            rank_d = df_horse[['日付_str','着順','人気']].dropna(subset=['着順'])
+                            if not rank_d.empty:
+                                melted = rank_d.melt('日付_str', value_vars=['着順','人気'],
+                                                     var_name='項目', value_name='順位')
+                                max_v = max(18, rank_d[['着順','人気']].max().max() + 1)
+                                cr = alt.Chart(melted).mark_line(point=True).encode(
+                                    x=alt.X('日付_str:N', sort=None, title=''),
+                                    y=alt.Y('順位:Q', scale=alt.Scale(domain=[1, max_v], reverse=True)),
+                                    color=alt.Color('項目:N'),
+                                    tooltip=['日付_str','項目','順位']
+                                ).interactive().properties(height=250)
+                                st.altair_chart(cr, use_container_width=True)
+
+                                # 人気 vs 着順の散布図（人気より走った/凡走した分析）
+                                st.markdown("##### 📊 人気 vs 着順（左下 = 人気通り勝ち / 右上 = 人気負け）")
+                                sc_d = df_horse[['日付_str','人気','着順','競馬場','レース名']].dropna(subset=['人気','着順'])
+                                if not sc_d.empty:
+                                    sc_d['超過率'] = sc_d['着順'] - sc_d['人気']
+                                    sc = alt.Chart(sc_d).mark_circle(size=100).encode(
+                                        x=alt.X('人気:Q', title='人気', scale=alt.Scale(domain=[1,18])),
+                                        y=alt.Y('着順:Q', title='着順', scale=alt.Scale(domain=[1,18], reverse=True)),
+                                        color=alt.Color('超過率:Q',
+                                            scale=alt.Scale(scheme='redblue', domain=[-8,8]),
+                                            legend=alt.Legend(title='着順-人気')),
+                                        tooltip=['日付_str','人気','着順','競馬場','レース名']
+                                    ).properties(height=250).interactive()
+                                    # 対角線 (人気=着順の線)
+                                    diag_data = pd.DataFrame({'x':range(1,19),'y':range(1,19)})
+                                    diag = alt.Chart(diag_data).mark_line(color='gray',strokeDash=[3,3],opacity=0.5).encode(
+                                        x='x:Q', y=alt.Y('y:Q', scale=alt.Scale(reverse=True)))
+                                    st.altair_chart(sc + diag, use_container_width=True)
+                                    st.caption("青 = 人気より上の着順（激走）/ 赤 = 人気を下回る着順（凡走）/ 灰点線 = 人気通り")
+
+                        with tab_table:
+                            disp_cols = [c for c in [
+                                '日付_str','競馬場','芝/ダート','距離','馬場','着順','人気',
+                                '騎手','斤量','当日馬体重','馬体重増減','上り','タイム差','タイム指数','単勝'
+                            ] if c in df_horse.columns]
+                            show = df_horse[disp_cols].copy().sort_values('日付_str', ascending=False)
+                            show = show.rename(columns={'日付_str':'日付'})
+
+                            def color_rank(row):
+                                try:
+                                    r = int(row['着順'])
+                                    if r == 1: return ['background-color:rgba(255,215,0,0.2)']*len(row)
+                                    if r <= 3: return ['background-color:rgba(192,192,192,0.15)']*len(row)
+                                except: pass
+                                return ['']*len(row)
+
+                            fmt = {}
+                            for c in ['上り','タイム差','タイム指数','単勝']:
+                                if c in show.columns: fmt[c] = '{:.1f}'
+                            if '馬体重増減' in show.columns: fmt['馬体重増減'] = '{:+.0f}'
+                            st.dataframe(
+                                show.style.apply(color_rank, axis=1).format(fmt),
+                                use_container_width=True, hide_index=True
+                            )
+
             except Exception as e:
+                import traceback
                 st.error(f"データの読み込み中にエラーが発生しました: {e}")
+                with st.expander("詳細エラーログ"):
+                    st.code(traceback.format_exc())
