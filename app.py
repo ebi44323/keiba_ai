@@ -722,7 +722,11 @@ def run_real_prediction(race_id, race_date_str):
         for col in ['騎手', '調教師', '父', '調教師_騎手']:
             df_test[f'{col}_TE'] = df_test[col].map(te_dicts.get(col, {})).fillna(global_mean)
 
-        for col in num_features: df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
+        for col in num_features:
+            # 🌟 追加：もし列が存在しなければ、空っぽ（NaN）の列を自動生成する！
+            if col not in df_test.columns:
+                df_test[col] = np.nan
+            df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
         for col in cat_features:
             if col not in df_test.columns: df_test[col] = '不明'
             cats = cat_categories_dict.get(col, ['不明'])
@@ -1291,10 +1295,10 @@ elif action == "🐴 愛馬の成長記録":
                     # ========================================================
                     if '日付' in df_hist.columns:
                         df_hist['日付'] = pd.to_datetime(df_hist['日付'], errors='coerce')
-                        target_dt = pd.to_datetime(race_date_str)
+                        # target_dt = pd.to_datetime(race_date_str)
             
                         # テストするレースの日付より「過去」のデータだけを残し、未来の記憶を消去する！
-                        df_hist = df_hist[df_hist['日付'] < target_dt].copy()
+                        # df_hist = df_hist[df_hist['日付'] < target_dt].copy()
                     # ========================================================
                     df_horse = df_hist[df_hist['馬名'] == horse_name].copy()
                     
