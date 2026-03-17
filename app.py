@@ -642,21 +642,22 @@ def run_real_prediction(race_id, race_date_str):
         df_test['年齢'] = pd.to_numeric(df_test['性齢'].astype(str).str.extract(r'(\d+)')[0], errors='coerce')
         df_test['調教師_騎手'] = df_test['調教師'].astype(str)+'_'+df_test['騎手'].astype(str)
 
-        df_test['3走前_着順'] = df_test.get('2走前_着順', np.nan)
-        df_test['2走前_着順'] = df_test.get('前走_着順', np.nan)
-        df_test['前走_着順']  = df_test.get('最新_着順', np.nan)
+        # _safe_col を使い全列をSeriesで取得（スカラー返却を防止）
+        df_test['3走前_着順'] = _safe_col(df_test, '2走前_着順')
+        df_test['2走前_着順'] = _safe_col(df_test, '前走_着順')
+        df_test['前走_着順']  = _safe_col(df_test, '最新_着順')
         df_test['過去3走平均着順'] = df_test[['前走_着順','2走前_着順','3走前_着順']].mean(axis=1)
-        df_test['5走前_スピード指数'] = df_test.get('4走前_スピード指数', np.nan)
-        df_test['4走前_スピード指数'] = df_test.get('3走前_スピード指数', np.nan)
-        df_test['3走前_スピード指数'] = df_test.get('2走前_スピード指数', np.nan)
-        df_test['2走前_スピード指数'] = df_test.get('前走_スピード指数', np.nan)
-        df_test['前走_スピード指数']  = df_test.get('最新_スピード指数', np.nan)
+        df_test['5走前_スピード指数'] = _safe_col(df_test, '4走前_スピード指数')
+        df_test['4走前_スピード指数'] = _safe_col(df_test, '3走前_スピード指数')
+        df_test['3走前_スピード指数'] = _safe_col(df_test, '2走前_スピード指数')
+        df_test['2走前_スピード指数'] = _safe_col(df_test, '前走_スピード指数')
+        df_test['前走_スピード指数']  = _safe_col(df_test, '最新_スピード指数')
         df_test['過去3走平均スピード指数']  = df_test[['前走_スピード指数','2走前_スピード指数','3走前_スピード指数']].mean(axis=1)
         df_test['近5走_中央値スピード指数'] = df_test[['前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数']].median(axis=1)
         df_test['近5走_最高スピード指数']   = df_test[['前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数']].max(axis=1)
         df_test['上昇度_スピード指数'] = df_test['前走_スピード指数']-df_test['近5走_中央値スピード指数']
 
-        df_test['前走_通過'] = df_test.get('最新_通過', np.nan)
+        df_test['前走_通過'] = _safe_col(df_test, '最新_通過', '')
         def parse_corner(x):
             s=str(x); return s.split('-')[-1] if '-' in s else (s if s.isdigit() else np.nan)
         df_test['前走_最終コーナー'] = pd.to_numeric(df_test['前走_通過'].fillna('').astype(str).apply(parse_corner), errors='coerce')
@@ -666,7 +667,7 @@ def run_real_prediction(race_id, race_date_str):
         df_test['同レース逃げ馬頭数'] = df_test['前走逃げフラグ'].sum()
         df_test['同レース先行馬頭数'] = df_test['前走先行フラグ'].sum()
         df_test['コース適性_着順パーセント'] = df_test.set_index(['馬ID','競馬場','芝/ダート']).index.map(horse_course_dict).fillna(0.5)
-        df_test['位置取りショック'] = df_test['前走_最終コーナー'] - (df_test['2走前_最終コーナー'] if '2走前_最終コーナー' in df_test.columns else np.nan)
+        df_test['位置取りショック'] = df_test['前走_最終コーナー'] - pd.to_numeric(_safe_col(df_test, '2走前_最終コーナー'), errors='coerce')
 
         race_date_obj = pd.to_datetime(race_date_str)
         df_test['休養日数'] = (race_date_obj-pd.to_datetime(df_test['最新_日付'])).dt.days if '最新_日付' in df_test.columns else np.nan
@@ -756,7 +757,11 @@ def run_real_prediction(race_id, race_date_str):
         return df_test, topics_list, reco, pace_text, confidence_text, track_type, place, distance, error_log
 
     except Exception as e:
-        error_log.append(f"❌ 予測AI内部で致命的なエラーが発生: {traceback.format_exc()}")
+        tb = traceback.format_exc()
+        error_log.append(f"❌ 予測AI内部で致命的なエラーが発生:\n{tb}")
+        # エラーログが空でも必ず何か入るよう保証
+        if not error_log:
+            error_log = [f"❌ 不明なエラー: {str(e)}"]
         return None,None,None,None,None,None,None,None,error_log
 
 # ==========================================
@@ -779,8 +784,11 @@ now = datetime.datetime.now(tokyo_tz)
 
 def display_error_log(err_log):
     st.error("⚠️ 予想データまたは結果の取得に失敗しました。")
-    with st.expander("🔍 エラー解析ログを見る (デバッグ用)"):
-        for log in err_log: st.write(f"- {log}")
+    with st.expander("🔍 エラー解析ログを見る (デバッグ用)", expanded=True):
+        if not err_log:
+            st.write("（エラーログなし: ネットワーク接続またはサイト側の問題の可能性があります）")
+        for log in err_log:
+            st.code(log, language=None)
 
 def display_result(df_res, topics, reco, pace_text, confidence_text):
     tab1, tab2, tab3 = st.tabs(["📊 予想一覧", "💡 展開・買い目", "🔍 性能詳細"])
@@ -1110,42 +1118,45 @@ elif action == "🧪 性能試験 (バックテスト)":
                         res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d'))
                         t_dict, f_dict = get_payouts(r['id'])
                         
-                        if res_df is not None and t_dict:
+                        if res_df is not None:
                             display_result(res_df, topics, reco, pace_text, conf_text)
                             results_for_txt.append({'date': test_date.strftime('%Y年%m月%d日'), 'place': place, 'num': r['num'], 'track': track_type, 'dist': dist, 'pace': pace_text, 'confidence': conf_text, 'df': res_df, 'topics': topics, 'reco': reco})
-                            
-                            # 距離をカテゴリに変換
-                            try:
-                                d = int(dist)
-                                if d <= 1400: d_cat = "短距離 (〜1400m)"
-                                elif d <= 1600: d_cat = "マイル (1600m)"
-                                elif d <= 2200: d_cat = "中距離 (1800〜2200m)"
-                                else: d_cat = "長距離 (2400m〜)"
-                            except:
-                                d_cat = "不明"
 
-                            # 期待値1.5以上の上位5頭に100円ずつベットしたと仮定
-                            for _, horse in res_df[(res_df.index < 5) & (res_df['期待値'] >= 1.5)].iterrows():
-                                invest = 100
-                                total_invest += invest
-                                
-                                ret_t = t_dict[horse['馬番']] if horse['馬番'] in t_dict else 0
-                                ret_f = f_dict[horse['馬番']] if horse['馬番'] in f_dict else 0
-                                
-                                total_return_t += ret_t
-                                total_return_f += ret_f
-                                if ret_f > 0: ev_hits += 1
-                                
-                                # 🌟 【追加】1ベットごとの成績を記録
-                                analysis_records.append({
-                                    '競馬場': place,
-                                    '芝/ダート': track_type,
-                                    '距離帯': d_cat,
-                                    '投資額': invest,
-                                    '単勝回収': ret_t,
-                                    '複勝回収': ret_f
-                                })
-                        else: display_error_log(err_log)
+                            if not t_dict:
+                                st.warning("⚠️ この日の払い戻しデータが取得できませんでした（予想は表示済み）")
+                            else:
+                                # 距離をカテゴリに変換
+                                try:
+                                    d = int(dist)
+                                    if d <= 1400: d_cat = "短距離 (〜1400m)"
+                                    elif d <= 1600: d_cat = "マイル (1600m)"
+                                    elif d <= 2200: d_cat = "中距離 (1800〜2200m)"
+                                    else: d_cat = "長距離 (2400m〜)"
+                                except:
+                                    d_cat = "不明"
+
+                                # 期待値1.5以上の上位5頭に100円ずつベットしたと仮定
+                                for _, horse in res_df[(res_df.index < 5) & (res_df['期待値'] >= 1.5)].iterrows():
+                                    invest = 100
+                                    total_invest += invest
+                                    ret_t = t_dict.get(horse['馬番'], 0)
+                                    ret_f = f_dict.get(horse['馬番'], 0)
+                                    total_return_t += ret_t
+                                    total_return_f += ret_f
+                                    if ret_f > 0: ev_hits += 1
+                                    analysis_records.append({
+                                        '競馬場': place,
+                                        '芝/ダート': track_type,
+                                        '距離帯': d_cat,
+                                        '投資額': invest,
+                                        '単勝回収': ret_t,
+                                        '複勝回収': ret_f
+                                    })
+                        else:
+                            if err_log:
+                                display_error_log(err_log)
+                            else:
+                                st.warning(f"⚠️ {r['place']} {r['num']}R: 予想データの取得に失敗しました（ネットワークエラーの可能性）")
                     time.sleep(1.0)
                     my_bar.progress((i + 1) / len(test_races))
                 
