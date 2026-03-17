@@ -751,6 +751,17 @@ def run_real_prediction(race_id, race_date_str):
 
         marks = ['◎', '〇', '▲', '△', '☆'] + [''] * (len(df_test) - 5)
         df_test['印'] = marks[:len(df_test)]
+
+        # 🌟🌟🌟 ここに以下の「X線検査コード」をまるごとコピペしてください 🌟🌟🌟
+        with st.expander("🛠️ 【デバッグ】AIが実際に見たデータ (欠損チェック)"):
+            st.warning("もしここで『スピード指数』や『上がり偏差』の欠損が全頭分出ていたら、データ取得がバグっています！")
+            missing_info = df_test[features].isnull().sum()
+            st.write("▼ 各特徴量のカラッポ(NaN)になっている数")
+            st.dataframe(missing_info[missing_info > 0])
+            st.write("▼ 実際のデータ中身")
+            st.dataframe(df_test[['馬名'] + features])
+        # 🌟🌟🌟 コピペここまで 🌟🌟🌟
+        
         # ========================================================
         # 🌟 ここからSHAP値（AI推し理由）の抽出！追加ライブラリ不要の裏ワザ！
         # ========================================================
