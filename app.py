@@ -68,16 +68,21 @@ def prepare_model_and_data():
     te_cols = TE_COLS  # 🌟 ここにこの1行を足すだけ！！！
     try:
         df = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
-    except FileNotFoundError:
-        df = pd.read_csv('learning_data_perfect_tier.csv', dtype=str)
-
         # =========================================================
-        # 🌟 真のモグラ叩き（読み込んだ瞬間にすべてを数値化する！）
+        # 🌟 修正：最強の武器を溶かさずに数値化する丁寧な処理！
         # =========================================================
         for col in num_features:
             if col in df_hist.columns:
+                # 1. True/False を 1/0 に変換
+                df_hist[col] = df_hist[col].replace({'True': 1, 'False': 0, 'true': 1, 'false': 0})
+                # 2. % や カンマ を取り除く
+                if df_hist[col].dtype == object:
+                    df_hist[col] = df_hist[col].astype(str).str.replace('%', '', regex=False).str.replace(',', '', regex=False).replace('nan', np.nan)
+                # 3. その上で安全に数値化！
                 df_hist[col] = pd.to_numeric(df_hist[col], errors='coerce')
         # =========================================================
+    except FileNotFoundError:
+        df = pd.read_csv('learning_data_perfect_tier.csv', dtype=str)
 
     df['日付'] = pd.to_datetime(df['日付'], format='mixed', errors='coerce')
     df = df.dropna(subset=['日付'])
@@ -730,11 +735,17 @@ def run_real_prediction(race_id, race_date_str):
         for col in ['騎手', '調教師', '父', '調教師_騎手']:
             df_test[f'{col}_TE'] = df_test[col].map(te_dicts.get(col, {})).fillna(global_mean)
 
+       # =========================================================
         for col in num_features:
-            # 🌟 追加：もし列が存在しなければ、空っぽ（NaN）の列を自動生成する！
             if col not in df_test.columns:
                 df_test[col] = np.nan
+            else:
+                df_test[col] = df_test[col].replace({'True': 1, 'False': 0, 'true': 1, 'false': 0})
+                if df_test[col].dtype == object:
+                    df_test[col] = df_test[col].astype(str).str.replace('%', '', regex=False).str.replace(',', '', regex=False).replace('nan', np.nan)
+            
             df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
+        # =========================================================
         for col in cat_features:
             if col not in df_test.columns: df_test[col] = '不明'
             cats = cat_categories_dict.get(col, ['不明'])
@@ -771,26 +782,20 @@ def run_real_prediction(race_id, race_date_str):
         # 🌟🌟🌟 コピペここまで 🌟🌟🌟
         
         # ========================================================
-        # 🌟 ここからSHAP値（AI推し理由）の抽出！追加ライブラリ不要の裏ワザ！
+        # 🌟 ここからSHAP値（AI推し理由）の抽出！
         # ========================================================
         try:
-            # モデルの特定（アンサンブルなら1つ目、単体ならそのまま）
             target_model = models[0] if 'models' in globals() or 'models' in locals() else model
-            
-            # ◎本命馬（1番目にソートされた馬）のデータを取得
             best_horse_name = df_test.iloc[0]['馬名']
             
-            # グローバル変数の features をそのまま使って、本命馬の1行だけを抽出
+            # X_test ではなく、df_test から本命馬の1行を抽出！
             X_best = df_test.iloc[[0]][features]
             
-            # LGBMRankerの隠しコア（_Booster）を直接呼び出す
+            # LGBMRankerの隠しコア（_Booster）を呼び出す
             booster = getattr(target_model, 'booster_', getattr(target_model, '_Booster', target_model))
             shap_contribs = booster.predict(X_best, pred_contrib=True)
             
-            # 最後の列はベーススコアなので除外
             best_contrib = shap_contribs[0, :-1] 
-            
-            # 貢献度トップ3の特徴量インデックスを取得
             top3_indices = np.argsort(best_contrib)[::-1][:3]
             reasons = [features[i] for i in top3_indices]
             
