@@ -1,0 +1,545 @@
+"""
+update_data.py - keiba-ebye 週次データ自動更新スクリプト v2.0
+================================================================
+【hokan.py から修正した主な点】
+  1. 血統取得URL: /horse/{id} → /horse/ped/{id}/ (fix2.pyの正解実装を採用)
+  2. 血統セレクタ: rowspan='4'→'16', rowspan='2'→'8'
+  3. 全派生特徴量を計算
+     (乗り替わり/馬場替わり/フラグ類/上り偏差/補正タイム偏差/穴馬フラグ 等)
+  4. 即sys.exit() → リトライ付き寛容なエラーハンドリングに変更
+  5. レース名・前半3F・後半3F の取得追加
+
+【使い方】
+  python update_data.py          # 先週1週間分を更新
+  python update_data.py 2        # 先々週まで遡る
+  python update_data.py --all    # 全未取得日を取得 (初回構築時)
+================================================================
+"""
+
+import pandas as pd
+import numpy as np
+import requests
+from bs4 import BeautifulSoup
+import re
+import datetime
+import time
+import zipfile
+import os
+import sys
+import random
+
+# ================================================================
+# 設定
+# ================================================================
+CSV_FILE  = 'learning_data_perfect_tier.csv'
+ZIP_FILE  = 'learning_data_perfect_tier.zip'
+PED_CSV   = 'pedigree_master_all.csv'
+
+PLACE_DICT = {
+    '01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京',
+    '06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'
+}
+VENUE_MAWARI = {
+    '札幌':'右回り','函館':'右回り','福島':'右回り','新潟':'左回り','東京':'左回り',
+    '中山':'右回り','中京':'左回り','京都':'右回り','阪神':'右回り','小倉':'右回り'
+}
+VENUE_CHIKEI = {
+    '札幌':'平坦','函館':'平坦','福島':'急坂','新潟':'平坦','東京':'急坂',
+    '中山':'急坂','中京':'急坂','京都':'緩坂','阪神':'急坂','小倉':'平坦'
+}
+
+_UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+]
+def get_headers(): return {"User-Agent": random.choice(_UA_LIST)}
+def safe_sleep(base=1.5, jitter=1.0): time.sleep(base + random.uniform(0, jitter))
+
+
+# ================================================================
+# 血統取得 (fix2.py の正解実装を採用)
+# ================================================================
+def get_pedigree(horse_id, retry=3):
+    empty = {'馬ID':horse_id,'父':'不明','父系':'不明','母':'不明','母系':'不明','母父':'不明','母父系':'不明'}
+    for attempt in range(retry):
+        try:
+            # ★修正: /horse/ped/{id}/ が正解 (hokan.pyは /horse/{id} で間違っていた)
+            r = requests.get(f"https://db.netkeiba.com/horse/ped/{horse_id}/",
+                             headers=get_headers(), timeout=12)
+            r.encoding = 'euc-jp'
+            if r.status_code in (403, 503):
+                print(f"    ⚠️ HTTP {r.status_code} (attempt {attempt+1}/{retry}) 待機中...")
+                time.sleep(12 * (attempt + 1))
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            table = soup.find('table', class_='blood_table')
+            if not table:
+                return empty  # 未登録馬
+            # ★修正: rowspan='16'(父・母) / rowspan='8'(祖父母層) が正解
+            tds_16 = [td for td in table.find_all('td') if td.get('rowspan') == '16']
+            tds_8  = [td for td in table.find_all('td') if td.get('rowspan') == '8']
+
+            def extract(td):
+                if not td: return '不明', '不明'
+                a = td.find('a')
+                name = re.sub(r'\s+', '', a.text) if a else re.sub(r'\s+', '', td.text)
+                m = re.search(r'([A-Za-z0-9.\-]+系|[\u30A0-\u30FF]+系)', re.sub(r'\s+','',td.text))
+                return name, (m.group(1) if m else '不明')
+
+            sire, sire_sys = extract(tds_16[0]) if len(tds_16) >= 1 else ('不明','不明')
+            dam,  _        = extract(tds_16[1]) if len(tds_16) >= 2 else ('不明','不明')
+            bms,  bms_sys  = extract(tds_8[2])  if len(tds_8)  >= 3 else ('不明','不明')
+            fno_m  = re.search(r'F-?No\.?\s*\[?([a-zA-Z0-9\-]+)\]?', table.text)
+            dam_sys = f"FNo.[{fno_m.group(1)}]" if fno_m else '不明'
+
+            return {'馬ID':horse_id,'父':sire,'父系':sire_sys,'母':dam,
+                    '母系':dam_sys,'母父':bms,'母父系':bms_sys}
+        except Exception as e:
+            print(f"    ⚠️ 血統取得エラー {horse_id} (attempt {attempt+1}/{retry}): {e}")
+            time.sleep(5)
+    return empty
+
+
+# ================================================================
+# レースID 一覧取得
+# ================================================================
+def get_race_ids_for_date(date_str):
+    race_ids = []
+    for url in [
+        f'https://race.netkeiba.com/top/race_list_sub.html?kaisai_date={date_str}',
+        f'https://race.netkeiba.com/top/race_list.html?kaisai_date={date_str}',
+    ]:
+        try:
+            r = requests.get(url, headers=get_headers(), timeout=10); r.encoding='euc-jp'
+            for a in BeautifulSoup(r.text,'html.parser').find_all('a', href=re.compile(r'race_id=(\d{12})')):
+                rid = re.search(r'race_id=(\d{12})',a['href']).group(1)
+                if 1 <= int(rid[4:6]) <= 10: race_ids.append(rid)
+            if race_ids: break
+        except: pass
+        safe_sleep(1.0, 0.5)
+    if not race_ids:
+        try:
+            r = requests.get(f'https://db.netkeiba.com/race/list/{date_str}/', headers=get_headers(), timeout=10)
+            r.encoding = 'euc-jp'
+            for m in re.findall(r'/race/(\d{12})', r.text):
+                if 1 <= int(m[4:6]) <= 10: race_ids.append(m)
+        except: pass
+    return sorted(list(set(race_ids)))
+
+
+# ================================================================
+# レース結果スクレイプ（1レース分）
+# ================================================================
+def scrape_one_race(rid, date_str):
+    rows = []
+    try:
+        r = requests.get(f"https://db.netkeiba.com/race/{rid}/", headers=get_headers(), timeout=15)
+        r.encoding = 'euc-jp'
+        soup = BeautifulSoup(r.text, 'html.parser')
+
+        table = (soup.find('table', class_='race_table_01') or
+                 soup.select_one('#All_Result_Table') or
+                 soup.select_one('.RaceTable01'))
+        if not table: return []
+
+        data_box = (soup.find('div',class_='data_intro') or
+                    soup.find('div',class_='RaceData01') or
+                    soup.find('dl',class_='racedata'))
+        rt = data_box.text.replace('\n','') if data_box else ''
+
+        tdm    = re.search(r'(芝|ダ|障|障害).*?(\d+)m', rt)
+        ttype  = '芝' if tdm and tdm.group(1)=='芝' else 'ダート' if tdm and 'ダ' in tdm.group(1) else '障害'
+        dist   = int(tdm.group(2)) if tdm else 1600
+        baba   = (re.search(r'馬場:([良稍重不良]+)',rt) or type('',(),{'group':lambda s,i:''})()).group(1) or '良'
+        tenki  = (re.search(r'天候:([晴曇雨雪小雨小雪]+)',rt) or type('',(),{'group':lambda s,i:''})()).group(1) or '晴'
+        place  = PLACE_DICT.get(str(rid)[4:6],'不明')
+
+        rname_tag = soup.find('h1',class_='RaceName') or soup.find('div',class_='RaceName') or soup.find('h1')
+        race_name = re.sub(r'\s+','',rname_tag.text) if rname_tag else f"{place}{int(rid[10:12])}R"
+
+        zenhan = kohan = np.nan
+        ptbl = soup.find('table', summary='ペース')
+        if ptbl:
+            ms = re.findall(r'\d+\.\d+', ptbl.find_all('td')[0].text if ptbl.find_all('td') else '')
+            if len(ms) >= 2: zenhan, kohan = float(ms[0]), float(ms[-1])
+
+        ths = [th.text.strip().replace('\n','') for th in table.find_all('th')]
+        def gi(kws):
+            for i,h in enumerate(ths):
+                if any(k in h for k in kws): return i
+            return -1
+
+        rank_i=gi(['着順']); waku_i=gi(['枠']); uma_i=gi(['馬番']); name_i=gi(['馬名'])
+        sex_i=gi(['性齢']); kin_i=gi(['斤量']); jock_i=gi(['騎手'])
+        time_i=gi(['タイム','走破']); diff_i=gi(['着差']); odds_i=gi(['単勝','オッズ'])
+        pop_i=gi(['人気']); wgt_i=gi(['馬体重']); trnr_i=gi(['調教師'])
+        tsuka_i=gi(['通過','コーナー']); agari_i=gi(['上り','上がり','3F'])
+
+        for tr in table.find_all('tr')[1:]:
+            tds = tr.find_all('td')
+            if len(tds) < 5: continue
+            try:
+                def g(i): return tds[i].text.strip() if i!=-1 and i<len(tds) else ''
+                chaku_s = g(rank_i)
+                if not re.match(r'^\d+$', chaku_s): continue
+
+                horse_a = tds[name_i].find('a', href=re.compile(r'/horse/\d+')) if name_i!=-1 and name_i<len(tds) else None
+                jock_a  = tds[jock_i].find('a') if jock_i!=-1 and jock_i<len(tds) else None
+                trnr_a  = tds[trnr_i].find('a') if trnr_i!=-1 and trnr_i<len(tds) else None
+                if not horse_a: continue
+
+                horse_id  = re.search(r'\d+', horse_a['href']).group(0).zfill(10)
+                jock_id   = re.search(r'\d+', jock_a['href']).group(0) if jock_a else '0'
+                kin_m     = re.search(r'\d+(\.\d+)?', g(kin_i))
+                wgt_text  = g(wgt_i)
+                wgt_m     = re.search(r'(\d{3})\(([+\-]?\d+)\)', wgt_text)
+
+                rows.append({
+                    '着順':g(rank_i), '枠番':g(waku_i), '馬番':g(uma_i),
+                    '馬名':horse_a.text.strip(), '性齢':g(sex_i),
+                    '斤量':float(kin_m.group(0)) if kin_m else 55.0,
+                    '騎手':jock_a.text.strip() if jock_a else g(jock_i),
+                    'タイム':g(time_i), '着差':g(diff_i), '単勝':g(odds_i), '人気':g(pop_i),
+                    '馬体重':wgt_text,
+                    '当日馬体重': int(wgt_m.group(1)) if wgt_m else 0,
+                    '馬体重増減': int(wgt_m.group(2)) if wgt_m else 0,
+                    '調教師': trnr_a.text.strip() if trnr_a else g(trnr_i),
+                    '馬ID':horse_id, '騎手ID':jock_id, 'レースID':str(rid),
+                    '日付':f"{date_str[:4]}/{int(date_str[4:6]):02d}/{int(date_str[6:8]):02d}",
+                    '競馬場':place, '芝/ダート':ttype, '距離':dist,
+                    '天候':tenki, '馬場':baba, 'レース名':race_name,
+                    '通過':g(tsuka_i), '上り':g(agari_i),
+                    '前半ペース値':zenhan, '後半ペース値':kohan,
+                    '前半3F':zenhan, '後半3F':kohan,
+                    '回り':VENUE_MAWARI.get(place,'不明'),
+                    'コース地形':VENUE_CHIKEI.get(place,'不明'),
+                })
+            except: continue
+    except Exception as e:
+        print(f"  スクレイプエラー {rid}: {e}")
+    return rows
+
+
+# ================================================================
+# 全派生特徴量の計算
+# ================================================================
+def compute_features(df):
+    df = df.copy()
+
+    # 数値変換
+    for c in ['着順','単勝','人気','斤量','距離','上り','枠番','馬番','当日馬体重','馬体重増減']:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    df['日付'] = pd.to_datetime(df['日付'], format='mixed', errors='coerce')
+
+    def t2s(t):
+        try:
+            m = re.match(r'(\d+):(\d+\.\d+)', str(t))
+            return float(m.group(1))*60+float(m.group(2)) if m else float(t)
+        except: return np.nan
+    df['走破タイム秒'] = df['タイム'].apply(t2s)
+
+    # 基本集計
+    df['出走頭数']      = df.groupby('レースID')['馬ID'].transform('count')
+    df['着順パーセント'] = (df['着順']-1)/(df['出走頭数']-1).replace(0,1)
+    df['rank_label']    = (df['着順']<=3).astype(int)
+
+    # コース統計・スピード指数
+    cs = (df.groupby(['競馬場','芝/ダート','距離'])['走破タイム秒']
+          .agg(['mean','std']).reset_index()
+          .rename(columns={'mean':'コース平均','std':'コース標準偏差'}))
+    df = pd.merge(df, cs, on=['競馬場','芝/ダート','距離'], how='left')
+    df['スピード指数'] = np.where(df['コース標準偏差']>0,
+        50 - ((df['走破タイム秒']-df['コース平均'])/df['コース標準偏差'])*10, 50)
+
+    # タイム関連
+    first_t = df[df['着順']==1].groupby('レースID')['走破タイム秒'].min().to_dict()
+    df['1着タイム']         = df['レースID'].map(first_t)
+    df['タイム差']          = df['走破タイム秒'] - df['1着タイム']
+    df['距離補正タイム差']  = df['タイム差'] * (1000/df['距離'].replace(0,1))
+    df['レース平均タイム']  = df.groupby('レースID')['走破タイム秒'].transform('mean')
+    df['補正タイム偏差']    = df['走破タイム秒'] - df['レース平均タイム']
+    df['レース平均斤量']    = df.groupby('レースID')['斤量'].transform('mean')
+    df['斤量差']            = df['斤量'] - df['レース平均斤量']
+    df['レース平均上り']    = df.groupby('レースID')['上り'].transform('mean')
+    df['上り偏差']          = df['上り'] - df['レース平均上り']
+
+    # コーナー
+    def first_corner(x):
+        s = str(x)
+        parts = [p for p in s.split('-') if p.strip().isdigit()]
+        return int(parts[0]) if parts else np.nan
+    df['最初のコーナー順位'] = df['通過'].apply(first_corner)
+    df['失速フラグ']          = (df['上り偏差'] > 1.5).astype(int)
+
+    # レース内先行馬数
+    df['レース内先行馬数'] = df.groupby('レースID')['最初のコーナー順位'].transform(lambda x: (pd.to_numeric(x, errors='coerce') <= 5).sum())
+
+    # 馬ごと時系列
+    df = df.sort_values(['馬ID','日付']).reset_index(drop=True)
+    df['前走着順']          = df.groupby('馬ID')['着順'].shift(1)
+    df['前走日付']          = df.groupby('馬ID')['日付'].shift(1)
+    df['出走間隔']          = (df['日付']-df['前走日付']).dt.days
+    df['前走コーナー順位']  = df.groupby('馬ID')['最初のコーナー順位'].shift(1)
+    df['前走上り偏差']      = df.groupby('馬ID')['上り偏差'].shift(1)
+    df['前走失速フラグ']    = df.groupby('馬ID')['失速フラグ'].shift(1)
+    df['前走着順パーセント']= df.groupby('馬ID')['着順パーセント'].shift(1)
+    df['前走距離補正タイム差'] = df.groupby('馬ID')['距離補正タイム差'].shift(1)
+    df['前走芝ダート']      = df.groupby('馬ID')['芝/ダート'].shift(1)
+    df['前走距離']          = df.groupby('馬ID')['距離'].shift(1)
+    df['前走騎手ID']        = df.groupby('馬ID')['騎手ID'].shift(1)
+
+    # フラグ
+    df['乗り替わりフラグ']  = (df['騎手ID'].astype(str)!=df['前走騎手ID'].astype(str)).fillna(False).astype(int)
+    df['馬場替わりフラグ']  = (df['芝/ダート']!=df['前走芝ダート']).fillna(False).astype(int)
+    df['距離変更フラグ']    = (df['距離']!=df['前走距離']).fillna(False).astype(int)
+    n = df['出走頭数'].replace(0,1)
+    df['前走大敗フラグ']    = (df['前走着順']/n > 0.7).fillna(False).astype(int)
+
+    # 直近3走
+    df['直近3走平均着順']       = df.groupby('馬ID')['着順'].transform(lambda x: x.shift(1).rolling(3,min_periods=1).mean())
+    df['直近3走着順パーセント'] = df.groupby('馬ID')['着順パーセント'].transform(lambda x: x.shift(1).rolling(3,min_periods=1).mean())
+
+    # 穴馬フラグ
+    df['穴馬_距離変更一変']     = ((df['距離変更フラグ']==1)&(df['直近3走着順パーセント']<0.4)).astype(int)
+    df['穴馬_馬場替わり一変']   = ((df['馬場替わりフラグ']==1)&(df['直近3走着順パーセント']<0.4)).astype(int)
+    df['穴馬_勝負の乗り替わり'] = ((df['乗り替わりフラグ']==1)&(df['直近3走着順パーセント'].fillna(0.5)<0.5)).astype(int)
+    df['穴馬_実力馬の巻き返し'] = ((df['前走大敗フラグ']==1)&(df['直近3走着順パーセント']<0.4)).astype(int)
+
+    # 複合キー
+    df['調教師_騎手'] = df['調教師'].astype(str)+'_'+df['騎手ID'].astype(str)
+    df['騎手_競馬場'] = df['騎手ID'].astype(str)+'_'+df['競馬場'].astype(str)
+    df['騎手_距離']   = df['騎手ID'].astype(str)+'_'+df['距離'].astype(str)
+
+    # 日付を文字列に戻す
+    df['日付'] = df['日付'].dt.strftime('%Y/%m/%d')
+    return df
+
+
+# ================================================================
+# メイン処理
+# ================================================================
+def main():
+    print("="*60)
+    print("keiba-ebye 週次データ更新スクリプト v2.0")
+    print("="*60)
+
+    weeks_back = 1
+    fetch_all  = False
+    if len(sys.argv) > 1:
+        if sys.argv[1] == '--all':
+            fetch_all = True
+            print("🔍 全未取得日付モード")
+        else:
+            try: weeks_back = int(sys.argv[1])
+            except: pass
+
+    # 既存データ読み込み
+    df_existing, existing_ids = None, set()
+    for path in [ZIP_FILE, CSV_FILE]:
+        if os.path.exists(path):
+            kw = {'compression':'zip'} if path.endswith('.zip') else {}
+            print(f"📊 既存データ読み込み: {path}")
+            df_existing = pd.read_csv(path, dtype=str, **kw)
+            # 指数表記バグ修正
+            df_existing['レースID'] = df_existing['レースID'].apply(
+                lambda x: str(int(float(x))).zfill(12) if re.match(r'[\d.]+[Ee][+\-]?\d+', str(x)) else str(x))
+            df_existing['馬ID'] = df_existing['馬ID'].astype(str).str.replace(r'\.0$','',regex=True).str.zfill(10)
+            # JRAのみ
+            def is_jra(rid):
+                s=str(rid).strip()
+                return len(s)==12 and s[4:6].isdigit() and 1<=int(s[4:6])<=10
+            df_existing = df_existing[df_existing['レースID'].apply(is_jra)].copy()
+            existing_ids = set(df_existing['レースID'].tolist())
+            print(f"  → {len(df_existing):,}行 / {len(existing_ids):,}レース")
+            break
+
+    # 血統マスター読み込み
+    ped_dict = {}
+    if os.path.exists(PED_CSV):
+        df_ped = pd.read_csv(PED_CSV, dtype=str).fillna('不明')
+        df_ped['馬ID'] = df_ped['馬ID'].astype(str).str.replace(r'\.0$','',regex=True).str.zfill(10)
+        unkn = (df_ped['父']=='不明').mean()
+        if unkn > 0.2:
+            print(f"⚠️ 血統マスターに「不明」が{unkn*100:.0f}%あります。fix2.py での修復を推奨します。")
+        ped_dict = df_ped.set_index('馬ID').to_dict('index')
+        print(f"📜 血統マスター: {len(ped_dict):,}頭")
+    else:
+        print(f"⚠️ {PED_CSV} が見つかりません。血統はWeb取得のみになります。")
+
+    # 取得対象日付の決定
+    today = datetime.date.today()
+    if fetch_all and df_existing is not None:
+        last_dt = pd.to_datetime(df_existing['日付'], errors='coerce').max()
+        start_d = (last_dt + pd.Timedelta(days=1)).date()
+        target_dates = [d.date() for d in pd.date_range(start=start_d, end=today-datetime.timedelta(days=1)) if d.weekday() in (5,6)]
+    else:
+        target_dates = []
+        for w in range(weeks_back):
+            base = today - datetime.timedelta(weeks=w)
+            sat  = base - datetime.timedelta(days=(base.weekday()-5)%7)
+            for d in [sat, sat+datetime.timedelta(days=1)]:
+                if d < today: target_dates.append(d)
+        target_dates = sorted(set(target_dates))
+
+    if not target_dates:
+        print("✅ 取得対象日なし（データは最新です）")
+    else:
+        print(f"\n📅 取得対象: {[d.strftime('%Y/%m/%d') for d in target_dates]}")
+
+    # スクレイプ
+    all_new_rows = []
+    for d in target_dates:
+        date_str = d.strftime('%Y%m%d')
+        print(f"\n--- {d.strftime('%Y/%m/%d')} ---")
+        race_ids = get_race_ids_for_date(date_str)
+        print(f"  レース数: {len(race_ids)}")
+        for rid in race_ids:
+            if rid in existing_ids:
+                print(f"  スキップ（既存）: {rid}")
+                continue
+            print(f"  取得中: {rid}")
+            rows = scrape_one_race(rid, date_str)
+            if rows:
+                all_new_rows.extend(rows)
+                print(f"    → {len(rows)}頭")
+            safe_sleep(2.0, 1.5)
+
+    print(f"\n新規データ: {len(all_new_rows)}行")
+    if not all_new_rows:
+        print("新しいデータはありませんでした。")
+        return
+
+    df_new_raw = pd.DataFrame(all_new_rows)
+
+    # 血統付与
+    print("\n🧬 血統データを照合中...")
+    unique_hids = [h for h in df_new_raw['馬ID'].unique() if h not in ped_dict and h != '0000000000']
+    new_peds = []
+    for i, hid in enumerate(unique_hids):
+        print(f"  血統取得 {i+1}/{len(unique_hids)}: {hid}")
+        ped = get_pedigree(hid)
+        ped_dict[hid] = ped
+        new_peds.append(ped)
+        safe_sleep(1.5, 0.5)
+
+    for col in ['父','父系','母','母系','母父','母父系']:
+        df_new_raw[col] = df_new_raw['馬ID'].map(lambda hid: ped_dict.get(hid, {}).get(col, '不明'))
+
+    # 全体結合してから特徴量計算（前走系は全期間の時系列が必要）
+    if df_existing is not None:
+        df_combined = pd.concat([df_existing, df_new_raw.astype(str)], ignore_index=True)
+        df_combined = df_combined.drop_duplicates(subset=['レースID','馬ID'], keep='last')
+    else:
+        df_combined = df_new_raw.astype(str)
+
+    print("\n⚙️  特徴量計算中...")
+    df_final = compute_features(df_combined)
+    df_final = df_final.sort_values(['日付','レースID','馬番'], na_position='last').reset_index(drop=True)
+
+    # 保存
+    print(f"\n💾 保存中: {len(df_final):,}行")
+    df_final.to_csv(CSV_FILE, index=False, encoding='utf-8-sig')
+    with zipfile.ZipFile(ZIP_FILE, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.write(CSV_FILE)
+    print(f"✅ {CSV_FILE} + {ZIP_FILE} 保存完了")
+
+    # 血統マスター更新
+    if new_peds:
+        print(f"\n💾 血統マスター更新: {len(new_peds)}頭追記")
+        if os.path.exists(PED_CSV):
+            df_ped_old = pd.read_csv(PED_CSV, dtype=str)
+            df_ped_new = pd.concat([df_ped_old, pd.DataFrame(new_peds)], ignore_index=True)
+            df_ped_new = df_ped_new.drop_duplicates(subset=['馬ID'], keep='last')
+        else:
+            df_ped_new = pd.DataFrame(new_peds)
+        df_ped_new.to_csv(PED_CSV, index=False, encoding='utf-8-sig')
+        print(f"✅ {PED_CSV} 更新完了")
+
+    print("\n"+"="*60)
+    print("🎉 更新完了！")
+    print("="*60)
+
+
+if __name__ == '__main__':
+    main()
+
+
+# ================================================================
+# テスト用: ドライラン（実際には保存しない）
+# ================================================================
+def dry_run_test(date_str=None):
+    """
+    update_data.py --test で呼び出し。
+    指定日（デフォルト: 先週の土曜日）のレースIDとレース結果を1レース分だけ取得して
+    スクレイピングが正常に動くか確認する。保存は一切行わない。
+    """
+    if date_str is None:
+        today = datetime.date.today()
+        # 直近の土曜日
+        sat = today - datetime.timedelta(days=(today.weekday() - 5) % 7 + 7)
+        date_str = sat.strftime('%Y%m%d')
+
+    print(f"\n{'='*60}")
+    print(f"🧪 ドライランテスト: {date_str[:4]}/{date_str[4:6]}/{date_str[6:]}")
+    print(f"{'='*60}")
+
+    # Step1: レースID取得
+    print("\n📋 Step1: レースID取得")
+    race_ids = get_race_ids_for_date(date_str)
+    if not race_ids:
+        print("❌ レースIDが見つかりません（開催なし or ネットワークエラー）")
+        return False
+    print(f"✅ {len(race_ids)}件のレースIDを取得: {race_ids[:3]}...")
+
+    # Step2: 1レース分の結果スクレイプ
+    test_rid = race_ids[0]
+    print(f"\n🐎 Step2: レース結果スクレイプ (先頭1件: {test_rid})")
+    rows = scrape_one_race(test_rid, date_str)
+    if not rows:
+        print("❌ レース結果が取得できませんでした")
+        return False
+    print(f"✅ {len(rows)}頭分のデータを取得")
+    print(f"   サンプル: {rows[0]['馬名']} / {rows[0]['着順']}着 / {rows[0]['タイム']}")
+    print(f"   取得列数: {len(rows[0])}列")
+
+    # Step3: 血統取得テスト（1頭だけ）
+    test_hid = rows[0]['馬ID']
+    print(f"\n🧬 Step3: 血統取得テスト (馬ID: {test_hid})")
+    ped = get_pedigree(test_hid, retry=1)
+    if ped['父'] == '不明':
+        print(f"⚠️  血統取得失敗（未登録馬 or ネットワーク問題）")
+    else:
+        print(f"✅ 血統取得成功: 父={ped['父']} ({ped['父系']}) / 母父={ped['母父']}")
+
+    # Step4: 特徴量計算テスト
+    print(f"\n⚙️  Step4: 特徴量計算テスト")
+    df_test = pd.DataFrame(rows)
+    df_test['父'] = ped['父']; df_test['父系'] = ped['父系']
+    df_test['母'] = ped['母']; df_test['母系'] = ped['母系']
+    df_test['母父'] = ped['母父']; df_test['母父系'] = ped['母父系']
+    try:
+        df_feat = compute_features(df_test)
+        print(f"✅ 特徴量計算成功: {len(df_feat.columns)}列")
+        key_cols = ['走破タイム秒','スピード指数','着順パーセント','rank_label']
+        for c in key_cols:
+            val = df_feat[c].iloc[0] if c in df_feat.columns else 'なし'
+            print(f"   {c}: {val}")
+    except Exception as e:
+        print(f"❌ 特徴量計算エラー: {e}")
+        return False
+
+    print(f"\n{'='*60}")
+    print("✅ ドライランテスト完了！スクレイピング・特徴量計算とも正常です。")
+    print("   本番実行: python update_data.py")
+    print(f"{'='*60}\n")
+    return True
+
+
+if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == '--test':
+        date_arg = sys.argv[2] if len(sys.argv) > 2 else None
+        dry_run_test(date_arg)
+    else:
+        main()
