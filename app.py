@@ -104,6 +104,8 @@ def prepare_model_and_data():
     for _c in ['コース平均','コース標準偏差']:
         if _c in df.columns: df = df.drop(columns=[_c])
     df = pd.merge(df, cs, on=['競馬場','芝/ダート','距離'], how='left')
+    # ★追加：マージが終わったら、AIが計算できるように「距離」を数値型に戻す
+    df['距離'] = pd.to_numeric(df['距離'], errors='coerce')
     # マージ後に列が存在しない場合の安全フォールバック
     if 'コース標準偏差' not in df.columns:
         df['コース平均'] = df['走破タイム秒'].mean()
