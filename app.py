@@ -754,6 +754,50 @@ def run_real_prediction(race_id, race_date_str):
             reco = f"🎯 【馬連・ワイド】 ◎ {top1_umaban}番 から相手 ({himo_str}番) への流し。"
             if ana_str: reco += f"\n  💣 妙味狙い: {top1_umaban}番から穴馬({ana_str}番)へのワイドで高配当！"
 
+        # =====================================================
+        # SHAP値による本命馬の推し理由テキスト生成
+        # =====================================================
+        shap_reason = ""
+        try:
+            best_horse_name = df_test.iloc[0]['馬名']
+            X_best = df_test.iloc[[0]][features].copy()
+            # カテゴリ列を数値に変換（LGBMBoosterのpred_contribに必要）
+            X_best_num = X_best.copy()
+            for col in cat_features:
+                if col in X_best_num.columns:
+                    X_best_num[col] = X_best_num[col].cat.codes
+            booster = getattr(model, 'booster_', getattr(model, '_Booster', None))
+            if booster is not None:
+                shap_vals = booster.predict(X_best_num, pred_contrib=True)
+                contribs = shap_vals[0, :-1]  # 最後の列はbias
+                # 特徴量名とSHAP値を紐付け、上位3つを抽出
+                feat_contrib = list(zip(features, contribs))
+                feat_contrib_sorted = sorted(feat_contrib, key=lambda x: x[1], reverse=True)
+                top3 = feat_contrib_sorted[:3]
+                # 特徴量名を日本語ラベルに変換
+                feat_label = {
+                    '近5走_中央値スピード指数': '近5走のスピード指数(中央値)',
+                    '近5走_最高スピード指数': '過去最高スピード指数',
+                    '上昇度_スピード指数': 'スピード指数の上昇度',
+                    '前走_スピード指数': '前走スピード指数',
+                    'コース適性_着順パーセント': 'このコースの適性',
+                    '前走着順パーセント': '前走の相対着順',
+                    '直近3走着順パーセント': '直近3走の安定感',
+                    '前走距離補正タイム差': '前走のタイム差',
+                    '前走上り偏差': '前走の末脚の切れ味',
+                    '休養日数': '休養明けの上積み',
+                    '乗り替わりフラグ': '騎手強化の乗り替わり',
+                    '穴馬_実力馬の巻き返し': '前走凡走からの巻き返し',
+                    '穴馬_勝負の乗り替わり': '勝負の乗り替わり',
+                }
+                reasons = [feat_label.get(f, f) for f, _ in top3]
+                shap_reason = ("\n\n🤖 **AIの推し理由 (SHAP分析)**\n"
+                               f"◎ **{best_horse_name}** が本命の最大の根拠は **「{reasons[0]}」** です。"
+                               f"次いで **「{reasons[1]}」「{reasons[2]}」** が高評価でした。")
+        except Exception as shap_e:
+            shap_reason = f"（SHAP分析エラー: {shap_e}）"
+        reco = reco + shap_reason if shap_reason else reco
+
         return df_test, topics_list, reco, pace_text, confidence_text, track_type, place, distance, error_log
 
     except Exception as e:
@@ -918,7 +962,7 @@ elif action == "📅 今週末の全レース予想":
 elif action == "📝 1日の振り返り (答え合わせ)":
     st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
     target_date = st.date_input("振り返りたい日付を選択", datetime.date.today() - datetime.timedelta(days=1))
-    
+
     if st.button("🚀 振り返り実行！", type="primary"):
         with st.spinner(f'{target_date.strftime("%Y/%m/%d")} のレースデータと結果を取得・集計中...'):
             races = get_todays_races(target_date.strftime('%Y%m%d'))
@@ -926,49 +970,84 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 st.error("指定した日付のレースが見つかりません。")
             else:
                 my_bar = st.progress(0, text="集計中...")
-                
+
                 stats = {
-                    'honmei_races': 0, 'honmei_tan_hits': 0, 'honmei_tan_return': 0, 'honmei_fuku_hits': 0, 'honmei_fuku_return': 0,
+                    'honmei_races': 0, 'honmei_tan_hits': 0, 'honmei_tan_return': 0,
+                    'honmei_fuku_hits': 0, 'honmei_fuku_return': 0,
                     'umaren_races': 0, 'umaren_invest': 0, 'umaren_hits': 0, 'umaren_return': 0,
                     'wide_ana_races': 0, 'wide_ana_invest': 0, 'wide_ana_hits': 0, 'wide_ana_return': 0,
                     'ev_invest': 0, 'ev_tan_hits': 0, 'ev_tan_return': 0, 'ev_fuku_hits': 0, 'ev_fuku_return': 0,
                     'shiba_races': 0, 'shiba_return': 0, 'dart_races': 0, 'dart_return': 0,
-                    'exp_races': 0, 'exp_return': 0, 'new_races': 0, 'new_return': 0 # 🌟 未出走分離用
+                    'exp_races': 0, 'exp_return': 0, 'new_races': 0, 'new_return': 0,
                 }
-                
+
                 for i, r in enumerate(races):
                     res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'))
                     payouts = get_all_payouts(r['id'])
-                    
+
+                    # =========================================================
+                    # レースごとの予想を expander で表示（★追加）
+                    # =========================================================
+                    honmei_name = res_df.iloc[0]['馬名'] if res_df is not None else "不明"
+                    honmei_num  = res_df.iloc[0]['馬番'] if res_df is not None else "-"
+                    tan_pay = payouts['tansho'].get(honmei_num, 0) if res_df is not None else 0
+                    hit_icon = "✅" if tan_pay > 0 else ("❌" if res_df is not None and payouts['tansho'] else "⚠️")
+                    expander_label = f"{hit_icon} {r['place']} {r['num']}R  ◎{honmei_num}番 {honmei_name}"
+                    if tan_pay > 0:
+                        expander_label += f"  → 単勝 {tan_pay/100:.1f}倍 的中！"
+
+                    with st.expander(expander_label, expanded=False):
+                        if res_df is not None:
+                            display_result(res_df, topics, reco, pace_text, conf_text)
+                            # 払い戻し結果を表示
+                            if payouts['tansho']:
+                                st.markdown("##### 📋 払い戻し結果")
+                                result_rows = []
+                                for rank_i, row in res_df.iterrows():
+                                    uma = row['馬番']
+                                    tan = payouts['tansho'].get(uma, 0)
+                                    fuku = payouts['fukusho'].get(uma, 0)
+                                    if rank_i < 5 or tan > 0 or fuku > 0:
+                                        result_rows.append({
+                                            '印': row['印'],
+                                            '馬番': uma,
+                                            '馬名': row['馬名'],
+                                            'AI勝率': f"{row['勝率(AI予測)']*100:.1f}%",
+                                            '単勝払戻': f"¥{tan:,}" if tan > 0 else '-',
+                                            '複勝払戻': f"¥{fuku:,}" if fuku > 0 else '-',
+                                        })
+                                if result_rows:
+                                    st.dataframe(pd.DataFrame(result_rows), use_container_width=True, hide_index=True)
+                            else:
+                                st.warning("払い戻しデータが取得できませんでした")
+                        else:
+                            display_error_log(err_log)
+
+                    # =========================================================
+                    # 集計処理（従来通り）
+                    # =========================================================
                     if res_df is not None and payouts['tansho']:
                         honmei = res_df.iloc[0]['馬番']
-                        
-                        # 🌟 未出走馬がいるか判定 (前走_着順がNaNの馬がいるか、レース名に新馬が含まれるか)
                         has_unraced = ('新馬' in r['title']) or ('未出走' in r['title']) or (res_df['前走_着順'].isna().any() if '前走_着順' in res_df.columns else False)
-                        
-                        # 1. 本命成績 ＆ 🌟 条件別成績
+
                         stats['honmei_races'] += 1
                         if track_type == "芝": stats['shiba_races'] += 1
                         elif track_type == "ダート": stats['dart_races'] += 1
-                        
                         if has_unraced: stats['new_races'] += 1
                         else: stats['exp_races'] += 1
-                        
+
                         if honmei in payouts['tansho']:
                             stats['honmei_tan_hits'] += 1
                             stats['honmei_tan_return'] += payouts['tansho'][honmei]
-                            
                             if track_type == "芝": stats['shiba_return'] += payouts['tansho'][honmei]
                             elif track_type == "ダート": stats['dart_return'] += payouts['tansho'][honmei]
-                            
                             if has_unraced: stats['new_return'] += payouts['tansho'][honmei]
                             else: stats['exp_return'] += payouts['tansho'][honmei]
-                            
+
                         if honmei in payouts['fukusho']:
                             stats['honmei_fuku_hits'] += 1
                             stats['honmei_fuku_return'] += payouts['fukusho'][honmei]
-                            
-                        # 2. 馬連（1位から2〜5位へ4点流し）
+
                         if len(res_df) >= 5:
                             himo_list = res_df.iloc[1:5]['馬番'].tolist()
                             stats['umaren_races'] += 1
@@ -978,8 +1057,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                                 if key in payouts['umaren']:
                                     stats['umaren_hits'] += 1
                                     stats['umaren_return'] += payouts['umaren'][key]
-                                    
-                        # 3. 穴馬ワイド（1位から、5位以下で期待値1.5以上の穴馬へ流し）
+
                         ana_list = res_df[(res_df.index >= 4) & (res_df['期待値'] >= 1.5)]['馬番'].tolist()
                         if ana_list:
                             stats['wide_ana_races'] += 1
@@ -989,8 +1067,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                                 if key in payouts['wide']:
                                     stats['wide_ana_hits'] += 1
                                     stats['wide_ana_return'] += payouts['wide'][key]
-                                    
-                        # 4. 上位5頭の期待値1.5以上ベタ買い
+
                         ev_list = res_df[(res_df.index < 5) & (res_df['期待値'] >= 1.5)]['馬番'].tolist()
                         if ev_list:
                             stats['ev_invest'] += len(ev_list) * 100
@@ -1001,12 +1078,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                                 if ev in payouts['fukusho']:
                                     stats['ev_fuku_hits'] += 1
                                     stats['ev_fuku_return'] += payouts['fukusho'][ev]
-                    else:
-                        if res_df is None:
-                            st.error(f"❌ {r['place']}{r['num']}R: 予想処理失敗")
-                        elif not payouts['tansho']:
-                            st.warning(f"⚠️ {r['place']}{r['num']}R: 払い戻し取得失敗")
-                                    
+
                     time.sleep(0.5)
                     my_bar.progress((i + 1) / len(races))
                 
