@@ -2,18 +2,22 @@ name: Sync to Hugging Face Space
 on:
   push:
     branches: [main]
-  # 手動でも実行できるようにする設定
   workflow_dispatch:
 
 jobs:
   sync-to-hub:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           lfs: true
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push --force https://ebi44323:$HF_TOKEN@huggingface.co/spaces/ebi44323/keiba-ebye main
+        run: |
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+          git lfs install
+          git lfs migrate import --yes --include="*.zip,*.joblib"
+          git push --force https://ebi44323:$HF_TOKEN@huggingface.co/spaces/ebi44323/keiba-ebye main
