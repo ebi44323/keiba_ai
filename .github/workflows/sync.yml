@@ -26,9 +26,10 @@ jobs:
           git lfs install
           git lfs track "*.zip"
           git lfs track "*.joblib"
+          git lfs track "*.pkl"    # 🌟 ここを追加！！！
           
           # 3. 今ある最新のファイルだけを包んで、Hugging Faceへ強制転送！
           git add .
           git commit -m "Deploy from GitHub"
-          git remote add hf https://ebi44323:$HF_TOKEN@huggingface.co/spaces/ebi44323/keiba-ebye
+          git remote add hf https://ebi44323:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/ebi44323/keiba-ebye
           git push --force hf main
