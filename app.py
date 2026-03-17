@@ -183,6 +183,9 @@ def prepare_model_and_data():
     df_valid['馬券内'] = (df_valid['着順']<=3).astype(int)
     for col in num_features:
         if col not in df_valid.columns: df_valid[col] = np.nan
+        else:
+             # ★追加: 必ず数値型（float等）に変換する安全策
+             df_valid[col] = pd.to_numeric(df_valid[col], errors='coerce')
 
     cat_categories_dict = {}
     for col in cat_features:
