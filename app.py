@@ -71,6 +71,14 @@ def prepare_model_and_data():
     except FileNotFoundError:
         df = pd.read_csv('learning_data_perfect_tier.csv', dtype=str)
 
+        # =========================================================
+        # 🌟 真のモグラ叩き（読み込んだ瞬間にすべてを数値化する！）
+        # =========================================================
+        for col in num_features:
+            if col in df_hist.columns:
+                df_hist[col] = pd.to_numeric(df_hist[col], errors='coerce')
+        # =========================================================
+
     df['日付'] = pd.to_datetime(df['日付'], format='mixed', errors='coerce')
     df = df.dropna(subset=['日付'])
 
@@ -766,18 +774,25 @@ def run_real_prediction(race_id, race_date_str):
         # 🌟 ここからSHAP値（AI推し理由）の抽出！追加ライブラリ不要の裏ワザ！
         # ========================================================
         try:
-            target_model = models[0] if 'models' in locals() and isinstance(models, list) else model
-            target_features = features if 'features' in locals() else X_test.columns
-            best_horse_name = df_test.iloc[0]['馬名']
-            X_best = df_test.iloc[[0]][target_features]
+            # モデルの特定（アンサンブルなら1つ目、単体ならそのまま）
+            target_model = models[0] if 'models' in globals() or 'models' in locals() else model
             
-            # 🌟 修正：LGBMRankerの隠しコア（_Booster）を直接呼び出す！
+            # ◎本命馬（1番目にソートされた馬）のデータを取得
+            best_horse_name = df_test.iloc[0]['馬名']
+            
+            # グローバル変数の features をそのまま使って、本命馬の1行だけを抽出
+            X_best = df_test.iloc[[0]][features]
+            
+            # LGBMRankerの隠しコア（_Booster）を直接呼び出す
             booster = getattr(target_model, 'booster_', getattr(target_model, '_Booster', target_model))
             shap_contribs = booster.predict(X_best, pred_contrib=True)
             
+            # 最後の列はベーススコアなので除外
             best_contrib = shap_contribs[0, :-1] 
+            
+            # 貢献度トップ3の特徴量インデックスを取得
             top3_indices = np.argsort(best_contrib)[::-1][:3]
-            reasons = [target_features[i] for i in top3_indices]
+            reasons = [features[i] for i in top3_indices]
             
             shap_text = f"\n\n🤖 **AIの推し理由 (SHAP分析)**\n◎ **{best_horse_name}** が本命の最大の理由は、**「{reasons[0]}」「{reasons[1]}」「{reasons[2]}」** が他馬より圧倒的に高く評価されたからです！"
             
