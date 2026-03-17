@@ -762,50 +762,29 @@ def run_real_prediction(race_id, race_date_str):
             st.dataframe(df_test[['馬名'] + features])
         # 🌟🌟🌟 コピペここまで 🌟🌟🌟
         
-        marks = ['◎', '〇', '▲', '△', '☆'] + [''] * (len(df_test) - 5)
-        df_test['印'] = marks[:len(df_test)]
-
-        # 🌟🌟🌟 ここに以下の「X線検査コード」をまるごとコピペしてください 🌟🌟🌟
-        with st.expander("🛠️ 【デバッグ】AIが実際に見たデータ (欠損チェック)"):
-            st.warning("もしここで『スピード指数』や『上がり偏差』の欠損が全頭分出ていたら、データ取得がバグっています！")
-            missing_info = df_test[features].isnull().sum()
-            st.write("▼ 各特徴量のカラッポ(NaN)になっている数")
-            st.dataframe(missing_info[missing_info > 0])
-            st.write("▼ 実際のデータ中身")
-            st.dataframe(df_test[['馬名'] + features])
-        # 🌟🌟🌟 コピペここまで 🌟🌟🌟
-        
         # ========================================================
         # 🌟 ここからSHAP値（AI推し理由）の抽出！追加ライブラリ不要の裏ワザ！
         # ========================================================
         try:
-            # 現在のコードが「model」か「modelsのリスト（アンサンブル）」かを自動判定
             target_model = models[0] if 'models' in locals() and isinstance(models, list) else model
             target_features = features if 'features' in locals() else X_test.columns
-            
-            # ◎本命馬（1番目にソートされた馬）のデータを取得
             best_horse_name = df_test.iloc[0]['馬名']
-            
-            # pred_contrib=True で各特徴量の「予測への貢献度」を算出
-            # ※元のデータフレームから本命馬の1行だけを抜き出して推論
             X_best = df_test.iloc[[0]][target_features]
-            shap_contribs = target_model.predict(X_best, pred_contrib=True)
             
-            # 最後の列はベーススコアなので除外
+            # 🌟 修正：LGBMRankerの隠しコア（_Booster）を直接呼び出す！
+            booster = getattr(target_model, 'booster_', getattr(target_model, '_Booster', target_model))
+            shap_contribs = booster.predict(X_best, pred_contrib=True)
+            
             best_contrib = shap_contribs[0, :-1] 
-            
-            # 貢献度トップ3の特徴量インデックスを取得
             top3_indices = np.argsort(best_contrib)[::-1][:3]
             reasons = [target_features[i] for i in top3_indices]
             
             shap_text = f"\n\n🤖 **AIの推し理由 (SHAP分析)**\n◎ **{best_horse_name}** が本命の最大の理由は、**「{reasons[0]}」「{reasons[1]}」「{reasons[2]}」** が他馬より圧倒的に高く評価されたからです！"
             
-            # 買い目テキスト(reco)に追加
             if 'reco' in locals():
                 reco += shap_text
         except Exception as e:
-            # 万が一エラーが起きてもアプリを止めずに通常の買い目だけを表示する
-            print(f"SHAP抽出エラー: {e}")
+            st.warning(f"SHAP抽出エラー: {e}")
         # ========================================================
 
         p1, p2 = df_test.loc[0, '勝率(AI予測)'], df_test.loc[1, '勝率(AI予測)']
