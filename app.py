@@ -62,6 +62,9 @@ def resolve_name(short_name, known_names):
 # ==========================================
 @st.cache_resource
 def prepare_model_and_data():
+    # 🌟 ここに2行だけ追記！大文字を小文字の変数に入れてあげる
+    num_features = NUM_FEATURES
+    cat_features = CAT_FEATURES
     try:
         df = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
     except FileNotFoundError:
