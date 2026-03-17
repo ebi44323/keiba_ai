@@ -761,14 +761,17 @@ def run_real_prediction(race_id, race_date_str):
         try:
             best_horse_name = df_test.iloc[0]['馬名']
             X_best = df_test.iloc[[0]][features].copy()
-            # カテゴリ列を数値に変換（LGBMBoosterのpred_contribに必要）
-            X_best_num = X_best.copy()
+            # カテゴリ列を整数コードに変換してからnumpy配列化
+            # （DataFrameのままだとcategorical_feature不一致エラーが出るため）
             for col in cat_features:
-                if col in X_best_num.columns:
-                    X_best_num[col] = X_best_num[col].cat.codes
+                if col in X_best.columns and hasattr(X_best[col], 'cat'):
+                    X_best[col] = X_best[col].cat.codes.astype(float)
+                elif col in X_best.columns:
+                    X_best[col] = 0.0
+            X_arr = X_best.astype(float).fillna(0).values  # pure numpy
             booster = getattr(model, 'booster_', getattr(model, '_Booster', None))
             if booster is not None:
-                shap_vals = booster.predict(X_best_num, pred_contrib=True)
+                shap_vals = booster.predict(X_arr, pred_contrib=True)
                 contribs = shap_vals[0, :-1]  # 最後の列はbias
                 # 特徴量名とSHAP値を紐付け、上位3つを抽出
                 feat_contrib = list(zip(features, contribs))
@@ -813,14 +816,16 @@ def run_real_prediction(race_id, race_date_str):
 # ==========================================
 st.sidebar.markdown("## 🕹️ keiba-ebye メニュー")
 action = st.sidebar.radio("機能を選択", [
-    "⏩ 次のレースを予想", 
-    "📜 本日の全レース予想", 
-    "📅 今週末の全レース予想", 
-    "🔍 レースを指定して予想", 
+    "⏩ 次のレースを予想",
+    "📜 本日の全レース予想",
+    "📅 今週末の全レース予想",
+    "🔍 レースを指定して予想",
     "📝 1日の振り返り (答え合わせ)",
     "🧪 性能試験 (バックテスト)",
     "📈 長期成績分析",
-    "🐴 愛馬の成長記録"
+    "📊 モデル検証 (ウォークフォワード)",
+    "🏇 騎手・調教師フォーム分析",
+    "🐴 愛馬の成長記録",
 ])
 
 tokyo_tz = pytz.timezone('Asia/Tokyo')
@@ -835,7 +840,7 @@ def display_error_log(err_log):
             st.code(log, language=None)
 
 def display_result(df_res, topics, reco, pace_text, confidence_text):
-    tab1, tab2, tab3 = st.tabs(["📊 予想一覧", "💡 展開・買い目", "🔍 性能詳細"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 予想一覧", "💡 展開・買い目", "🎰 複合馬券EV", "🔍 性能詳細"])
     
     with tab1:
         if "鉄板" in confidence_text: st.success(confidence_text)
@@ -884,6 +889,69 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
             'コース適性(%)': '{:.2f}',
             '位置取りショック': '{:.1f}'
         }), use_container_width=True, hide_index=True)
+
+    with tab4:
+        st.markdown("AI勝率から計算した複合馬券の理論期待値です。**1.0以上**が購入検討ライン。")
+        probs = df_res['勝率(AI予測)'].values
+        odds_list = df_res['単勝オッズ'].values
+        names = df_res['馬名'].values
+        nums = df_res['馬番'].values
+
+        # 複勝率（近似）
+        fukusho_probs = np.clip(probs * 2.8, 0, 0.99)
+
+        # 馬連・ワイドの期待値（上位5頭の組み合わせ）
+        umaren_rows, wide_rows = [], []
+        for a in range(min(5, len(probs))):
+            for b in range(a+1, min(7, len(probs))):
+                # 馬連: aかbが1着でもう一方が2着
+                p_umaren = probs[a]*fukusho_probs[b] + probs[b]*fukusho_probs[a]
+                p_umaren = min(p_umaren, 0.99)
+                # ワイド: 両馬が3着以内
+                p_wide = fukusho_probs[a] * fukusho_probs[b] * 1.5  # 相関補正
+                p_wide = min(p_wide, 0.99)
+                # 単勝オッズから馬連オッズを推定（簡易モデル: 単勝の積÷0.7）
+                est_umaren_odds = (odds_list[a] * odds_list[b]) / 8.0
+                est_wide_odds   = (odds_list[a] * odds_list[b]) / 20.0
+                ev_umaren = p_umaren * est_umaren_odds
+                ev_wide   = p_wide   * est_wide_odds
+                umaren_rows.append({'組合せ': f'{nums[a]}-{nums[b]}', '馬名': f'{names[a]} - {names[b]}',
+                                    '推定EV': round(ev_umaren, 2), '理論的中率': f'{p_umaren*100:.1f}%',
+                                    '推定オッズ': f'{est_umaren_odds:.1f}倍'})
+                wide_rows.append({'組合せ': f'{nums[a]}-{nums[b]}', '馬名': f'{names[a]} - {names[b]}',
+                                  '推定EV': round(ev_wide, 2), '理論的中率': f'{p_wide*100:.1f}%',
+                                  '推定オッズ': f'{est_wide_odds:.1f}倍'})
+
+        # 3連複（上位3頭固定）
+        sanrenpuku_rows = []
+        for a in range(min(4, len(probs))):
+            for b in range(a+1, min(5, len(probs))):
+                for c in range(b+1, min(6, len(probs))):
+                    p3 = fukusho_probs[a] * fukusho_probs[b] * fukusho_probs[c] * 3.0
+                    p3 = min(p3, 0.99)
+                    est_odds3 = (odds_list[a] * odds_list[b] * odds_list[c]) / 20.0
+                    ev3 = p3 * est_odds3
+                    sanrenpuku_rows.append({'組合せ': f'{nums[a]}-{nums[b]}-{nums[c]}',
+                                            '推定EV': round(ev3, 2), '理論的中率': f'{p3*100:.1f}%',
+                                            '推定オッズ': f'{est_odds3:.0f}倍'})
+
+        def color_ev(val):
+            if isinstance(val, float):
+                if val >= 1.5: return 'color:#FF4B4B; font-weight:bold'
+                if val >= 1.0: return 'color:#FFA500; font-weight:bold'
+            return ''
+
+        sub1, sub2, sub3 = st.tabs(["馬連", "ワイド", "3連複"])
+        with sub1:
+            st.caption("※ オッズは単勝オッズから推定した理論値です。実際のオッズとは異なります。")
+            df_uma = pd.DataFrame(umaren_rows).sort_values('推定EV', ascending=False)
+            st.dataframe(df_uma.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
+        with sub2:
+            df_wid = pd.DataFrame(wide_rows).sort_values('推定EV', ascending=False)
+            st.dataframe(df_wid.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
+        with sub3:
+            df_san = pd.DataFrame(sanrenpuku_rows).sort_values('推定EV', ascending=False).head(10)
+            st.dataframe(df_san.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
 
 
 if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想", "🔍 レースを指定して予想"]:
@@ -1290,6 +1358,203 @@ elif action == "🧪 性能試験 (バックテスト)":
                     st.download_button("📥 結果をダウンロード (.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.txt", mime="text/plain")
 
 # 🌟 新機能: 一口馬主・推し馬向け 成長記録グラフ
+
+# ==========================================
+# ② ウォークフォワード検証 (モデル精度の安定性確認)
+# ==========================================
+elif action == "📊 モデル検証 (ウォークフォワード)":
+    st.subheader("📊 モデル検証 - ウォークフォワード分析")
+    st.info("学習データを時系列に3分割し、各期間でのAI精度を検証します。精度が安定していれば過学習していない証拠です。")
+
+    if st.button("🔬 ウォークフォワード検証を実行", type="primary"):
+        with st.spinner("3期間分の検証を実行中... (数分かかります)"):
+            try:
+                df_wf = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+                df_wf['日付'] = pd.to_datetime(df_wf['日付'], format='mixed', errors='coerce')
+                df_wf = df_wf.dropna(subset=['日付'])
+                for col in ['着順', '単勝', '人気', '斤量', '距離', '上り', '枠番', '馬番']:
+                    df_wf[col] = pd.to_numeric(df_wf[col], errors='coerce')
+                df_wf['馬券内'] = (df_wf['着順'] <= 3).astype(int)
+                df_wf = df_wf.dropna(subset=['着順', '単勝']).sort_values('日付').reset_index(drop=True)
+
+                min_date = df_wf['日付'].min()
+                max_date = df_wf['日付'].max()
+                total_days = (max_date - min_date).days
+                fold_days = total_days // 3
+
+                wf_results = []
+                import altair as alt
+
+                for fold in range(3):
+                    fold_start = min_date + pd.Timedelta(days=fold * fold_days)
+                    fold_mid   = fold_start + pd.Timedelta(days=int(fold_days * 0.7))
+                    fold_end   = fold_start + pd.Timedelta(days=fold_days) if fold < 2 else max_date
+
+                    tr = df_wf[(df_wf['日付'] >= fold_start) & (df_wf['日付'] < fold_mid)].copy()
+                    te = df_wf[(df_wf['日付'] >= fold_mid) & (df_wf['日付'] < fold_end)].copy()
+
+                    if len(tr) < 100 or len(te) < 10:
+                        continue
+
+                    # TE計算
+                    gm = tr['馬券内'].mean()
+                    for col in ['騎手', '調教師', '父']:
+                        if col in tr.columns:
+                            ted = tr.groupby(col)['馬券内'].mean().to_dict()
+                            tr[f'{col}_TE'] = tr[col].map(ted).fillna(gm)
+                            te[f'{col}_TE'] = te[col].map(ted).fillna(gm)
+
+                    use_cols = [c for c in ['枠番', '馬番', '距離', '斤量', '人気',
+                                            '騎手_TE', '調教師_TE', '父_TE'] if c in tr.columns]
+                    if not use_cols: continue
+
+                    for col in use_cols:
+                        tr[col] = pd.to_numeric(tr[col], errors='coerce')
+                        te[col] = pd.to_numeric(te[col], errors='coerce')
+
+                    tr = tr.dropna(subset=use_cols)
+                    te = te.dropna(subset=use_cols)
+
+                    tr_groups = tr.groupby('レースID', sort=False).size().values if 'レースID' in tr.columns else np.ones(len(tr), dtype=int)
+                    te_groups = te.groupby('レースID', sort=False).size().values if 'レースID' in te.columns else np.ones(len(te), dtype=int)
+
+                    m_wf = lgb.LGBMRanker(n_estimators=200, learning_rate=0.05,
+                                          num_leaves=31, random_state=42)
+                    m_wf.fit(tr[use_cols], tr['馬券内'], group=tr_groups)
+
+                    te['score'] = m_wf.predict(te[use_cols])
+                    te['exp_s'] = np.exp(te['score'] - te.groupby('レースID')['score'].transform('max')) if 'レースID' in te.columns else np.exp(te['score'])
+                    te['ai_win'] = te['exp_s'] / te.groupby('レースID')['exp_s'].transform('sum') if 'レースID' in te.columns else te['exp_s']
+
+                    top1 = te.sort_values(['レースID', 'ai_win'], ascending=[True, False]).groupby('レースID').head(1) if 'レースID' in te.columns else te.sort_values('ai_win', ascending=False).head(len(te)//10)
+                    hits = top1[pd.to_numeric(top1['着順'], errors='coerce') == 1]
+                    invest = len(top1) * 100
+                    ret = (pd.to_numeric(hits['単勝'], errors='coerce') * 100).sum()
+                    rr = (ret / invest * 100) if invest > 0 else 0
+                    hit_rate = len(hits) / len(top1) * 100 if len(top1) > 0 else 0
+
+                    wf_results.append({
+                        '期間': f"Fold {fold+1}",
+                        '学習期間': f"{fold_start.strftime('%Y/%m')} 〜 {fold_mid.strftime('%Y/%m')}",
+                        '検証期間': f"{fold_mid.strftime('%Y/%m')} 〜 {fold_end.strftime('%Y/%m')}",
+                        '検証レース数': len(top1),
+                        '本命的中率(%)': round(hit_rate, 1),
+                        '単勝回収率(%)': round(rr, 1),
+                    })
+
+                if wf_results:
+                    df_wfr = pd.DataFrame(wf_results)
+                    st.markdown("#### 検証結果")
+
+                    c1, c2, c3 = st.columns(3)
+                    for i, row in df_wfr.iterrows():
+                        col = [c1, c2, c3][i]
+                        color = "🟢" if row['単勝回収率(%)'] >= 100 else "🔴"
+                        col.metric(f"{color} {row['期間']}", f"回収率 {row['単勝回収率(%)']}%",
+                                   f"的中率 {row['本命的中率(%)']}%")
+
+                    st.dataframe(df_wfr, use_container_width=True, hide_index=True)
+
+                    chart_data = df_wfr[['期間', '単勝回収率(%)', '本命的中率(%)']].melt('期間', var_name='指標', value_name='値')
+                    rule = alt.Chart(pd.DataFrame({'y': [100]})).mark_rule(color='red', strokeDash=[5,5]).encode(y='y:Q')
+                    bars = alt.Chart(chart_data).mark_bar(opacity=0.8).encode(
+                        x=alt.X('期間:N'),
+                        y=alt.Y('値:Q'),
+                        color='指標:N',
+                        tooltip=['期間', '指標', '値']
+                    )
+                    st.altair_chart((bars + rule).properties(height=300), use_container_width=True)
+
+                    avg_rr = df_wfr['単勝回収率(%)'].mean()
+                    std_rr = df_wfr['単勝回収率(%)'].std()
+                    if std_rr < 20:
+                        st.success(f"✅ 安定性: 良好 (3期間の回収率標準偏差 = {std_rr:.1f}%)")
+                    else:
+                        st.warning(f"⚠️ 安定性: やや不安定 (標準偏差 = {std_rr:.1f}%、特定期間に偏りあり)")
+                    st.metric("3期間平均 単勝回収率", f"{avg_rr:.1f}%")
+                else:
+                    st.error("検証データが不足しています。")
+
+            except Exception as e:
+                st.error(f"ウォークフォワード検証エラー: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+# ==========================================
+# ⑤ 騎手・調教師フォーム分析
+# ==========================================
+elif action == "🏇 騎手・調教師フォーム分析":
+    st.subheader("🏇 騎手・調教師 近況フォーム分析")
+    st.info("学習データから直近の騎手・調教師の好調/不調を分析します。")
+
+    try:
+        df_form = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+        df_form['日付'] = pd.to_datetime(df_form['日付'], format='mixed', errors='coerce')
+        df_form = df_form.dropna(subset=['日付'])
+        df_form['着順'] = pd.to_numeric(df_form['着順'], errors='coerce')
+        df_form['単勝'] = pd.to_numeric(df_form['単勝'], errors='coerce')
+        df_form['人気'] = pd.to_numeric(df_form['人気'], errors='coerce')
+
+        max_dt = df_form['日付'].max()
+        period_days = st.slider("分析期間 (日)", 30, 180, 90, 30)
+        since_dt = max_dt - pd.Timedelta(days=period_days)
+        df_recent = df_form[df_form['日付'] >= since_dt].copy()
+        df_recent['勝ち'] = (df_recent['着順'] == 1).astype(int)
+        df_recent['複勝'] = (df_recent['着順'] <= 3).astype(int)
+        df_recent['人気馬逃げ'] = ((df_recent['人気'] <= 3) & (df_recent['着順'] > 5)).astype(int)
+        df_recent['穴馬激走'] = ((df_recent['人気'] >= 7) & (df_recent['着順'] <= 3)).astype(int)
+
+        top_n = st.slider("表示件数", 10, 50, 20, 5)
+
+        tab_j, tab_t = st.tabs(["🏅 騎手", "🏠 調教師"])
+
+        def build_form_df(df, col):
+            g = df.groupby(col).agg(
+                出走数=('着順', 'count'),
+                勝利数=('勝ち', 'sum'),
+                複勝数=('複勝', 'sum'),
+                人気馬逃げ数=('人気馬逃げ', 'sum'),
+                穴馬激走数=('穴馬激走', 'sum'),
+                単勝回収額=('単勝', lambda x: (df.loc[x.index][df.loc[x.index]['勝ち']==1]['単勝'] * 100).sum()),
+            ).reset_index()
+            g = g[g['出走数'] >= 10]
+            g['勝率(%)']   = (g['勝利数']  / g['出走数'] * 100).round(1)
+            g['複勝率(%)'] = (g['複勝数']  / g['出走数'] * 100).round(1)
+            g['単勝回収率(%)'] = (g['単勝回収額'] / (g['出走数'] * 100) * 100).round(1)
+            g['フォームスコア'] = (g['勝率(%)'] * 2 + g['複勝率(%)'] + g['単勝回収率(%)'] / 10).round(1)
+            return g.sort_values('フォームスコア', ascending=False).head(top_n)
+
+        def style_form(df):
+            def color_row(row):
+                if row['単勝回収率(%)'] >= 120:
+                    return ['background-color: rgba(255,75,75,0.15)'] * len(row)
+                elif row['単勝回収率(%)'] >= 100:
+                    return ['background-color: rgba(255,165,0,0.1)'] * len(row)
+                return [''] * len(row)
+            return df.style.apply(color_row, axis=1).format({
+                '勝率(%)': '{:.1f}%', '複勝率(%)': '{:.1f}%',
+                '単勝回収率(%)': '{:.1f}%', 'フォームスコア': '{:.1f}'
+            })
+
+        with tab_j:
+            if '騎手' in df_recent.columns:
+                df_j = build_form_df(df_recent, '騎手')
+                st.caption(f"直近{period_days}日の成績（出走10回以上、フォームスコア順）赤＝回収率120%超、橙＝100%超")
+                st.dataframe(style_form(df_j), use_container_width=True, hide_index=True)
+            else:
+                st.warning("騎手データが見つかりません")
+
+        with tab_t:
+            if '調教師' in df_recent.columns:
+                df_t = build_form_df(df_recent, '調教師')
+                st.caption(f"直近{period_days}日の成績（出走10回以上、フォームスコア順）赤＝回収率120%超、橙＝100%超")
+                st.dataframe(style_form(df_t), use_container_width=True, hide_index=True)
+            else:
+                st.warning("調教師データが見つかりません")
+
+    except Exception as e:
+        st.error(f"フォーム分析エラー: {e}")
+
 elif action == "🐴 愛馬の成長記録":
     st.subheader("🐴 愛馬のAI能力評価・成長記録")
     st.markdown("過去のレースにおけるAI指標や成績の推移を時系列でグラフ化します。")
