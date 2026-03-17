@@ -68,6 +68,8 @@ def prepare_model_and_data():
     te_cols = TE_COLS  # 🌟 ここにこの1行を足すだけ！！！
     try:
         df = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+    except FileNotFoundError:
+        df = pd.read_csv('learning_data_perfect_tier.csv', dtype=str)
         # =========================================================
         # 🌟 修正：最強の武器を溶かさずに数値化する丁寧な処理！
         # =========================================================
@@ -81,8 +83,6 @@ def prepare_model_and_data():
                 # 3. その上で安全に数値化！
                 df_hist[col] = pd.to_numeric(df_hist[col], errors='coerce')
         # =========================================================
-    except FileNotFoundError:
-        df = pd.read_csv('learning_data_perfect_tier.csv', dtype=str)
 
     df['日付'] = pd.to_datetime(df['日付'], format='mixed', errors='coerce')
     df = df.dropna(subset=['日付'])
