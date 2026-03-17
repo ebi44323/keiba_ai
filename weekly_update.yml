@@ -22,7 +22,7 @@ jobs:
         with:
           token: ${{ secrets.HF_TOKEN }}
           # HuggingFace Space の場合は以下を使用:
-          # repository: YOUR_HF_USERNAME/YOUR_SPACE_NAME
+          # repository: ebi44323/keiba-ebye
           # ref: main
 
       - name: Python 3.11 セットアップ
