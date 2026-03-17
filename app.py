@@ -71,16 +71,21 @@ def prepare_model_and_data():
     except FileNotFoundError:
         df = pd.read_csv('learning_data_perfect_tier.csv', dtype=str)
         # =========================================================
-        # 🌟 修正：最強の武器を溶かさずに数値化する丁寧な処理！
+        # 🌟 ZIPファイルの読み込みと、最強のクレンジング処理
         # =========================================================
+        df_hist = pd.read_csv(data_file, compression='zip', dtype=str)
+        
+        # 1. 穴馬フラグなどの True/False を 1/0 に変換
+        df_hist = df_hist.replace({'True': 1, 'False': 0, 'true': 1, 'false': 0})
+        
+        # 2. 数値であるべき列（num_features）のゴミを取り除いて数値化！
         for col in num_features:
             if col in df_hist.columns:
-                # 1. True/False を 1/0 に変換
-                df_hist[col] = df_hist[col].replace({'True': 1, 'False': 0, 'true': 1, 'false': 0})
-                # 2. % や カンマ を取り除く
                 if df_hist[col].dtype == object:
-                    df_hist[col] = df_hist[col].astype(str).str.replace('%', '', regex=False).str.replace(',', '', regex=False).replace('nan', np.nan)
-                # 3. その上で安全に数値化！
+                    # % や , や + を取り除く（例: "+2" -> "2", "15.4%" -> "15.4"）
+                    df_hist[col] = df_hist[col].astype(str).str.replace('%', '', regex=False).str.replace(',', '', regex=False).str.replace('+', '', regex=False).replace('nan', np.nan)
+                
+                # 安全に数値（float）に変換
                 df_hist[col] = pd.to_numeric(df_hist[col], errors='coerce')
         # =========================================================
 
@@ -206,17 +211,18 @@ def prepare_model_and_data():
         n_estimators=500, learning_rate=0.01, num_leaves=63, max_bin=255, cat_smooth=10,
         random_state=42, importance_type='gain', colsample_bytree=0.7, subsample=0.8
     )
-    # =========================================================
-    # 🌟 最後のモグラ叩き！文字データを「数値」に強制変換する！
-    for col in num_features:
-        if col in train_df.columns:
-            train_df[col] = pd.to_numeric(train_df[col], errors='coerce')
-        # 検証用データ（test_dfやvalid_df）がある場合もまとめて変換
-        if 'test_df' in locals() and col in test_df.columns:
-            test_df[col] = pd.to_numeric(test_df[col], errors='coerce')
-        if 'valid_df' in locals() and col in valid_df.columns:
-            valid_df[col] = pd.to_numeric(valid_df[col], errors='coerce')
-    # =========================================================
+        # =========================================================
+        # 🌟 今日の予想データにも同じクレンジングを適用！
+        for col in num_features:
+            if col not in df_test.columns:
+                df_test[col] = np.nan
+            else:
+                df_test[col] = df_test[col].replace({'True': 1, 'False': 0, 'true': 1, 'false': 0})
+                if df_test[col].dtype == object:
+                    df_test[col] = df_test[col].astype(str).str.replace('%', '', regex=False).str.replace(',', '', regex=False).str.replace('+', '', regex=False).replace('nan', np.nan)
+            
+            df_test[col] = pd.to_numeric(df_test[col], errors='coerce')
+        # =========================================================
     model.fit(
         train_df[features], train_df['馬券内'], 
         group=train_groups,
