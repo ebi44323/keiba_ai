@@ -94,10 +94,22 @@ def prepare_model_and_data():
 
     df['出走頭数'] = df.groupby('レースID')['馬ID'].transform('count')
     df['着順パーセント'] = (df['着順']-1)/(df['出走頭数']-1).replace(0,1)
+
+    # ★修正: マージキーの型を統一してからマージ（型不一致でマージ失敗→列不在エラーを防ぐ）
+    for _c in ['競馬場','芝/ダート','距離']:
+        df[_c] = df[_c].astype(str).str.strip()
     cs = df.groupby(['競馬場','芝/ダート','距離'])['走破タイム秒'].agg(['mean','std']).reset_index()
     cs.columns = ['競馬場','芝/ダート','距離','コース平均','コース標準偏差']
+    # 既に同名列があれば先に除去（二重マージ防止）
+    for _c in ['コース平均','コース標準偏差']:
+        if _c in df.columns: df = df.drop(columns=[_c])
     df = pd.merge(df, cs, on=['競馬場','芝/ダート','距離'], how='left')
-    df['スピード指数'] = np.where(df['コース標準偏差']>0, 50-((df['走破タイム秒']-df['コース平均'])/df['コース標準偏差'])*10, 50)
+    # マージ後に列が存在しない場合の安全フォールバック
+    if 'コース標準偏差' not in df.columns:
+        df['コース平均'] = df['走破タイム秒'].mean()
+        df['コース標準偏差'] = df['走破タイム秒'].std()
+    df['スピード指数'] = np.where(df['コース標準偏差'].fillna(0)>0,
+        50-((df['走破タイム秒']-df['コース平均'])/df['コース標準偏差'])*10, 50)
     df['調教師_騎手'] = df['調教師'].astype(str)+'_'+df['騎手'].astype(str)
     df = df.sort_values(['馬ID','日付']).reset_index(drop=True)
 
