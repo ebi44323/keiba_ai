@@ -656,7 +656,7 @@ def run_real_prediction(race_id, race_date_str):
         df_test['同レース逃げ馬頭数'] = df_test['前走逃げフラグ'].sum()
         df_test['同レース先行馬頭数'] = df_test['前走先行フラグ'].sum()
         df_test['コース適性_着順パーセント'] = df_test.set_index(['馬ID','競馬場','芝/ダート']).index.map(horse_course_dict).fillna(0.5)
-        df_test['位置取りショック'] = df_test['前走_最終コーナー']-df_test.get('2走前_最終コーナー', np.nan)
+        df_test['位置取りショック'] = df_test['前走_最終コーナー'] - (df_test['2走前_最終コーナー'] if '2走前_最終コーナー' in df_test.columns else np.nan)
 
         race_date_obj = pd.to_datetime(race_date_str)
         df_test['休養日数'] = (race_date_obj-pd.to_datetime(df_test['最新_日付'])).dt.days if '最新_日付' in df_test.columns else np.nan
@@ -666,16 +666,23 @@ def run_real_prediction(race_id, race_date_str):
         df_test['馬場替わりフラグ']    = (df_test['芝/ダート']!=df_test['最新_芝ダート']).astype(int) if '最新_芝ダート' in df_test.columns else 0
         df_test['前走芝ダート']        = df_test['最新_芝ダート'].fillna('不明') if '最新_芝ダート' in df_test.columns else '不明'
         df_test['距離変更フラグ']      = (df_test['距離']!=pd.to_numeric(df_test['最新_距離'],errors='coerce')).astype(int) if '最新_距離' in df_test.columns else 0
-        df_test['前走失速フラグ']      = pd.to_numeric(df_test.get('最新_失速フラグ', 0), errors='coerce').fillna(0)
-        df_test['前走上り偏差']        = pd.to_numeric(df_test.get('最新_上り偏差', np.nan), errors='coerce')
-        df_test['前走着順パーセント']  = pd.to_numeric(df_test.get('最新_着順パーセント', np.nan), errors='coerce')
-        df_test['直近3走着順パーセント'] = pd.to_numeric(df_test.get('最新_直近3走着順パーセント', np.nan), errors='coerce').fillna(0.5)
-        df_test['前走距離補正タイム差']  = pd.to_numeric(df_test.get('最新_距離補正タイム差', np.nan), errors='coerce')
+        # df_test.get() は列が存在しないとスカラーを返しpd.to_numericがTypeErrorになるため列存在チェックで分岐
+        df_test['前走失速フラグ']      = pd.to_numeric(df_test['最新_失速フラグ'],     errors='coerce').fillna(0)  if '最新_失速フラグ'        in df_test.columns else 0
+        df_test['前走上り偏差']        = pd.to_numeric(df_test['最新_上り偏差'],       errors='coerce')            if '最新_上り偏差'          in df_test.columns else np.nan
+        df_test['前走着順パーセント']  = pd.to_numeric(df_test['最新_着順パーセント'], errors='coerce')            if '最新_着順パーセント'    in df_test.columns else np.nan
+        df_test['直近3走着順パーセント'] = pd.to_numeric(df_test['最新_直近3走着順パーセント'], errors='coerce').fillna(0.5) if '最新_直近3走着順パーセント' in df_test.columns else 0.5
+        df_test['前走距離補正タイム差']  = pd.to_numeric(df_test['最新_距離補正タイム差'],   errors='coerce')      if '最新_距離補正タイム差'  in df_test.columns else np.nan
         if '最新_着順' in df_test.columns:
-            n = df_test['出走頭数'].replace(0,1)
-            df_test['前走大敗フラグ'] = (pd.to_numeric(df_test['最新_着順'],errors='coerce')/n>0.7).astype(int)
-        else: df_test['前走大敗フラグ'] = 0
-        df_test['馬体重増減'] = (df_test['馬体重_num']-pd.to_numeric(df_test['最新_馬体重'],errors='coerce')) if '最新_馬体重' in df_test.columns else pd.to_numeric(df_test.get('最新_馬体重増減',0),errors='coerce').fillna(0)
+            n = df_test['出走頭数'].replace(0, 1)
+            df_test['前走大敗フラグ'] = (pd.to_numeric(df_test['最新_着順'], errors='coerce') / n > 0.7).astype(int)
+        else:
+            df_test['前走大敗フラグ'] = 0
+        if '最新_馬体重' in df_test.columns:
+            df_test['馬体重増減'] = df_test['馬体重_num'] - pd.to_numeric(df_test['最新_馬体重'], errors='coerce')
+        elif '最新_馬体重増減' in df_test.columns:
+            df_test['馬体重増減'] = pd.to_numeric(df_test['最新_馬体重増減'], errors='coerce').fillna(0)
+        else:
+            df_test['馬体重増減'] = 0
         df_test['斤量差'] = pd.to_numeric(df_test['斤量'],errors='coerce') - pd.to_numeric(df_test['斤量'],errors='coerce').mean()
         df_test['穴馬_距離変更一変']     = ((df_test['距離変更フラグ']==1)&(df_test['直近3走着順パーセント']<0.4)).astype(int)
         df_test['穴馬_馬場替わり一変']   = ((df_test['馬場替わりフラグ']==1)&(df_test['直近3走着順パーセント']<0.4)).astype(int)
