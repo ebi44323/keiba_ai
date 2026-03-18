@@ -51,104 +51,8 @@ _UA_LIST = [
 ]
 def get_headers(): return {"User-Agent": random.choice(_UA_LIST)}
 
-_HF_TOKEN   = os.environ.get("HF_TOKEN", "")
-_HF_REPO_ID = os.environ.get("HF_REPO_ID", "")   # 例: "username/keiba-ebye"
-_MODEL_FILE = "keiba_model.pkl"                    # Hub上のファイル名
-_META_FILE  = "keiba_model_meta.json"             # 学習日時などのメタデータ
-
-def _get_zip_mtime():
-    """学習データZIPの最終更新日時(文字列)を返す"""
-    for p in ['learning_data_perfect_tier.zip', 'learning_data_perfect_tier.csv']:
-        if os.path.exists(p):
-            import time as _t
-            return _t.strftime('%Y-%m-%dT%H:%M:%S', _t.gmtime(os.path.getmtime(p)))
-    return 'unknown'
-
-def _try_load_model_from_hub():
-    """
-    HF Hubからモデルをロードする。
-    ローカルのZIP更新日時とHubのメタデータを比較し、
-    ZIPが新しい場合はNoneを返して再学習を促す。
-    返値: (model, features, cat_features, ...) タプル or None
-    """
-    if not _HF_TOKEN or not _HF_REPO_ID:
-        return None
-    try:
-        import joblib, io
-        from huggingface_hub import HfApi
-        api = HfApi(token=_HF_TOKEN)
-
-        # メタデータを確認: データが更新されていれば再学習
-        try:
-            meta_path = api.hf_hub_download(repo_id=_HF_REPO_ID, filename=_META_FILE, repo_type="space", token=_HF_TOKEN)
-            with open(meta_path, 'r') as f:
-                meta = json.load(f)
-            hub_data_mtime = meta.get('data_mtime', '')
-            local_mtime    = _get_zip_mtime()
-            if local_mtime != hub_data_mtime:
-                return None  # データが更新されているので再学習
-        except: pass  # メタデータなし = 初回 → そのままロードを試みる
-
-        # モデル本体をロード
-        model_path = api.hf_hub_download(repo_id=_HF_REPO_ID, filename=_MODEL_FILE, repo_type="space", token=_HF_TOKEN)
-        bundle = joblib.load(model_path)
-        return bundle
-    except Exception as e:
-        return None  # Hubにモデルなし or エラー → 学習へ
-
-def _save_model_to_hub(bundle):
-    """
-    学習済みモデルをHF Hubにアップロードする。
-    bundle: prepare_model_and_data() の返値タプル
-    """
-    if not _HF_TOKEN or not _HF_REPO_ID:
-        return False
-    try:
-        import joblib, io
-        from huggingface_hub import HfApi
-        api = HfApi(token=_HF_TOKEN)
-
-        # モデルをバイトにシリアライズ
-        buf = io.BytesIO()
-        joblib.dump(bundle, buf)
-        buf.seek(0)
-        api.upload_file(
-            path_or_fileobj=buf,
-            path_in_repo=_MODEL_FILE,
-            repo_id=_HF_REPO_ID,
-            repo_type="space",
-            commit_message=f"モデル更新 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            token=_HF_TOKEN,
-        )
-
-        # メタデータ保存
-        meta = {'data_mtime': _get_zip_mtime(),
-                'trained_at': datetime.datetime.now().isoformat()}
-        meta_buf = io.BytesIO(json.dumps(meta, ensure_ascii=False, indent=2).encode())
-        api.upload_file(
-            path_or_fileobj=meta_buf,
-            path_in_repo=_META_FILE,
-            repo_id=_HF_REPO_ID,
-            repo_type="space",
-            commit_message="モデルメタデータ更新",
-            token=_HF_TOKEN,
-        )
-        return True
-    except Exception as e:
-        return False
-
 @st.cache_resource
-def prepare_model_and_data(force_retrain=False):
-    """
-    force_retrain=True: Hubのキャッシュを無視して強制再学習
-    """
-    # ── HF Hubからロードを試みる ─────────────────────────────
-    if not force_retrain:
-        cached = _try_load_model_from_hub()
-        if cached is not None:
-            return cached  # キャッシュ済みモデルを即返す
-
-    # ── 以下: 学習処理 ────────────────────────────────────────
+def prepare_model_and_data():
     num_features = list(NUM_FEATURES)
     cat_features = list(CAT_FEATURES)
     te_cols = list(TE_COLS)
@@ -339,19 +243,11 @@ def prepare_model_and_data(force_retrain=False):
         ped_dict = ped_df.set_index('馬ID')[['父','父系','母','母系','母父','母父系']].to_dict('index')
     except: ped_dict = {}
 
-    bundle = (model, features, cat_features, num_features, cat_categories_dict,
-              latest_horse_data, horse_course_dict, ped_dict,
-              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate)
+    return (model, features, cat_features, num_features, cat_categories_dict,
+            latest_horse_data, horse_course_dict, ped_dict,
+            known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate)
 
-    # ── HF Hubにアップロード ──────────────────────────────────
-    _save_model_to_hub(bundle)
-
-    return bundle
-
-_hub_available = bool(_HF_TOKEN and _HF_REPO_ID)
-_hub_label = "HF Hub" if _hub_available else "ローカル学習"
-
-with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)'):
+with st.spinner('keiba-ebye フルパワーAIエンジンを起動・学習中... (初回のみ数分かかります)'):
     (model, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
      known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate) = prepare_model_and_data()
@@ -1333,20 +1229,6 @@ sim_kelly_frac = st.sidebar.slider("ケリー係数", 0.1, 1.0, 0.25, 0.05,
                    help="1.0=フルケリー(高リスク) 0.25=推奨(安定)")
 sim_max_per_race = st.sidebar.slider("1レース最大投資額 (軍資金の%)", 5, 40, 20, 5,
                    help="1レースに軍資金の何%まで使うか上限を設定します。") / 100
-
-# ── モデル管理 (Pro + HF Hubが設定済みの場合のみ表示) ─────
-if _is_pro and _hub_available:
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### ⚙️ モデル管理")
-    st.sidebar.caption(f"HF Hub: `{_HF_REPO_ID}`")
-    if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
-        st.cache_resource.clear()
-        with st.spinner("再学習中... (数分かかります)"):
-            (model, features, cat_features, num_features, cat_categories_dict,
-             latest_horse_data, horse_course_dict, ped_dict,
-             known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate) = prepare_model_and_data(force_retrain=True)
-        st.sidebar.success("✅ 再学習完了・Hubにアップロードしました")
-        st.rerun()
 
 tokyo_tz = pytz.timezone('Asia/Tokyo')
 now = datetime.datetime.now(tokyo_tz)

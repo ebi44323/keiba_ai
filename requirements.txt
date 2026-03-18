@@ -6,3 +6,5 @@ scikit-learn
 requests
 beautifulsoup4
 pytz
+huggingface_hub
+joblib
