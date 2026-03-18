@@ -67,38 +67,46 @@ def _get_zip_mtime():
 def _try_load_model_from_hub():
     """
     HF Hubからモデルをロードする。
-    ローカルのZIP更新日時とHubのメタデータを比較し、
-    ZIPが新しい場合はNoneを返して再学習を促す。
+    【重要】repo_type="dataset" を使用。
+    "space"を使うとファイルアップロード時にSpaceが再起動してしまう。
     返値: (model, features, cat_features, ...) タプル or None
     """
     if not _HF_TOKEN or not _HF_REPO_ID:
         return None
     try:
-        import joblib, io
-        from huggingface_hub import HfApi
-        api = HfApi(token=_HF_TOKEN)
+        import joblib
+        from huggingface_hub import hf_hub_download
 
         # メタデータを確認: データが更新されていれば再学習
         try:
-            meta_path = api.hf_hub_download(repo_id=_HF_REPO_ID, filename=_META_FILE, repo_type="space", token=_HF_TOKEN)
+            meta_path = hf_hub_download(
+                repo_id=_HF_REPO_ID, filename=_META_FILE,
+                repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache"
+            )
             with open(meta_path, 'r') as f:
                 meta = json.load(f)
             hub_data_mtime = meta.get('data_mtime', '')
             local_mtime    = _get_zip_mtime()
             if local_mtime != hub_data_mtime:
                 return None  # データが更新されているので再学習
-        except: pass  # メタデータなし = 初回 → そのままロードを試みる
+        except Exception:
+            pass  # メタデータなし = 初回 → そのままロードを試みる
 
         # モデル本体をロード
-        model_path = api.hf_hub_download(repo_id=_HF_REPO_ID, filename=_MODEL_FILE, repo_type="space", token=_HF_TOKEN)
+        model_path = hf_hub_download(
+            repo_id=_HF_REPO_ID, filename=_MODEL_FILE,
+            repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache"
+        )
         bundle = joblib.load(model_path)
         return bundle
-    except Exception as e:
+    except Exception:
         return None  # Hubにモデルなし or エラー → 学習へ
 
 def _save_model_to_hub(bundle):
     """
-    学習済みモデルをHF Hubにアップロードする。
+    学習済みモデルをHF Dataset Hubにアップロードする。
+    【重要】repo_type="dataset" を使用。
+    "space"を使うとアップロードのたびにSpaceが再起動してしまう。
     bundle: prepare_model_and_data() の返値タプル
     """
     if not _HF_TOKEN or not _HF_REPO_ID:
@@ -108,7 +116,14 @@ def _save_model_to_hub(bundle):
         from huggingface_hub import HfApi
         api = HfApi(token=_HF_TOKEN)
 
-        # モデルをバイトにシリアライズ
+        # Datasetリポジトリが存在しなければ自動作成
+        try:
+            api.create_repo(repo_id=_HF_REPO_ID, repo_type="dataset",
+                            private=True, exist_ok=True, token=_HF_TOKEN)
+        except Exception:
+            pass
+
+        # モデルをバイトにシリアライズしてアップロード
         buf = io.BytesIO()
         joblib.dump(bundle, buf)
         buf.seek(0)
@@ -116,25 +131,27 @@ def _save_model_to_hub(bundle):
             path_or_fileobj=buf,
             path_in_repo=_MODEL_FILE,
             repo_id=_HF_REPO_ID,
-            repo_type="space",
+            repo_type="dataset",          # ← Spaceではなくdataset!
             commit_message=f"モデル更新 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
             token=_HF_TOKEN,
         )
 
         # メタデータ保存
-        meta = {'data_mtime': _get_zip_mtime(),
-                'trained_at': datetime.datetime.now().isoformat()}
+        meta = {
+            'data_mtime': _get_zip_mtime(),
+            'trained_at': datetime.datetime.now().isoformat(),
+        }
         meta_buf = io.BytesIO(json.dumps(meta, ensure_ascii=False, indent=2).encode())
         api.upload_file(
             path_or_fileobj=meta_buf,
             path_in_repo=_META_FILE,
             repo_id=_HF_REPO_ID,
-            repo_type="space",
+            repo_type="dataset",
             commit_message="モデルメタデータ更新",
             token=_HF_TOKEN,
         )
         return True
-    except Exception as e:
+    except Exception:
         return False
 
 @st.cache_resource
@@ -1283,17 +1300,35 @@ _PRO_PASSWORD = os.environ.get("PRO_PASSWORD", "")  # HuggingFace Secrets に設
 
 if _PRO_PASSWORD:
     _is_pro = st.session_state.get('is_pro', False)
+
+    # ── オーナー自動ログイン ─────────────────────────────────
+    # OWNER_KEY Secret を設定しておくと、URLパラメータ ?key=<OWNER_KEY> で
+    # パスワード入力なしに自動ログインできる
+    _OWNER_KEY = os.environ.get("OWNER_KEY", "")
+    if not _is_pro and _OWNER_KEY:
+        _url_key = st.query_params.get("key", "")
+        if _url_key == _OWNER_KEY:
+            st.session_state['is_pro'] = True
+            st.session_state['is_owner'] = True
+            _is_pro = True
+
     if not _is_pro:
-        _pw_input = st.sidebar.text_input("🔑 Pro アクセスコード", type="password", placeholder="Proメンバーはここに入力")
+        _pw_input = st.sidebar.text_input("🔑 Pro アクセスコード", type="password",
+                                           placeholder="Proメンバーはここに入力")
         if _pw_input == _PRO_PASSWORD:
             st.session_state['is_pro'] = True
             st.rerun()
         st.sidebar.caption("アクセスコードなしでも「次のレースを予想」は無料でご利用いただけます。")
     else:
-        st.sidebar.success("✅ Pro メンバー")
-        if st.sidebar.button("ログアウト", key="logout"):
-            st.session_state['is_pro'] = False
-            st.rerun()
+        _is_owner = st.session_state.get('is_owner', False)
+        if _is_owner:
+            st.sidebar.success("👑 オーナーログイン中")
+        else:
+            st.sidebar.success("✅ Pro メンバー")
+            if st.sidebar.button("ログアウト", key="logout"):
+                st.session_state['is_pro'] = False
+                st.session_state['is_owner'] = False
+                st.rerun()
 else:
     _is_pro = True  # PRO_PASSWORD未設定 = 全機能開放（開発時・移行期）
 

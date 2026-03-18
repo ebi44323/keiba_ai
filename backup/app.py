@@ -51,8 +51,104 @@ _UA_LIST = [
 ]
 def get_headers(): return {"User-Agent": random.choice(_UA_LIST)}
 
+_HF_TOKEN   = os.environ.get("HF_TOKEN", "")
+_HF_REPO_ID = os.environ.get("HF_REPO_ID", "")   # 例: "username/keiba-ebye"
+_MODEL_FILE = "keiba_model.pkl"                    # Hub上のファイル名
+_META_FILE  = "keiba_model_meta.json"             # 学習日時などのメタデータ
+
+def _get_zip_mtime():
+    """学習データZIPの最終更新日時(文字列)を返す"""
+    for p in ['learning_data_perfect_tier.zip', 'learning_data_perfect_tier.csv']:
+        if os.path.exists(p):
+            import time as _t
+            return _t.strftime('%Y-%m-%dT%H:%M:%S', _t.gmtime(os.path.getmtime(p)))
+    return 'unknown'
+
+def _try_load_model_from_hub():
+    """
+    HF Hubからモデルをロードする。
+    ローカルのZIP更新日時とHubのメタデータを比較し、
+    ZIPが新しい場合はNoneを返して再学習を促す。
+    返値: (model, features, cat_features, ...) タプル or None
+    """
+    if not _HF_TOKEN or not _HF_REPO_ID:
+        return None
+    try:
+        import joblib, io
+        from huggingface_hub import HfApi
+        api = HfApi(token=_HF_TOKEN)
+
+        # メタデータを確認: データが更新されていれば再学習
+        try:
+            meta_path = api.hf_hub_download(repo_id=_HF_REPO_ID, filename=_META_FILE, repo_type="space", token=_HF_TOKEN)
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+            hub_data_mtime = meta.get('data_mtime', '')
+            local_mtime    = _get_zip_mtime()
+            if local_mtime != hub_data_mtime:
+                return None  # データが更新されているので再学習
+        except: pass  # メタデータなし = 初回 → そのままロードを試みる
+
+        # モデル本体をロード
+        model_path = api.hf_hub_download(repo_id=_HF_REPO_ID, filename=_MODEL_FILE, repo_type="space", token=_HF_TOKEN)
+        bundle = joblib.load(model_path)
+        return bundle
+    except Exception as e:
+        return None  # Hubにモデルなし or エラー → 学習へ
+
+def _save_model_to_hub(bundle):
+    """
+    学習済みモデルをHF Hubにアップロードする。
+    bundle: prepare_model_and_data() の返値タプル
+    """
+    if not _HF_TOKEN or not _HF_REPO_ID:
+        return False
+    try:
+        import joblib, io
+        from huggingface_hub import HfApi
+        api = HfApi(token=_HF_TOKEN)
+
+        # モデルをバイトにシリアライズ
+        buf = io.BytesIO()
+        joblib.dump(bundle, buf)
+        buf.seek(0)
+        api.upload_file(
+            path_or_fileobj=buf,
+            path_in_repo=_MODEL_FILE,
+            repo_id=_HF_REPO_ID,
+            repo_type="space",
+            commit_message=f"モデル更新 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            token=_HF_TOKEN,
+        )
+
+        # メタデータ保存
+        meta = {'data_mtime': _get_zip_mtime(),
+                'trained_at': datetime.datetime.now().isoformat()}
+        meta_buf = io.BytesIO(json.dumps(meta, ensure_ascii=False, indent=2).encode())
+        api.upload_file(
+            path_or_fileobj=meta_buf,
+            path_in_repo=_META_FILE,
+            repo_id=_HF_REPO_ID,
+            repo_type="space",
+            commit_message="モデルメタデータ更新",
+            token=_HF_TOKEN,
+        )
+        return True
+    except Exception as e:
+        return False
+
 @st.cache_resource
-def prepare_model_and_data():
+def prepare_model_and_data(force_retrain=False):
+    """
+    force_retrain=True: Hubのキャッシュを無視して強制再学習
+    """
+    # ── HF Hubからロードを試みる ─────────────────────────────
+    if not force_retrain:
+        cached = _try_load_model_from_hub()
+        if cached is not None:
+            return cached  # キャッシュ済みモデルを即返す
+
+    # ── 以下: 学習処理 ────────────────────────────────────────
     num_features = list(NUM_FEATURES)
     cat_features = list(CAT_FEATURES)
     te_cols = list(TE_COLS)
@@ -243,11 +339,19 @@ def prepare_model_and_data():
         ped_dict = ped_df.set_index('馬ID')[['父','父系','母','母系','母父','母父系']].to_dict('index')
     except: ped_dict = {}
 
-    return (model, features, cat_features, num_features, cat_categories_dict,
-            latest_horse_data, horse_course_dict, ped_dict,
-            known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate)
+    bundle = (model, features, cat_features, num_features, cat_categories_dict,
+              latest_horse_data, horse_course_dict, ped_dict,
+              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate)
 
-with st.spinner('keiba-ebye フルパワーAIエンジンを起動・学習中... (初回のみ数分かかります)'):
+    # ── HF Hubにアップロード ──────────────────────────────────
+    _save_model_to_hub(bundle)
+
+    return bundle
+
+_hub_available = bool(_HF_TOKEN and _HF_REPO_ID)
+_hub_label = "HF Hub" if _hub_available else "ローカル学習"
+
+with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)'):
     (model, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
      known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate) = prepare_model_and_data()
@@ -509,6 +613,115 @@ def get_odds_from_soup(s_soup):
             if odds_val > 0.0: o_dict[umaban] = odds_val
     except: pass
     return o_dict
+
+def generate_pdf_report(results_list, ev_threshold=1.5):
+    """予想レポートをPDF形式で生成して bytes を返す"""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.lib import colors
+        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+                                         Table, TableStyle, HRFlowable)
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        import io
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=A4,
+                                leftMargin=15*mm, rightMargin=15*mm,
+                                topMargin=15*mm, bottomMargin=15*mm)
+
+        # フォント: システムの日本語フォントを探す
+        font_name = 'Helvetica'
+        for fp in ['/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+                   '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+                   '/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc']:
+            if os.path.exists(fp):
+                try:
+                    pdfmetrics.registerFont(TTFont('JP', fp))
+                    font_name = 'JP'
+                except: pass
+                break
+
+        styles = getSampleStyleSheet()
+        style_title  = ParagraphStyle('T', fontName=font_name, fontSize=13, spaceAfter=4, textColor=colors.HexColor('#1a1a2e'), leading=18)
+        style_sub    = ParagraphStyle('S', fontName=font_name, fontSize=9,  spaceAfter=2, textColor=colors.HexColor('#555'), leading=13)
+        style_body   = ParagraphStyle('B', fontName=font_name, fontSize=9,  spaceAfter=3, leading=14)
+        style_reco   = ParagraphStyle('R', fontName=font_name, fontSize=9,  spaceAfter=3, leading=14,
+                                       backColor=colors.HexColor('#f0f8ff'), borderPadding=4)
+
+        story = []
+        story.append(Paragraph(f"keiba-ebye AI予想レポート", style_title))
+        if results_list:
+            story.append(Paragraph(f"{results_list[0]['date']} 生成", style_sub))
+        story.append(HRFlowable(width='100%', thickness=1, color=colors.HexColor('#ddd'), spaceAfter=6))
+
+        ev_summary = []
+
+        for r in results_list:
+            story.append(Paragraph(
+                f"■ {r['place']} {r['num']}R　{r['track']}{r['dist']}m　{r['confidence'][:30]}",
+                style_title))
+            story.append(Paragraph(f"展開: {r['pace'][:60]}", style_sub))
+
+            # 馬柱テーブル
+            df = r['df']
+            tbl_data = [['印','馬番','馬名','脚質','オッズ','勝率','複勝率','EV']]
+            for rank, row in df.iterrows():
+                ev_val = float(row['期待値'])
+                ev_str = f"{ev_val:.2f}"
+                tbl_data.append([
+                    str(row['印']),
+                    str(int(row['馬番'])),
+                    str(row['馬名'])[:8],
+                    str(row.get('脚質カテゴリ',''))[:4],
+                    f"{float(row['単勝オッズ']):.1f}",
+                    f"{float(row['勝率(AI予測)'])*100:.1f}%",
+                    f"{float(row['複勝率(AI予測)'])*100:.1f}%",
+                    ev_str,
+                ])
+                if rank < 5 and ev_val >= ev_threshold:
+                    ev_summary.append({'レース': f"{r['place']}{r['num']}R",
+                                       '印': row['印'], '馬名': row['馬名'], 'EV': ev_val})
+
+            col_w = [8*mm, 10*mm, 28*mm, 14*mm, 14*mm, 15*mm, 16*mm, 12*mm]
+            tbl = Table(tbl_data, colWidths=col_w, repeatRows=1)
+            tbl_style = TableStyle([
+                ('FONTNAME',  (0,0),(-1,-1), font_name),
+                ('FONTSIZE',  (0,0),(-1,-1), 7.5),
+                ('BACKGROUND',(0,0),(-1, 0), colors.HexColor('#2c3e7a')),
+                ('TEXTCOLOR', (0,0),(-1, 0), colors.white),
+                ('ALIGN',     (0,0),(-1,-1), 'CENTER'),
+                ('ALIGN',     (2,1),(2,-1),  'LEFT'),
+                ('GRID',      (0,0),(-1,-1), 0.3, colors.HexColor('#ccc')),
+                ('ROWBACKGROUNDS',(0,1),(-1,-1), [colors.white, colors.HexColor('#f8f8f8')]),
+                ('TOPPADDING',(0,0),(-1,-1), 2),
+                ('BOTTOMPADDING',(0,0),(-1,-1), 2),
+            ])
+            # EV高い行をハイライト
+            for i, (_, row) in enumerate(df.iterrows(), 1):
+                if float(row['期待値']) >= ev_threshold:
+                    tbl_style.add('BACKGROUND', (0,i), (-1,i), colors.HexColor('#fff0f0'))
+                    tbl_style.add('TEXTCOLOR',  (7,i), (7, i), colors.HexColor('#cc0000'))
+            tbl.setStyle(tbl_style)
+            story.append(tbl)
+            story.append(Paragraph(f"推奨: {r['reco'][:80]}", style_reco))
+            story.append(Spacer(1, 4*mm))
+
+        # EV横断まとめ
+        if ev_summary:
+            story.append(HRFlowable(width='100%', thickness=1, color=colors.HexColor('#ddd')))
+            story.append(Paragraph(f"本日の注目馬 (EV{ev_threshold}以上・上位5頭内)", style_title))
+            for row in sorted(ev_summary, key=lambda x: x['EV'], reverse=True):
+                story.append(Paragraph(
+                    f"{row['印']} {row['レース']}  {row['馬名']}  EV:{row['EV']:.2f}", style_body))
+
+        doc.build(story)
+        return buf.getvalue()
+    except Exception as e:
+        return None
+
 
 def generate_txt_report(results_list, ev_threshold=1.5):
     txt = "=== 🏇 keiba-ebye 予想レポート ===\n\n"
@@ -1064,8 +1277,28 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
 # 4. メインUI構成
 # ==========================================
 st.sidebar.markdown("## 🕹️ keiba-ebye メニュー")
-action = st.sidebar.radio("機能を選択", [
-    "⏩ 次のレースを予想",
+
+# ── Free / Pro 認証 ─────────────────────────────────────────
+_PRO_PASSWORD = os.environ.get("PRO_PASSWORD", "")  # HuggingFace Secrets に設定
+
+if _PRO_PASSWORD:
+    _is_pro = st.session_state.get('is_pro', False)
+    if not _is_pro:
+        _pw_input = st.sidebar.text_input("🔑 Pro アクセスコード", type="password", placeholder="Proメンバーはここに入力")
+        if _pw_input == _PRO_PASSWORD:
+            st.session_state['is_pro'] = True
+            st.rerun()
+        st.sidebar.caption("アクセスコードなしでも「次のレースを予想」は無料でご利用いただけます。")
+    else:
+        st.sidebar.success("✅ Pro メンバー")
+        if st.sidebar.button("ログアウト", key="logout"):
+            st.session_state['is_pro'] = False
+            st.rerun()
+else:
+    _is_pro = True  # PRO_PASSWORD未設定 = 全機能開放（開発時・移行期）
+
+# Proのみのメニュー項目
+_PRO_ACTIONS = [
     "📜 本日の全レース予想",
     "📅 今週末の全レース予想",
     "🔍 レースを指定して予想",
@@ -1076,7 +1309,19 @@ action = st.sidebar.radio("機能を選択", [
     "🏇 騎手・調教師フォーム分析",
     "📝 馬券メモ管理",
     "🐴 愛馬の成長記録",
-])
+]
+_FREE_ACTIONS = ["⏩ 次のレースを予想"]
+_ALL_ACTIONS = _FREE_ACTIONS + _PRO_ACTIONS
+
+action = st.sidebar.radio(
+    "機能を選択",
+    _FREE_ACTIONS if not _is_pro else _ALL_ACTIONS
+)
+
+# Pro機能に直接アクセスしようとした場合のガード
+if action in _PRO_ACTIONS and not _is_pro:
+    st.warning("この機能はProメンバー限定です。サイドバーにアクセスコードを入力してください。")
+    st.stop()
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 💰 軍資金シミュレーター")
@@ -1088,6 +1333,20 @@ sim_kelly_frac = st.sidebar.slider("ケリー係数", 0.1, 1.0, 0.25, 0.05,
                    help="1.0=フルケリー(高リスク) 0.25=推奨(安定)")
 sim_max_per_race = st.sidebar.slider("1レース最大投資額 (軍資金の%)", 5, 40, 20, 5,
                    help="1レースに軍資金の何%まで使うか上限を設定します。") / 100
+
+# ── モデル管理 (Pro + HF Hubが設定済みの場合のみ表示) ─────
+if _is_pro and _hub_available:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### ⚙️ モデル管理")
+    st.sidebar.caption(f"HF Hub: `{_HF_REPO_ID}`")
+    if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
+        st.cache_resource.clear()
+        with st.spinner("再学習中... (数分かかります)"):
+            (model, features, cat_features, num_features, cat_categories_dict,
+             latest_horse_data, horse_course_dict, ped_dict,
+             known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate) = prepare_model_and_data(force_retrain=True)
+        st.sidebar.success("✅ 再学習完了・Hubにアップロードしました")
+        st.rerun()
 
 tokyo_tz = pytz.timezone('Asia/Tokyo')
 now = datetime.datetime.now(tokyo_tz)
@@ -1108,73 +1367,96 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
         elif "波乱" in confidence_text: st.error(confidence_text)
         else: st.info(confidence_text)
 
-        # ── 軍資金シミュレーター（サイドバーの設定値を使用）─────
+        # ── 軍資金シミュレーター ─────────────────────────────
         def calc_kelly_sim(p_raw, odds_raw):
-            """サイドバーの軍資金・ケリー係数・EV下限・レース上限を適用"""
             if "見送り" in confidence_text: return 0
             try:
-                p   = float(str(p_raw).replace('%','')) / 100 if '%' in str(p_raw) else float(p_raw)
-                b   = float(odds_raw) - 1.0
+                p = float(str(p_raw).replace('%',''))/100 if '%' in str(p_raw) else float(p_raw)
+                b = float(odds_raw) - 1.0
             except: return 0
             if b <= 0: return 0
-            ev = p * float(odds_raw)
-            if ev < sim_ev_filter: return 0
+            if p * float(odds_raw) < sim_ev_filter: return 0
             f_star = p - (1.0 - p) / b
             if f_star <= 0: return 0
-            raw_bet = f_star * sim_kelly_frac * sim_budget
-            max_bet = sim_budget * sim_max_per_race
-            bet = int(min(raw_bet, max_bet) / 100) * 100
+            bet = int(min(f_star * sim_kelly_frac * sim_budget, sim_budget * sim_max_per_race) / 100) * 100
             return max(0, bet)
 
-        show_df = df_res[['印','馬番','馬名','脚質カテゴリ','単勝オッズ','勝率(AI予測)','複勝率(AI予測)','期待値']].copy()
-        show_df = show_df.rename(columns={'勝率(AI予測)':'勝率','複勝率(AI予測)':'複勝率','単勝オッズ':'オッズ','脚質カテゴリ':'脚質'})
-
-        # 軍資金シミュレーター列
-        bets = []
-        for _, row in show_df.iterrows():
-            bet = calc_kelly_sim(row['勝率'], row['オッズ'])
-            bets.append(f"¥{bet:,}" if bet > 0 else "見送り")
-        show_df['💰推奨ベット'] = bets
-
-        total_bet = sum(
-            int(b.replace('¥','').replace(',','')) for b in bets if b != "見送り"
-        )
-        if total_bet > 0:
-            st.caption(f"💰 このレースの推奨投資合計: **¥{total_bet:,}** / 軍資金¥{sim_budget:,}の {total_bet/sim_budget*100:.1f}%")
-
-        # メモあり馬のサマリー表示
+        # メモ読み込み
         memo_horses = st.session_state.get('memo_horses', [])
+        all_memos = {}
         if memo_horses and os.path.exists("horse_memos.json"):
             try:
                 with open("horse_memos.json", encoding="utf-8") as _mf:
                     all_memos = json.load(_mf)
-                for _, row in df_res.iterrows():
-                    hname = row['馬名']
-                    if hname in all_memos:
-                        latest = sorted(all_memos[hname], key=lambda x: x["日付"], reverse=True)[0]
-                        st.info(f"📝 **{hname}** ({row['印']}) にメモあり: {latest['タグ']} - {latest['日付']} - {latest['メモ'] or '(メモなし)'}")
             except: pass
 
-        show_df['勝率']  = (show_df['勝率'] * 100).map('{:.1f}%'.format)
+        # ── 🏇 馬柱UI ─────────────────────────────────────────
+        import altair as alt
+        st.markdown("#### 🏇 出走馬 AI予想")
+        total_bet = 0
+
+        # リアルタイム勝率バー（Altair水平棒グラフ）
+        bar_df = df_res[['馬番','馬名','印','勝率(AI予測)','期待値','単勝オッズ']].copy()
+        bar_df['勝率%'] = (bar_df['勝率(AI予測)'] * 100).round(1)
+        bar_df['label'] = bar_df['印'] + ' ' + bar_df['馬名']
+        bar_df['color'] = bar_df['期待値'].apply(
+            lambda v: '#FF4B4B' if v >= 1.5 else '#4B8BFF'
+        )
+        bar_chart = alt.Chart(bar_df).mark_bar(cornerRadiusEnd=4).encode(
+            y=alt.Y('label:N', sort=list(bar_df['label']), title='', axis=alt.Axis(labelFontSize=12)),
+            x=alt.X('勝率%:Q', title='AI勝率 (%)', scale=alt.Scale(domain=[0, bar_df['勝率%'].max()*1.15])),
+            color=alt.Color('color:N', scale=None, legend=None),
+            tooltip=['馬名', '勝率%', '期待値', '単勝オッズ']
+        ).properties(height=max(200, len(bar_df) * 32))
+        # 勝率ラベルを棒の右に表示
+        text_chart = alt.Chart(bar_df).mark_text(align='left', dx=4, fontSize=11).encode(
+            y=alt.Y('label:N', sort=list(bar_df['label'])),
+            x=alt.X('勝率%:Q'),
+            text=alt.Text('勝率%:Q', format='.1f'),
+            color=alt.value('var(--color-text-secondary)')
+        )
+        st.altair_chart((bar_chart + text_chart).configure_view(strokeWidth=0), use_container_width=True)
+        st.caption("赤バー = EV1.5以上の注目馬 / 青バー = 通常")
+
+        st.markdown("---")
+
+        # ── 馬柱テーブル ─────────────────────────────────────
+        bets = []
+        for _, row in df_res.iterrows():
+            bet = calc_kelly_sim(row['勝率(AI予測)'], row['単勝オッズ'])
+            bets.append(f"¥{bet:,}" if bet > 0 else "見送り")
+            if bet > 0: total_bet += bet
+
+        show_df = df_res[['印','枠番','馬番','馬名','脚質カテゴリ','単勝オッズ','勝率(AI予測)','複勝率(AI予測)','期待値']].copy()
+        show_df = show_df.rename(columns={'勝率(AI予測)':'勝率','複勝率(AI予測)':'複勝率','単勝オッズ':'オッズ','脚質カテゴリ':'脚質'})
+        show_df['💰推奨'] = bets
+        show_df['勝率']   = (show_df['勝率'] * 100).map('{:.1f}%'.format)
         show_df['複勝率'] = (show_df['複勝率'] * 100).map('{:.1f}%'.format)
 
-        memo_horses = st.session_state.get('memo_horses', [])
+        if total_bet > 0:
+            st.caption(f"💰 推奨投資合計: **¥{total_bet:,}** / 軍資金¥{sim_budget:,}の {total_bet/sim_budget*100:.1f}%")
+
+        # メモあり馬のメッセージ
+        for _, row in df_res.iterrows():
+            hname = row['馬名']
+            if hname in all_memos:
+                latest = sorted(all_memos[hname], key=lambda x: x["日付"], reverse=True)[0]
+                st.info(f"📝 **{hname}** ({row['印']}) にメモあり: {latest['タグ']} {latest['日付']} — {latest['メモ'] or '(内容なし)'}")
 
         def highlight_row(row):
-            bet_str = row.get('💰推奨ベット', '見送り')
             horse_name = row.get('馬名', '')
-            # メモあり馬を紫枠でハイライト
+            bet_str    = row.get('💰推奨', '見送り')
             if horse_name in memo_horses:
-                return ['border-left: 3px solid #9B59B6; background-color: rgba(155,89,182,0.08)'] * len(row)
+                return ['border-left:3px solid #9B59B6;background:rgba(155,89,182,0.08)'] * len(row)
             if bet_str != '見送り' and row['期待値'] >= 1.5:
-                return ['background-color: rgba(255,99,71,0.2)'] * len(row)
+                return ['background:rgba(255,75,75,0.15)'] * len(row)
             if bet_str != '見送り':
-                return ['background-color: rgba(255,200,0,0.1)'] * len(row)
+                return ['background:rgba(255,200,0,0.08)'] * len(row)
             return [''] * len(row)
 
         st.dataframe(
             show_df.style.apply(highlight_row, axis=1)
-                   .format({'期待値':'{:.2f}','オッズ':'{:.1f}'}),
+                   .format({'期待値':'{:.2f}','オッズ':'{:.1f}','枠番':'{:.0f}','馬番':'{:.0f}'}),
             use_container_width=True, hide_index=True
         )
 
@@ -1409,11 +1691,11 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                 st.info(f"👉 **{next_race['place']} {next_race['num']}R** 「{next_race['title']}」 (あと **{mins_left}** 分)")
 
                 # ── オッズ自動再取得 ─────────────────────────────────
-                # 発走10分前になったら自動で予想を更新するオプション
+                # 発走5分前になったら自動で予想を更新するオプション
                 auto_refresh = st.checkbox(
-                    "🔄 発走10分前になったら自動でオッズを再取得して予想を更新する",
+                    "🔄 発走5分前になったら自動でオッズを再取得して予想を更新する",
                     value=False,
-                    help="チェックを入れると発走10分前に自動で予想を再実行します（60秒ごとにページを確認）"
+                    help="チェックを入れると発走5分前に自動で予想を再実行します"
                 )
                 col_btn1, col_btn2 = st.columns([2, 1])
                 with col_btn1:
@@ -1423,12 +1705,12 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
 
                 # 自動更新ロジック: 10分前になったら自動実行
                 auto_triggered = False
-                if auto_refresh and mins_left <= 10 and mins_left >= 0:
+                if auto_refresh and 0 <= mins_left <= 5:
                     last_auto = st.session_state.get(f'last_auto_{next_race["id"]}', 0)
                     if time.time() - last_auto > 300:  # 5分以上経過したら再実行
                         auto_triggered = True
                         st.session_state[f'last_auto_{next_race["id"]}'] = time.time()
-                        st.warning(f"⚡ 発走{mins_left}分前！オッズを自動再取得して予想を更新します...")
+                        st.warning(f"⚡ 発走{mins_left}分前！最新オッズで予想を更新します...")
 
                 if manual_run or force_refresh or auto_triggered:
                     with st.spinner('AIが推論中（最新オッズ取得含む）...'):
@@ -1440,8 +1722,8 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                         else: display_error_log(err_log)
 
                 # 自動更新チェック用ページ再読み込み
-                if auto_refresh and mins_left > 10:
-                    st.caption(f"次の自動確認まで... 発走{mins_left}分前（10分前になると自動更新）")
+                if auto_refresh and mins_left > 5:
+                    st.caption(f"次の自動確認まで... 発走{mins_left}分前（5分前になると自動更新）")
                     # 1分ごとに再確認
                     time.sleep(0)  # Streamlitの再実行をトリガーしない（ボタン待ち）
             else:
@@ -1490,7 +1772,10 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
                             df_ev.style.apply(ev_row_color, axis=1).format({'EV':'{:.2f}','オッズ':'{:.1f}'}),
                             use_container_width=True, hide_index=True
                         )
-                    st.download_button("📥 予想レポートをダウンロード (.txt)", data=generate_txt_report(results_for_txt, sim_ev_filter), file_name=f"keiba_ebye_{now.strftime('%Y%m%d')}.txt", mime="text/plain")
+                    _dc1, _dc2 = st.columns(2)
+                    _dc1.download_button("📥 予想レポート (.txt)", data=generate_txt_report(results_for_txt, sim_ev_filter), file_name=f"keiba_ebye_{now.strftime('%Y%m%d')}.txt", mime="text/plain")
+                    _pdf1 = generate_pdf_report(results_for_txt, sim_ev_filter)
+                    if _pdf1: _dc2.download_button("📄 予想レポート (.pdf)", data=_pdf1, file_name=f"keiba_ebye_{now.strftime('%Y%m%d')}.pdf", mime="application/pdf")
                     
         elif action == "🔍 レースを指定して予想":
             options = [f"{r['place']} {r['num']}R - {r['title']}" for r in todays_races]
@@ -1527,7 +1812,10 @@ elif action == "📅 今週末の全レース予想":
                 time.sleep(1.0)
                 my_bar.progress((i + 1) / len(target_races))
             if results_for_txt:
-                st.download_button(f"📥 {target_date[4:6]}/{target_date[6:]} 予想レポート(.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_weekend_{target_date}.txt", mime="text/plain")
+                _dw1, _dw2 = st.columns(2)
+                _dw1.download_button(f"📥 {target_date[4:6]}/{target_date[6:]} 予想レポート(.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_weekend_{target_date}.txt", mime="text/plain")
+                _pdf_w = generate_pdf_report(results_for_txt)
+                if _pdf_w: _dw2.download_button(f"📄 {target_date[4:6]}/{target_date[6:]} 予想レポート(.pdf)", data=_pdf_w, file_name=f"keiba_weekend_{target_date}.pdf", mime="application/pdf")
 
 elif action == "📝 1日の振り返り (答え合わせ)":
     st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
@@ -1683,6 +1971,13 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 else: daily_data.to_csv(csv_file, index=False)
 
                 st.markdown("---")
+                # ── 的中アニメーション ─────────────────────────
+                tan_rate_pre = (stats['honmei_tan_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
+                if stats['honmei_tan_hits'] >= 3:
+                    st.balloons()
+                elif stats['honmei_tan_hits'] >= 1:
+                    st.snow()
+
                 st.markdown(f"### 🏆 {target_date.strftime('%Y/%m/%d')} レース振り返りレポート")
                 st.markdown(f"**対象レース数: {stats['honmei_races']} レース**")
                 
@@ -1713,7 +2008,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
 
 elif action == "📈 長期成績分析":
-    st.subheader("📈 長期成績分析")
+    st.subheader("📈 長期成績分析 & 回収率ダッシュボード")
     import altair as alt
     csv_file = "ai_daily_history.csv"
     if not os.path.exists(csv_file):
@@ -1812,6 +2107,58 @@ elif action == "📈 長期成績分析":
                            .format({c:'{:.1f}%' for c in plot_cols}),
                     use_container_width=True
                 )
+
+            # ── 累積損益シミュレーション ────────────────────
+            st.markdown("---")
+            st.markdown("#### 📈 累積損益シミュレーション")
+            sim_unit = st.number_input("1レースあたりの賭け金 (円)", 100, 10000, 100, 100, key="sim_unit_hist")
+            history_df['損益']   = (history_df['本命単勝回収率'] - 100) / 100 * sim_unit
+            history_df['累積損益'] = history_df['損益'].cumsum()
+            history_df['日付_str2'] = history_df['日付'].dt.strftime('%m/%d')
+
+            cum_chart = alt.Chart(history_df).mark_line(
+                color='#4B8BFF', strokeWidth=2, point=alt.OverlayMarkDef(color='#4B8BFF', size=50)
+            ).encode(
+                x=alt.X('日付_str2:N', sort=None, title='日付', axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y('累積損益:Q', title='累積損益 (円)'),
+                tooltip=['日付_str2', alt.Tooltip('累積損益:Q', format=',')]
+            ).properties(height=220)
+            zero_rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(
+                color='gray', strokeDash=[4,4], opacity=0.6
+            ).encode(y='y:Q')
+            st.altair_chart(cum_chart + zero_rule, use_container_width=True)
+
+            total_profit  = history_df['累積損益'].iloc[-1] if len(history_df) > 0 else 0
+            total_invest_h = len(history_df) * sim_unit
+            cp1, cp2, cp3 = st.columns(3)
+            cp1.metric("総投資額",   f"¥{total_invest_h:,.0f}")
+            cp2.metric("累積損益",   f"¥{total_profit:,.0f}",
+                       delta=f"{'+' if total_profit>=0 else ''}{total_profit:.0f}円")
+            cp3.metric("総合回収率", f"{(total_profit/total_invest_h+1)*100:.1f}%" if total_invest_h>0 else "N/A")
+
+            # ── 条件別回収率ヒートマップ ────────────────────
+            if len(history_df) >= 3:
+                st.markdown("---")
+                st.markdown("#### 🗓️ 週別回収率ヒートマップ (曜日×週)")
+                history_df['曜日'] = history_df['日付'].dt.day_name().map({
+                    'Monday':'月','Tuesday':'火','Wednesday':'水','Thursday':'木',
+                    'Friday':'金','Saturday':'土','Sunday':'日'
+                })
+                history_df['週'] = history_df['日付'].dt.strftime('%m/%d週')
+                hm_data = history_df.groupby(['週','曜日'])['本命単勝回収率'].mean().reset_index()
+                hm_data.columns = ['週','曜日','回収率']
+                heat = alt.Chart(hm_data).mark_rect(
+                    cornerRadius=3, stroke='white', strokeWidth=1
+                ).encode(
+                    x=alt.X('週:N', title=''),
+                    y=alt.Y('曜日:N', sort=['月','火','水','木','金','土','日'], title=''),
+                    color=alt.Color('回収率:Q',
+                        scale=alt.Scale(domain=[50,150], scheme='redblue'),
+                        legend=alt.Legend(title='回収率(%)')),
+                    tooltip=['週','曜日', alt.Tooltip('回収率:Q', format='.1f')]
+                ).properties(height=180)
+                st.altair_chart(heat, use_container_width=True)
+                st.caption("赤=高回収率 / 青=低回収率。開催日(主に土日)のみ反映")
 
 # ==========================================
 # 🌟 性能試験 (バックテスト) 機能
@@ -1985,8 +2332,10 @@ elif action == "🧪 性能試験 (バックテスト)":
                                      use_container_width=True, hide_index=True)
 
                 if results_for_txt:
-                    st.download_button("📥 結果をダウンロード (.txt)", data=generate_txt_report(results_for_txt),
-                                       file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.txt", mime="text/plain")
+                    _db1, _db2 = st.columns(2)
+                    _db1.download_button("📥 バックテスト結果 (.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.txt", mime="text/plain")
+                    _pdf_b = generate_pdf_report(results_for_txt)
+                    if _pdf_b: _db2.download_button("📄 バックテスト結果 (.pdf)", data=_pdf_b, file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.pdf", mime="application/pdf")
 
 # 🌟 新機能: 一口馬主・推し馬向け 成長記録グラフ
 
