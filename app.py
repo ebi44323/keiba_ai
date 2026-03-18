@@ -651,15 +651,20 @@ def generate_pdf_report(results_list, ev_threshold=1.5):
 
         # フォント: システムの日本語フォントを探す
         font_name = 'Helvetica'
-        for fp in ['/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
-                   '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-                   '/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc']:
+        # .ttcはreportlabが非サポート → .ttfのみ試みる
+        for fp in [
+            '/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf',      # IPAゴシック (HF環境)
+            '/usr/share/fonts/truetype/fonts-japanese-gothic.ttf',    # 日本語ゴシック (HF環境)
+            '/usr/share/fonts/opentype/ipafont-mincho/ipam.ttf',      # IPA明朝
+            '/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf',
+            '/System/Library/Fonts/Hiragino Sans GB.ttc',             # macOS (ttcだが試みる)
+        ]:
             if os.path.exists(fp):
                 try:
                     pdfmetrics.registerFont(TTFont('JP', fp))
                     font_name = 'JP'
-                except: pass
-                break
+                    break
+                except Exception: continue
 
         styles = getSampleStyleSheet()
         style_title  = ParagraphStyle('T', fontName=font_name, fontSize=13, spaceAfter=4, textColor=colors.HexColor('#1a1a2e'), leading=18)
@@ -1456,13 +1461,17 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
         def highlight_row(row):
             horse_name = row.get('馬名', '')
             bet_str    = row.get('💰推奨', '見送り')
+            try:
+                ev = float(row.get('期待値', 0) or 0)
+            except (ValueError, TypeError):
+                ev = 0.0
             if horse_name in memo_horses:
                 return ['border-left:3px solid #9B59B6;background:rgba(155,89,182,0.08)'] * len(row)
-            # EV1.5以上は常に赤ハイライト（ベット対象かどうかに関わらず）
-            if row['期待値'] >= 1.5:
-                return ['background:rgba(255,75,75,0.18)'] * len(row)
+            # EV1.5以上は常に赤ハイライト
+            if ev >= 1.5:
+                return ['background-color:rgba(255,75,75,0.18)'] * len(row)
             if bet_str != '見送り':
-                return ['background:rgba(255,200,0,0.08)'] * len(row)
+                return ['background-color:rgba(255,200,0,0.10)'] * len(row)
             return [''] * len(row)
 
         st.dataframe(
@@ -2027,13 +2036,6 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     except Exception: pass
 
                 st.markdown("---")
-                # ── 的中アニメーション ─────────────────────────
-                tan_rate_pre = (stats['honmei_tan_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
-                if stats['honmei_tan_hits'] >= 3:
-                    st.balloons()
-                elif stats['honmei_tan_hits'] >= 1:
-                    st.snow()
-
                 st.markdown(f"### 🏆 {target_date.strftime('%Y/%m/%d')} レース振り返りレポート")
                 st.markdown(f"**対象レース数: {stats['honmei_races']} レース**")
                 
