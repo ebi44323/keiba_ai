@@ -567,10 +567,12 @@ def generate_txt_report(results_list, ev_threshold=1.5):
 
 # 騎手名の既知の表記ゆれ辞書（出馬表の短縮表記 → 正式名）
 _JOCKEY_ABBR = {
-    # 出馬表で省略される騎手名パターン (短縮→正式)
+    # 出馬表での短縮表記 → 正式名
+    # ※ 危険な短縮（別騎手名の一部にもマッチする可能性があるもの）は入れない
     '角田和':   '角田大和',
-    '石神道':   '石神深道',
-    '石神一':   '石神深一',
+    '石神深道':  '石神深道',   # フルネームのまま
+    '石神深一':  '石神深一',
+    '石川裕紀':  '石川裕紀人',  # 石川倭との混同防止（裕紀 → 裕紀人）
     '小林凌':   '小林凌大',
     '菱田裕':   '菱田裕二',
     '富田暁':   '富田暁斗',
@@ -580,8 +582,17 @@ _JOCKEY_ABBR = {
     '亀田温':   '亀田温心',
     '団野大':   '団野大成',
     '西村淳':   '西村淳也',
+    '大江':     '大江原圭',   # 大江→大江原圭
     '永島まな': '永島まなみ',
     '古川奈':   '古川奈穂',
+}
+
+# resolve_name()とは別に、出馬表の騎手名から正式名を推定するマッピング
+# fetch_horse_last_race()の結果と比較するために使用
+_JOCKEY_NORMALIZE_EXTRA = {
+    # 短縮名 → 正式名（4文字以上の部分一致で誤爆しやすいケースを明示）
+    '石川裕紀人': '石川裕紀人',
+    '石川倭':    '石川倭',
 }
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -678,7 +689,11 @@ def _safe_col(df, col, default=np.nan):
     return pd.Series([val] * len(df), index=df.index)
 
 # ==========================================
-def run_real_prediction(race_id, race_date_str):
+def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
+    """
+    skip_live_scrape=True: バックテスト時に使用。
+      fetch_horse_last_race()を呼ばない（速度維持＆日付ズレ防止）
+    """
     error_log = []
     odds_dict = {}
     html_text = ""
@@ -842,24 +857,29 @@ def run_real_prediction(race_id, race_date_str):
             # 既知の短縮表記を正式名に変換
             return _JOCKEY_ABBR.get(n, n)
 
-        # 各馬の前走情報を取得（キャッシュ付きなので2回目以降は高速）
-        for idx, row in df_test.iterrows():
-            hid = str(row['馬ID'])
-            prev = fetch_horse_last_race(hid)
-            if not prev:
-                continue  # 取得失敗時はCSVデータのまま
+        # 各馬の前走情報をnetkeibaから直接スクレイプして上書き
+        # skip_live_scrape=True(バックテスト): スキップして高速化
+        # 前走日付 >= race_date の場合もスキップ（バックテスト日より未来の情報は使えない）
+        if not skip_live_scrape:
+            for idx, row in df_test.iterrows():
+                hid = str(row['馬ID'])
+                prev = fetch_horse_last_race(hid)
+                if not prev:
+                    continue
 
-            # CSVデータを前走スクレイプ結果で上書き
-            if '前走日付' in prev:
-                df_test.at[idx, '最新_日付']    = prev['前走日付']
-            if '前走距離' in prev:
-                df_test.at[idx, '最新_距離']    = prev['前走距離']
-            if '前走芝ダート' in prev:
-                df_test.at[idx, '最新_芝ダート'] = prev['前走芝ダート']
-            if '前走騎手' in prev:
-                df_test.at[idx, '最新_騎手']    = prev['前走騎手']
-            if '前走着順' in prev:
-                df_test.at[idx, '最新_着順']    = prev['前走着順']
+                # バックテスト日付より未来の前走は使わない
+                if '前走日付' in prev:
+                    try:
+                        prev_dt = pd.to_datetime(prev['前走日付'], errors='coerce')
+                        if pd.notna(prev_dt) and prev_dt >= race_date_obj:
+                            continue  # 未来データは無視してCSVデータのまま
+                    except: pass
+
+                if '前走日付'   in prev: df_test.at[idx, '最新_日付']     = prev['前走日付']
+                if '前走距離'   in prev: df_test.at[idx, '最新_距離']     = prev['前走距離']
+                if '前走芝ダート' in prev: df_test.at[idx, '最新_芝ダート'] = prev['前走芝ダート']
+                if '前走騎手'   in prev: df_test.at[idx, '最新_騎手']     = prev['前走騎手']
+                if '前走着順'   in prev: df_test.at[idx, '最新_着順']     = prev['前走着順']
 
         # 休養日数: スクレイプ済みの最新_日付から計算
         if '最新_日付' in df_test.columns:
@@ -881,10 +901,15 @@ def run_real_prediction(race_id, race_date_str):
             df_test['_前走騎手']        = '不明'
 
         # 馬場替わりフラグ
+        # 障害レースは「障害」カテゴリとして扱い、芝/ダート→障害は常に「変更」とする
+        # ただし障害→障害は変化なし
         if '最新_芝ダート' in df_test.columns:
             now_s  = df_test['芝/ダート'].fillna('').astype(str).str.strip()
             prev_s = df_test['最新_芝ダート'].fillna('').astype(str).str.strip()
-            df_test['馬場替わりフラグ'] = ((now_s != prev_s) & (prev_s != '')).astype(int)
+            # 障害同士は変化なし扱い（今回も前走も障害なら変化なし）
+            both_shogai = (now_s.str.contains('障') & prev_s.str.contains('障'))
+            surf_changed = ((now_s != prev_s) & (prev_s != '') & ~both_shogai)
+            df_test['馬場替わりフラグ'] = surf_changed.astype(int)
             df_test['_前走馬場']        = df_test['最新_芝ダート'].fillna('不明')
         else:
             df_test['馬場替わりフラグ'] = 0
@@ -1378,16 +1403,49 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
             st.subheader("🕒 まもなく出走するレース")
             races_sorted_by_time = sorted(todays_races, key=lambda x: x['time'])
             next_race = next((r for r in races_sorted_by_time if r['time'] > now), None)
-            
+
             if next_race:
                 mins_left = int((next_race['time'] - now).total_seconds() / 60)
                 st.info(f"👉 **{next_race['place']} {next_race['num']}R** 「{next_race['title']}」 (あと **{mins_left}** 分)")
-                if st.button("🚀 keiba-ebye 予想起動！", type="primary"):
-                    with st.spinner('AIが推論中...'):
+
+                # ── オッズ自動再取得 ─────────────────────────────────
+                # 発走10分前になったら自動で予想を更新するオプション
+                auto_refresh = st.checkbox(
+                    "🔄 発走10分前になったら自動でオッズを再取得して予想を更新する",
+                    value=False,
+                    help="チェックを入れると発走10分前に自動で予想を再実行します（60秒ごとにページを確認）"
+                )
+                col_btn1, col_btn2 = st.columns([2, 1])
+                with col_btn1:
+                    manual_run = st.button("🚀 keiba-ebye 予想起動！", type="primary")
+                with col_btn2:
+                    force_refresh = st.button("🔄 オッズ再取得して更新", help="最新オッズで予想を再実行します")
+
+                # 自動更新ロジック: 10分前になったら自動実行
+                auto_triggered = False
+                if auto_refresh and mins_left <= 10 and mins_left >= 0:
+                    last_auto = st.session_state.get(f'last_auto_{next_race["id"]}', 0)
+                    if time.time() - last_auto > 300:  # 5分以上経過したら再実行
+                        auto_triggered = True
+                        st.session_state[f'last_auto_{next_race["id"]}'] = time.time()
+                        st.warning(f"⚡ 発走{mins_left}分前！オッズを自動再取得して予想を更新します...")
+
+                if manual_run or force_refresh or auto_triggered:
+                    with st.spinner('AIが推論中（最新オッズ取得含む）...'):
                         res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'))
-                        if res_df is not None: display_result(res_df, topics, reco, pace_text, conf_text)
+                        if res_df is not None:
+                            display_result(res_df, topics, reco, pace_text, conf_text)
+                            if force_refresh or auto_triggered:
+                                st.success("✅ オッズを再取得して予想を更新しました")
                         else: display_error_log(err_log)
-            else: st.success("🏁 本日の全レースは終了しました。")
+
+                # 自動更新チェック用ページ再読み込み
+                if auto_refresh and mins_left > 10:
+                    st.caption(f"次の自動確認まで... 発走{mins_left}分前（10分前になると自動更新）")
+                    # 1分ごとに再確認
+                    time.sleep(0)  # Streamlitの再実行をトリガーしない（ボタン待ち）
+            else:
+                st.success("🏁 本日の全レースは終了しました。")
             
         elif action == "📜 本日の全レース予想":
             st.subheader(f"📅 本日の全レース一覧")
@@ -1494,7 +1552,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 }
 
                 for i, r in enumerate(races):
-                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'))
+                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'), skip_live_scrape=True)
                     payouts = get_all_payouts(r['id'])
 
                     # =========================================================
@@ -1783,7 +1841,7 @@ elif action == "🧪 性能試験 (バックテスト)":
 
                 for i, r in enumerate(test_races):
                     with st.expander(f"🏁 {r['place']} {r['num']}R"):
-                        res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d'))
+                        res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d'), skip_live_scrape=True)
                         t_dict, f_dict = get_payouts(r['id'])
 
                         if res_df is not None:
@@ -2139,16 +2197,62 @@ elif action == "📝 馬券メモ管理":
     MEMO_FILE = "horse_memos.json"
 
     def load_memos():
+        # 1. まずローカルファイルを確認
         if os.path.exists(MEMO_FILE):
             try:
                 with open(MEMO_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
             except: pass
+        # 2. GitHubから取得を試みる（ローカルにない場合）
+        gh_token = os.environ.get("GITHUB_TOKEN", "")
+        gh_repo  = os.environ.get("GITHUB_REPO", "")   # 例: "username/keiba-ebye"
+        if gh_token and gh_repo:
+            try:
+                api_url = f"https://api.github.com/repos/{gh_repo}/contents/{MEMO_FILE}"
+                resp = requests.get(api_url,
+                    headers={"Authorization": f"token {gh_token}", "Accept": "application/vnd.github.v3+json"},
+                    timeout=5)
+                if resp.status_code == 200:
+                    import base64
+                    data = json.loads(base64.b64decode(resp.json()["content"]).decode("utf-8"))
+                    # ローカルにキャッシュ
+                    with open(MEMO_FILE, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    return data
+            except: pass
         return {}
 
     def save_memos(memos):
+        # ローカル保存
         with open(MEMO_FILE, "w", encoding="utf-8") as f:
             json.dump(memos, f, ensure_ascii=False, indent=2)
+        # GitHub自動コミット（Secrets設定がある場合）
+        gh_token = os.environ.get("GITHUB_TOKEN", "")
+        gh_repo  = os.environ.get("GITHUB_REPO", "")
+        if not gh_token or not gh_repo:
+            return  # Secrets未設定なら無視
+        try:
+            import base64
+            api_url  = f"https://api.github.com/repos/{gh_repo}/contents/{MEMO_FILE}"
+            headers  = {"Authorization": f"token {gh_token}", "Accept": "application/vnd.github.v3+json"}
+            # 既存ファイルのSHAを取得（更新時に必要）
+            get_resp = requests.get(api_url, headers=headers, timeout=5)
+            sha = get_resp.json().get("sha", "") if get_resp.status_code == 200 else ""
+            content_b64 = base64.b64encode(
+                json.dumps(memos, ensure_ascii=False, indent=2).encode("utf-8")
+            ).decode("utf-8")
+            payload = {
+                "message": f"📝 馬券メモ更新 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                "content": content_b64,
+            }
+            if sha: payload["sha"] = sha
+            put_resp = requests.put(api_url, headers=headers, json=payload, timeout=8)
+            if put_resp.status_code in (200, 201):
+                st.toast("✅ GitHubにメモを自動保存しました", icon="💾")
+            else:
+                st.toast(f"⚠️ GitHub保存失敗(status={put_resp.status_code})", icon="⚠️")
+        except Exception as _e:
+            st.toast(f"⚠️ GitHub自動コミットエラー: {_e}", icon="⚠️")
 
     memos = load_memos()
 
