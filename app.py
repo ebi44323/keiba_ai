@@ -565,6 +565,109 @@ def generate_txt_report(results_list, ev_threshold=1.5):
 # ==========================================
 # 3. 本格AI予測関数 (★BUG修正版)
 
+# 騎手名の既知の表記ゆれ辞書（出馬表の短縮表記 → 正式名）
+_JOCKEY_ABBR = {
+    # 出馬表で省略される騎手名パターン (短縮→正式)
+    '角田和':   '角田大和',
+    '石神道':   '石神深道',
+    '石神一':   '石神深一',
+    '小林凌':   '小林凌大',
+    '菱田裕':   '菱田裕二',
+    '富田暁':   '富田暁斗',
+    '木幡初':   '木幡初也',
+    '木幡巧':   '木幡巧也',
+    '水口優':   '水口優也',
+    '亀田温':   '亀田温心',
+    '団野大':   '団野大成',
+    '西村淳':   '西村淳也',
+    '永島まな': '永島まなみ',
+    '古川奈':   '古川奈穂',
+}
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_horse_last_race(horse_id: str) -> dict:
+    """
+    netkeibaの馬ページから「最後のレース情報」をスクレイプして返す。
+    戻り値: {
+        '前走日付':   '2025/03/08',
+        '前走距離':   1600.0,
+        '前走芝ダート': '芝',
+        '前走騎手':   '川田将雅',
+        '前走着順':   2,
+    }
+    取得失敗時は空dict{}を返す。
+    """
+    result = {}
+    try:
+        url = f"https://db.netkeiba.com/horse/{horse_id}/"
+        r = requests.get(url, headers=get_headers(), timeout=8)
+        r.encoding = 'euc-jp'
+        soup = BeautifulSoup(r.text, 'html.parser')
+
+        # 競走成績テーブルを探す
+        table = soup.find('table', class_='race_table_01') or soup.find('table', summary='新着情報')
+        if not table:
+            return result
+
+        rows = table.find_all('tr')
+        # 1行目はheader、2行目が最新レース
+        if len(rows) < 2:
+            return result
+
+        # ヘッダー列名取得
+        headers = [th.text.strip().replace('\n','') for th in rows[0].find_all(['th','td'])]
+        def gi(kws):
+            for i, h in enumerate(headers):
+                if any(k in h for k in kws): return i
+            return -1
+
+        date_i  = gi(['日付','年月日'])
+        dist_i  = gi(['距離'])
+        jock_i  = gi(['騎手'])
+        rank_i  = gi(['着順','着'])
+
+        last_row_tds = rows[1].find_all('td')
+        if len(last_row_tds) < 4:
+            return result
+
+        def g(i):
+            return last_row_tds[i].text.strip() if i != -1 and i < len(last_row_tds) else ''
+
+        # 日付
+        date_str = g(date_i)
+        if re.match(r'\d{4}/\d{1,2}/\d{1,2}', date_str):
+            result['前走日付'] = date_str
+
+        # 距離と芝/ダート (例: "芝1600" or "ダ1200")
+        dist_text = g(dist_i)
+        dist_m = re.search(r'(\d{3,4})', dist_text)
+        if dist_m:
+            result['前走距離'] = float(dist_m.group(1))
+        if dist_text.startswith('芝') or '芝' in dist_text:
+            result['前走芝ダート'] = '芝'
+        elif dist_text.startswith('ダ') or 'ダ' in dist_text or 'ダート' in dist_text:
+            result['前走芝ダート'] = 'ダート'
+        elif dist_text.startswith('障') or '障' in dist_text:
+            result['前走芝ダート'] = '障害'
+
+        # 騎手
+        jock_td = last_row_tds[jock_i] if jock_i != -1 and jock_i < len(last_row_tds) else None
+        if jock_td:
+            ja = jock_td.find('a')
+            jname = ja.text.strip() if ja else jock_td.text.strip()
+            result['前走騎手'] = jname
+
+        # 着順
+        rank_str = g(rank_i)
+        rank_m = re.search(r'^\d+$', rank_str)
+        if rank_m:
+            result['前走着順'] = int(rank_str)
+
+    except Exception:
+        pass
+    return result
+
+
 def _safe_col(df, col, default=np.nan):
     """列が存在しない or スカラーになっている場合でも必ずSeriesを返す安全ラッパー"""
     if col not in df.columns:
@@ -728,19 +831,46 @@ def run_real_prediction(race_id, race_date_str):
 
         race_date_obj = pd.to_datetime(race_date_str)
 
-        # 休養日数: 0以下は学習データと予想日が重複(バックテスト等)の混入 -> NaNに
+        # =====================================================================
+        # 前走情報をnetkeibaから直接スクレイプして上書き
+        # CSVベースのlatest_horse_dataより確実（表記ゆれ・古いデータ問題を解決）
+        # =====================================================================
+        def _norm_name(s):
+            if pd.isna(s): return ''
+            # 全角スペース・記号除去
+            n = re.sub(r'[\s\u3000\u2606\u25b2\u25b3\u25c7\u2605\[\]]', '', str(s))
+            # 既知の短縮表記を正式名に変換
+            return _JOCKEY_ABBR.get(n, n)
+
+        # 各馬の前走情報を取得（キャッシュ付きなので2回目以降は高速）
+        for idx, row in df_test.iterrows():
+            hid = str(row['馬ID'])
+            prev = fetch_horse_last_race(hid)
+            if not prev:
+                continue  # 取得失敗時はCSVデータのまま
+
+            # CSVデータを前走スクレイプ結果で上書き
+            if '前走日付' in prev:
+                df_test.at[idx, '最新_日付']    = prev['前走日付']
+            if '前走距離' in prev:
+                df_test.at[idx, '最新_距離']    = prev['前走距離']
+            if '前走芝ダート' in prev:
+                df_test.at[idx, '最新_芝ダート'] = prev['前走芝ダート']
+            if '前走騎手' in prev:
+                df_test.at[idx, '最新_騎手']    = prev['前走騎手']
+            if '前走着順' in prev:
+                df_test.at[idx, '最新_着順']    = prev['前走着順']
+
+        # 休養日数: スクレイプ済みの最新_日付から計算
         if '最新_日付' in df_test.columns:
-            last_dates  = pd.to_datetime(df_test['最新_日付'], errors='coerce')
-            kyuyo_raw   = (race_date_obj - last_dates).dt.days.astype('float64')
+            last_dates = pd.to_datetime(df_test['最新_日付'], errors='coerce')
+            kyuyo_raw  = (race_date_obj - last_dates).dt.days.astype('float64')
+            # 0以下は同日/未来(バックテスト混入) → NaN
             df_test['休養日数'] = kyuyo_raw.where(kyuyo_raw > 0, other=np.nan)
         else:
             df_test['休養日数'] = np.nan
 
-        # フラグ計算: 正規化比較
-        def _norm_name(s):
-            if pd.isna(s): return ''
-            return re.sub(r'[\s\u3000\u2606\u25b2\u25b3\u25c7\u2605\[\]]', '', str(s))
-
+        # 乗り替わりフラグ: 正規化名で比較
         if '最新_騎手' in df_test.columns:
             now_j  = df_test['騎手'].apply(_norm_name)
             prev_j = df_test['最新_騎手'].apply(_norm_name)
@@ -750,6 +880,7 @@ def run_real_prediction(race_id, race_date_str):
             df_test['乗り替わりフラグ'] = 0
             df_test['_前走騎手']        = '不明'
 
+        # 馬場替わりフラグ
         if '最新_芝ダート' in df_test.columns:
             now_s  = df_test['芝/ダート'].fillna('').astype(str).str.strip()
             prev_s = df_test['最新_芝ダート'].fillna('').astype(str).str.strip()
@@ -760,6 +891,7 @@ def run_real_prediction(race_id, race_date_str):
             df_test['_前走馬場']        = '不明'
         df_test['前走芝ダート'] = df_test['_前走馬場']
 
+        # 距離変更フラグ: float比較
         if '最新_距離' in df_test.columns:
             now_d  = pd.to_numeric(df_test['距離'],      errors='coerce')
             prev_d = pd.to_numeric(df_test['最新_距離'], errors='coerce')
