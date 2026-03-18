@@ -687,13 +687,54 @@ def run_real_prediction(race_id, race_date_str):
         df_test['位置取りショック'] = df_test['前走_最終コーナー'] - pd.to_numeric(_safe_col(df_test, '2走前_最終コーナー'), errors='coerce')
 
         race_date_obj = pd.to_datetime(race_date_str)
-        df_test['休養日数'] = (race_date_obj-pd.to_datetime(df_test['最新_日付'])).dt.days if '最新_日付' in df_test.columns else np.nan
 
-        # ★修正BUG1/BUG2: 新特徴量を推論時に正しく構築
-        df_test['乗り替わりフラグ']    = (df_test['騎手']!=df_test['最新_騎手']).astype(int) if '最新_騎手' in df_test.columns else 0
-        df_test['馬場替わりフラグ']    = (df_test['芝/ダート']!=df_test['最新_芝ダート']).astype(int) if '最新_芝ダート' in df_test.columns else 0
-        df_test['前走芝ダート']        = df_test['最新_芝ダート'].fillna('不明') if '最新_芝ダート' in df_test.columns else '不明'
-        df_test['距離変更フラグ']      = (df_test['距離']!=pd.to_numeric(df_test['最新_距離'],errors='coerce')).astype(int) if '最新_距離' in df_test.columns else 0
+        # 休養日数: NaN対応付きで計算
+        if '最新_日付' in df_test.columns:
+            try:
+                last_dates = pd.to_datetime(df_test['最新_日付'], errors='coerce')
+                kyuyo = (race_date_obj - last_dates).dt.days
+                df_test['休養日数'] = pd.to_numeric(kyuyo, errors='coerce')
+            except:
+                df_test['休養日数'] = np.nan
+        else:
+            df_test['休養日数'] = np.nan
+
+        # ★乗り替わり: 騎手名の正規化比較（両方strip・全角スペース除去）
+        def norm_name(s):
+            if pd.isna(s): return ''
+            return re.sub(r'[\s　☆▲△◇★]', '', str(s))
+
+        if '最新_騎手' in df_test.columns:
+            now_j  = df_test['騎手'].apply(norm_name)
+            prev_j = df_test['最新_騎手'].apply(norm_name)
+            # 前走騎手が不明(空)の場合は「不明」として0扱い
+            df_test['乗り替わりフラグ'] = ((now_j != prev_j) & (prev_j != '')).astype(int)
+            # 表示用: 前走騎手名を保持
+            df_test['_前走騎手'] = df_test['最新_騎手'].fillna('不明')
+        else:
+            df_test['乗り替わりフラグ'] = 0
+            df_test['_前走騎手'] = '不明'
+
+        # ★馬場替わり: 文字列正規化して比較
+        if '最新_芝ダート' in df_test.columns:
+            now_surf  = df_test['芝/ダート'].fillna('不明').astype(str).str.strip()
+            prev_surf = df_test['最新_芝ダート'].fillna('不明').astype(str).str.strip()
+            df_test['馬場替わりフラグ'] = ((now_surf != prev_surf) & (prev_surf != '不明')).astype(int)
+            df_test['_前走馬場'] = prev_surf
+        else:
+            df_test['馬場替わりフラグ'] = 0
+            df_test['_前走馬場'] = '不明'
+        df_test['前走芝ダート'] = df_test.get('_前走馬場', '不明')
+
+        # ★距離変更: float同士で比較
+        if '最新_距離' in df_test.columns:
+            now_dist  = pd.to_numeric(df_test['距離'], errors='coerce')
+            prev_dist = pd.to_numeric(df_test['最新_距離'], errors='coerce')
+            df_test['距離変更フラグ'] = ((now_dist != prev_dist) & prev_dist.notna()).astype(int)
+            df_test['_前走距離'] = prev_dist
+        else:
+            df_test['距離変更フラグ'] = 0
+            df_test['_前走距離'] = np.nan
         # _safe_col: 列の存在・スカラー/Series問わず常にSeriesを返す安全ラッパー使用
         df_test['前走失速フラグ']        = pd.to_numeric(_safe_col(df_test, '最新_失速フラグ',        0),   errors='coerce').fillna(0)
         df_test['前走上り偏差']          = pd.to_numeric(_safe_col(df_test, '最新_上り偏差',          np.nan), errors='coerce')
@@ -935,83 +976,160 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
         st.success(f"**🤖 AI推奨買い目:**\n\n{reco}")
 
     with tab3:
-        # ── 性能詳細タブ（強化版）─────────────────────────────
-        st.markdown("#### 📐 AI評価スコア詳細")
-        st.caption("各馬のAI内部スコアを可視化します。スピード指数・上昇度・コース適性・脚質の4軸で評価。")
+        import altair as alt
 
-        detail_cols_map = {
+        # 見方ガイド（折り畳み）
+        with st.expander("📖 指標の見方・解説 (クリックで開く)", expanded=False):
+            st.markdown("**スピード指数系**")
+            guide_data = {
+                "指標": ["地力(中央値)", "最高ポテンシャル", "上昇度",
+                          "コース適性", "位置取り変化", "近3走安定度",
+                          "休養日数", "騎手変化", "馬場変化", "距離変化"],
+                "見方": [
+                    "近5走スピード指数の中央値。コースに左右されない本来の実力値。50が平均、高いほど強い",
+                    "近5走の最高値。この馬が出せる天井の実力。地力との差が大きいほど底力がある",
+                    "前走指数 - 近5走中央値。+2以上=上昇中(赤)、-2以下=下降気味(グレー)",
+                    "このコースでの過去の着順パーセント平均。0に近いほどコースが得意(緑)",
+                    "今回予想コーナー順位 - 前走。マイナス=前に行きそう、プラス=後退しそう",
+                    "直近3走の着順パーセント平均。0.3以下=安定して上位(緑)、0.6以上=不安定",
+                    "前走からの間隔日数。28日以内=中2週以内、56日以上=休み明け",
+                    "前走騎手から今回騎手への変化。騎手強化かどうか確認推奨",
+                    "前走の芝/ダートから変更があるか。初芝・初ダートは適性要確認",
+                    "前走距離からの変更。得意距離かどうか別途確認推奨",
+                ],
+            }
+            st.dataframe(pd.DataFrame(guide_data), use_container_width=True, hide_index=True)
+
+        # スコアテーブル
+        st.markdown("#### 📐 AI評価スコア詳細")
+        score_cols_map = {
             '近5走_中央値スピード指数': '地力(中央値)',
             '近5走_最高スピード指数':   '最高ポテンシャル',
             '上昇度_スピード指数':       '上昇度',
-            'コース適性_着順パーセント': 'コース適性(低いほど◎)',
+            'コース適性_着順パーセント': 'コース適性',
             '位置取りショック':          '位置取り変化',
-            '休養日数':                  '休養日数',
             '直近3走着順パーセント':     '近3走安定度',
-            '乗り替わりフラグ':          '乗替',
-            '馬場替わりフラグ':          '馬場変',
-            '距離変更フラグ':            '距離変',
         }
-        avail = {k:v for k,v in detail_cols_map.items() if k in df_res.columns}
-        detail_df = df_res[['馬番','馬名','騎手','調教師'] + list(avail.keys())].copy()
-        detail_df = detail_df.rename(columns=avail)
+        avail_s = {k: v for k, v in score_cols_map.items() if k in df_res.columns}
+        score_df = df_res[['馬番', '馬名', '脚質カテゴリ'] + list(avail_s.keys())].copy()
+        score_df = score_df.rename(columns=avail_s)
 
-        fmt = {}
-        for col in ['地力(中央値)','最高ポテンシャル','上昇度','コース適性(低いほど◎)',
-                    '位置取り変化','近3走安定度']:
-            if col in detail_df.columns: fmt[col] = '{:.2f}'
-        if '休養日数' in detail_df.columns: fmt['休養日数'] = '{:.0f}日'
-
-        def highlight_detail(row):
+        def highlight_score(row):
             styles = [''] * len(row)
             cols = list(row.index)
-            # 上昇度が高い馬を強調
-            if '上昇度' in cols:
-                idx = cols.index('上昇度')
-                try:
-                    if float(row['上昇度']) >= 2.0:
-                        styles[idx] = 'color:#FF4B4B; font-weight:bold'
-                    elif float(row['上昇度']) <= -2.0:
-                        styles[idx] = 'color:#888'
-                except: pass
-            # 乗替・馬場変・距離変フラグ
-            for flag_col in ['乗替','馬場変','距離変']:
-                if flag_col in cols:
-                    idx = cols.index(flag_col)
+            for col, fn in [
+                ('上昇度', lambda v: 'color:#FF4B4B;font-weight:bold' if v >= 2.0
+                           else ('color:#888888' if v <= -2.0 else '')),
+                ('地力(中央値)', lambda v: 'color:#4B8BFF;font-weight:bold' if v >= 55 else ''),
+                ('コース適性', lambda v: 'color:#22AA22;font-weight:bold' if v <= 0.2 else ''),
+                ('近3走安定度', lambda v: 'color:#22AA22;font-weight:bold' if v <= 0.3
+                              else ('color:#888888' if v >= 0.6 else '')),
+            ]:
+                if col in cols:
                     try:
-                        if int(row[flag_col]) == 1:
-                            styles[idx] = 'color:#FFA500; font-weight:bold'
+                        styles[cols.index(col)] = fn(float(row[col]))
                     except: pass
             return styles
 
+        fmt_s = {v: '{:.2f}' for v in avail_s.values()}
         st.dataframe(
-            detail_df.style.apply(highlight_detail, axis=1).format(fmt),
+            score_df.style.apply(highlight_score, axis=1).format(fmt_s, na_rep='－'),
             use_container_width=True, hide_index=True
         )
+        st.caption("赤=上昇度+2以上 / 青=地力55以上 / 緑=コース適性0.2以下 or 安定度0.3以下")
 
-        # ── スピード指数バーチャート ─────────────────────────
+        # 前走比較テーブル
+        st.markdown("#### 🔄 前走との変化点チェック")
+
+        kyuyo_series = pd.to_numeric(
+            df_res['休養日数'] if '休養日数' in df_res.columns else pd.Series([np.nan]*len(df_res)),
+            errors='coerce'
+        ).reset_index(drop=True)
+
+        def fmt_kyuyo(days):
+            if pd.isna(days): return '不明'
+            d = int(days)
+            if d <= 14:  return f'[超短]{d}日'
+            if d <= 28:  return f'[中2週]{d}日'
+            if d <= 56:  return f'[中3-7週]{d}日'
+            return f'[休み明け]{d}日'
+
+        change_rows = []
+        for i, (_, row) in enumerate(df_res.iterrows()):
+            # 騎手変化
+            flag_j = int(row['乗り替わりフラグ']) if '乗り替わりフラグ' in df_res.columns and not pd.isna(row.get('乗り替わりフラグ')) else 0
+            prev_j = str(row['_前走騎手']) if '_前走騎手' in df_res.columns and not pd.isna(row.get('_前走騎手')) else '不明'
+            now_j  = str(row.get('騎手', ''))
+            jockey_str = f"変更:{prev_j}->{now_j}" if flag_j == 1 and prev_j not in ('不明', '', 'nan') else '変化なし'
+
+            # 馬場変化
+            flag_s = int(row['馬場替わりフラグ']) if '馬場替わりフラグ' in df_res.columns and not pd.isna(row.get('馬場替わりフラグ')) else 0
+            prev_s = str(row['_前走馬場']) if '_前走馬場' in df_res.columns and not pd.isna(row.get('_前走馬場')) else '不明'
+            now_s  = str(row.get('芝/ダート', ''))
+            surf_str = f"変更:{prev_s}->{now_s}" if flag_s == 1 else now_s
+
+            # 距離変化
+            flag_d = int(row['距離変更フラグ']) if '距離変更フラグ' in df_res.columns and not pd.isna(row.get('距離変更フラグ')) else 0
+            prev_d = row.get('_前走距離') if '_前走距離' in df_res.columns else np.nan
+            now_d  = row.get('距離', np.nan)
+            if flag_d == 1 and not pd.isna(prev_d):
+                diff = int(float(now_d)) - int(float(prev_d))
+                dist_str = f"変更:{int(float(prev_d))}m->{int(float(now_d))}m({'+' if diff>0 else ''}{diff}m)"
+            else:
+                try:    dist_str = f"{int(float(now_d))}m"
+                except: dist_str = '不明'
+
+            change_rows.append({
+                '馬番': row['馬番'],
+                '馬名': row['馬名'],
+                '休養日数': fmt_kyuyo(kyuyo_series.iloc[i] if i < len(kyuyo_series) else np.nan),
+                '騎手変化': jockey_str,
+                '馬場変化': surf_str,
+                '距離変化': dist_str,
+            })
+        change_df = pd.DataFrame(change_rows)
+
+        def highlight_change(row):
+            styles = [''] * len(row)
+            cols = list(row.index)
+            for c in ['騎手変化', '馬場変化', '距離変化']:
+                if c in cols and '変更:' in str(row.get(c, '')):
+                    styles[cols.index(c)] = 'color:#FFA500;font-weight:bold'
+            if '休養日数' in cols and '休み明け' in str(row.get('休養日数', '')):
+                styles[cols.index('休養日数')] = 'color:#888888'
+            if '休養日数' in cols and '超短' in str(row.get('休養日数', '')):
+                styles[cols.index('休養日数')] = 'color:#FF6666'
+            return styles
+
+        st.dataframe(
+            change_df.style.apply(highlight_change, axis=1),
+            use_container_width=True, hide_index=True
+        )
+        st.caption("オレンジ=変化あり / [超短]=14日以内 / [休み明け]=56日以上")
+
+        # スピード指数バーチャート
         if '近5走_中央値スピード指数' in df_res.columns:
             st.markdown("#### 📊 地力比較チャート")
-            import altair as alt
-            chart_data = df_res[['馬名','近5走_中央値スピード指数','近5走_最高スピード指数','上昇度_スピード指数']].copy() if '近5走_最高スピード指数' in df_res.columns else df_res[['馬名','近5走_中央値スピード指数']].copy()
+            chart_data = df_res[['馬名', '近5走_中央値スピード指数']].copy()
+            if '近5走_最高スピード指数' in df_res.columns:
+                chart_data['近5走_最高スピード指数'] = df_res['近5走_最高スピード指数']
             chart_data = chart_data.dropna(subset=['近5走_中央値スピード指数'])
-            chart_data = chart_data.sort_values('近5走_中央値スピード指数', ascending=False).head(10)
+            chart_data = chart_data.sort_values('近5走_中央値スピード指数', ascending=False).head(12)
 
-            base = alt.Chart(chart_data).encode(
-                y=alt.Y('馬名:N', sort='-x', title=''),
-            )
-            bar_median = base.mark_bar(color='#4B8BFF', opacity=0.8).encode(
+            base = alt.Chart(chart_data).encode(y=alt.Y('馬名:N', sort='-x', title=''))
+            bar  = base.mark_bar(color='#4B8BFF', opacity=0.75).encode(
                 x=alt.X('近5走_中央値スピード指数:Q', title='スピード指数'),
-                tooltip=['馬名','近5走_中央値スピード指数']
+                tooltip=['馬名', '近5走_中央値スピード指数']
             )
-            chart = bar_median.properties(height=max(200, len(chart_data)*28))
+            layer = bar
             if '近5走_最高スピード指数' in chart_data.columns:
-                bar_max = base.mark_tick(color='#FF4B4B', thickness=2).encode(
+                tick = base.mark_tick(color='#FF4B4B', thickness=2, size=15).encode(
                     x='近5走_最高スピード指数:Q',
-                    tooltip=['馬名','近5走_最高スピード指数']
+                    tooltip=['馬名', '近5走_最高スピード指数']
                 )
-                chart = (bar_median + bar_max).properties(height=max(200, len(chart_data)*28))
-            st.altair_chart(chart, use_container_width=True)
-            st.caption("青バー=近5走中央値（地力）/ 赤ティック=近5走最高値（ポテンシャル）")
+                layer = bar + tick
+            st.altair_chart(layer.properties(height=max(220, len(chart_data)*30)), use_container_width=True)
+            st.caption("青バー=近5走中央値(地力) / 赤ティック=近5走最高値(ポテンシャル)")
 
     with tab4:
         st.markdown("AI勝率から計算した複合馬券の理論期待値です。**1.0以上**が購入検討ライン。")
