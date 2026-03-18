@@ -1360,7 +1360,7 @@ if action in _PRO_ACTIONS and not _is_pro:
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 💰 軍資金シミュレーター")
-sim_budget     = st.sidebar.number_input("軍資金 (円)", 5000, 500000, 30000, 5000,
+sim_budget     = st.sidebar.number_input("軍資金 (円)", 1000, 500000, 30000, 1000,
                    help="1日の総予算。ケリー基準でここから各レースに配分します。")
 sim_ev_filter  = st.sidebar.slider("購入する期待値の下限", 1.0, 3.0, 1.2, 0.1,
                    help="この期待値以上の馬だけを買います。高いほど厳選。")
@@ -1394,7 +1394,7 @@ def display_error_log(err_log):
         for log in err_log:
             st.code(log, language=None)
 
-def display_result(df_res, topics, reco, pace_text, confidence_text):
+def display_result(df_res, topics, reco, pace_text, confidence_text, show_change_table=True):
     tab1, tab2, tab3, tab4 = st.tabs(["📊 予想一覧", "💡 展開・買い目", "🔍 性能詳細", "🎰 複合馬券EV"])
 
     with tab1:
@@ -1430,32 +1430,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
         st.markdown("#### 🏇 出走馬 AI予想")
         total_bet = 0
 
-        # リアルタイム勝率バー（Altair水平棒グラフ）
-        bar_df = df_res[['馬番','馬名','印','勝率(AI予測)','期待値','単勝オッズ']].copy()
-        bar_df['勝率%'] = (bar_df['勝率(AI予測)'] * 100).round(1)
-        bar_df['label'] = bar_df['印'] + ' ' + bar_df['馬名']
-        bar_df['color'] = bar_df['期待値'].apply(
-            lambda v: '#FF4B4B' if v >= 1.5 else '#4B8BFF'
-        )
-        bar_chart = alt.Chart(bar_df).mark_bar(cornerRadiusEnd=4).encode(
-            y=alt.Y('label:N', sort=list(bar_df['label']), title='', axis=alt.Axis(labelFontSize=12)),
-            x=alt.X('勝率%:Q', title='AI勝率 (%)', scale=alt.Scale(domain=[0, bar_df['勝率%'].max()*1.15])),
-            color=alt.Color('color:N', scale=None, legend=None),
-            tooltip=['馬名', '勝率%', '期待値', '単勝オッズ']
-        ).properties(height=max(200, len(bar_df) * 32))
-        # 勝率ラベルを棒の右に表示
-        text_chart = alt.Chart(bar_df).mark_text(align='left', dx=4, fontSize=11).encode(
-            y=alt.Y('label:N', sort=list(bar_df['label'])),
-            x=alt.X('勝率%:Q'),
-            text=alt.Text('勝率%:Q', format='.1f'),
-            color=alt.value('var(--color-text-secondary)')
-        )
-        st.altair_chart((bar_chart + text_chart).configure_view(strokeWidth=0), use_container_width=True)
-        st.caption("赤バー = EV1.5以上の注目馬 / 青バー = 通常")
-
-        st.markdown("---")
-
-        # ── 馬柱テーブル ─────────────────────────────────────
+        # ── 馬柱テーブル（上段: 印付きリスト）─────────────────
         bets = []
         for _, row in df_res.iterrows():
             bet = calc_kelly_sim(row['勝率(AI予測)'], row['単勝オッズ'])
@@ -1483,8 +1458,9 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
             bet_str    = row.get('💰推奨', '見送り')
             if horse_name in memo_horses:
                 return ['border-left:3px solid #9B59B6;background:rgba(155,89,182,0.08)'] * len(row)
-            if bet_str != '見送り' and row['期待値'] >= 1.5:
-                return ['background:rgba(255,75,75,0.15)'] * len(row)
+            # EV1.5以上は常に赤ハイライト（ベット対象かどうかに関わらず）
+            if row['期待値'] >= 1.5:
+                return ['background:rgba(255,75,75,0.18)'] * len(row)
             if bet_str != '見送り':
                 return ['background:rgba(255,200,0,0.08)'] * len(row)
             return [''] * len(row)
@@ -1494,6 +1470,29 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
                    .format({'期待値':'{:.2f}','オッズ':'{:.1f}','枠番':'{:.0f}','馬番':'{:.0f}'}),
             use_container_width=True, hide_index=True
         )
+
+        # ── リアルタイム勝率バー（下段: グラフ）────────────────
+        st.markdown("---")
+        bar_df = df_res[['馬番','馬名','印','勝率(AI予測)','期待値','単勝オッズ']].copy()
+        bar_df['勝率%'] = (bar_df['勝率(AI予測)'] * 100).round(1)
+        bar_df['label'] = bar_df['印'] + ' ' + bar_df['馬名']
+        bar_df['color'] = bar_df['期待値'].apply(
+            lambda v: '#FF4B4B' if v >= 1.5 else '#4B8BFF'
+        )
+        bar_chart = alt.Chart(bar_df).mark_bar(cornerRadiusEnd=4).encode(
+            y=alt.Y('label:N', sort=list(bar_df['label']), title='', axis=alt.Axis(labelFontSize=12)),
+            x=alt.X('勝率%:Q', title='AI勝率 (%)', scale=alt.Scale(domain=[0, bar_df['勝率%'].max()*1.15])),
+            color=alt.Color('color:N', scale=None, legend=None),
+            tooltip=['馬名', '勝率%', '期待値', '単勝オッズ']
+        ).properties(height=max(200, len(bar_df) * 32))
+        text_chart = alt.Chart(bar_df).mark_text(align='left', dx=4, fontSize=11).encode(
+            y=alt.Y('label:N', sort=list(bar_df['label'])),
+            x=alt.X('勝率%:Q'),
+            text=alt.Text('勝率%:Q', format='.1f'),
+            color=alt.value('var(--color-text-secondary)')
+        )
+        st.altair_chart((bar_chart + text_chart).configure_view(strokeWidth=0), use_container_width=True)
+        st.caption("赤バー = EV1.5以上の注目馬 / 青バー = 通常")
 
     with tab2:
         st.info(f"**🏇 展開予想:**\n{pace_text}")
@@ -1565,66 +1564,67 @@ def display_result(df_res, topics, reco, pace_text, confidence_text):
         )
         st.caption("赤=上昇度+2以上 / 青=地力55以上 / 緑=コース適性0.2以下 or 安定度0.3以下")
 
-        # 前走比較テーブル
-        st.markdown("#### 🔄 前走との変化点チェック")
+        # 前走比較テーブル（バックテスト・振り返りではshow_change_table=Falseで非表示）
+        if show_change_table:
+            st.markdown("#### 🔄 前走との変化点チェック")
 
-        def fmt_kyuyo(days):
-            try:
-                v = float(days)
-                if np.isnan(v) or v <= 0: return '不明'
-                d = int(v)
-                if d <= 14:  return f'[超短]{d}日'
-                if d <= 28:  return f'[中2週]{d}日'
-                if d <= 56:  return f'[中3-7週]{d}日'
-                return f'[休み明け]{d}日'
-            except: return '不明'
+            def fmt_kyuyo(days):
+                try:
+                    v = float(days)
+                    if np.isnan(v) or v <= 0: return '不明'
+                    d = int(v)
+                    if d <= 14:  return f'[超短]{d}日'
+                    if d <= 28:  return f'[中2週]{d}日'
+                    if d <= 56:  return f'[中3-7週]{d}日'
+                    return f'[休み明け]{d}日'
+                except: return '不明'
 
-        change_rows = []
-        for _, row in df_res.iterrows():
-            flag_j  = int(row.get('乗り替わりフラグ', 0) or 0)
-            prev_j  = str(row['_前走騎手']) if '_前走騎手' in df_res.columns and not pd.isna(row.get('_前走騎手')) else '不明'
-            now_j   = str(row.get('騎手', ''))
-            jockey_str = f"変更:{prev_j}->{now_j}" if flag_j == 1 and prev_j not in ('不明', '', 'nan') else '変化なし'
+            change_rows = []
+            for _, row in df_res.iterrows():
+                flag_j  = int(row.get('乗り替わりフラグ', 0) or 0)
+                prev_j  = str(row['_前走騎手']) if '_前走騎手' in df_res.columns and not pd.isna(row.get('_前走騎手')) else '不明'
+                now_j   = str(row.get('騎手', ''))
+                jockey_str = f"変更:{prev_j}->{now_j}" if flag_j == 1 and prev_j not in ('不明', '', 'nan') else '変化なし'
 
-            flag_s  = int(row.get('馬場替わりフラグ', 0) or 0)
-            prev_s  = str(row['_前走馬場']) if '_前走馬場' in df_res.columns and not pd.isna(row.get('_前走馬場')) else '不明'
-            now_s   = str(row.get('芝/ダート', ''))
-            surf_str = f"変更:{prev_s}->{now_s}" if flag_s == 1 else now_s
+                flag_s  = int(row.get('馬場替わりフラグ', 0) or 0)
+                prev_s  = str(row['_前走馬場']) if '_前走馬場' in df_res.columns and not pd.isna(row.get('_前走馬場')) else '不明'
+                now_s   = str(row.get('芝/ダート', ''))
+                surf_str = f"変更:{prev_s}->{now_s}" if flag_s == 1 else now_s
 
-            flag_d  = int(row.get('距離変更フラグ', 0) or 0)
-            prev_d  = row.get('_前走距離') if '_前走距離' in df_res.columns else np.nan
-            now_d   = row.get('距離', np.nan)
-            if flag_d == 1 and not pd.isna(prev_d):
-                diff = int(float(now_d)) - int(float(prev_d))
-                dist_str = f"変更:{int(float(prev_d))}m->{int(float(now_d))}m({'+' if diff>0 else ''}{diff}m)"
-            else:
-                try:    dist_str = f"{int(float(now_d))}m"
-                except: dist_str = '不明'
+                flag_d  = int(row.get('距離変更フラグ', 0) or 0)
+                prev_d  = row.get('_前走距離') if '_前走距離' in df_res.columns else np.nan
+                now_d   = row.get('距離', np.nan)
+                if flag_d == 1 and not pd.isna(prev_d):
+                    diff = int(float(now_d)) - int(float(prev_d))
+                    dist_str = f"変更:{int(float(prev_d))}m->{int(float(now_d))}m({'+' if diff>0 else ''}{diff}m)"
+                else:
+                    try:    dist_str = f"{int(float(now_d))}m"
+                    except: dist_str = '不明'
 
-            change_rows.append({
-                '馬番':     row['馬番'],
-                '馬名':     row['馬名'],
-                '休養日数': fmt_kyuyo(row.get('休養日数', np.nan)),
-                '騎手変化': jockey_str,
-                '馬場変化': surf_str,
-                '距離変化': dist_str,
-            })
-        change_df = pd.DataFrame(change_rows)
+                change_rows.append({
+                    '馬番':     row['馬番'],
+                    '馬名':     row['馬名'],
+                    '休養日数': fmt_kyuyo(row.get('休養日数', np.nan)),
+                    '騎手変化': jockey_str,
+                    '馬場変化': surf_str,
+                    '距離変化': dist_str,
+                })
+            change_df = pd.DataFrame(change_rows)
 
-        def highlight_change(row):
-            styles = [''] * len(row)
-            cols = list(row.index)
-            for c in ['騎手変化', '馬場変化', '距離変化']:
-                if c in cols and '変更:' in str(row.get(c, '')):
-                    styles[cols.index(c)] = 'color:#FFA500;font-weight:bold'
-            if '休養日数' in cols:
-                v = str(row.get('休養日数', ''))
-                if '休み明け' in v:  styles[cols.index('休養日数')] = 'color:#888888'
-                elif '超短' in v:    styles[cols.index('休養日数')] = 'color:#FF6666'
-            return styles
+            def highlight_change(row):
+                styles = [''] * len(row)
+                cols = list(row.index)
+                for c in ['騎手変化', '馬場変化', '距離変化']:
+                    if c in cols and '変更:' in str(row.get(c, '')):
+                        styles[cols.index(c)] = 'color:#FFA500;font-weight:bold'
+                if '休養日数' in cols:
+                    v = str(row.get('休養日数', ''))
+                    if '休み明け' in v:  styles[cols.index('休養日数')] = 'color:#888888'
+                    elif '超短' in v:    styles[cols.index('休養日数')] = 'color:#FF6666'
+                return styles
 
-        st.dataframe(change_df.style.apply(highlight_change, axis=1), use_container_width=True, hide_index=True)
-        st.caption("オレンジ=変化あり / [超短]=14日以内 / [休み明け]=56日以上")
+            st.dataframe(change_df.style.apply(highlight_change, axis=1), use_container_width=True, hide_index=True)
+            st.caption("オレンジ=変化あり / [超短]=14日以内 / [休み明け]=56日以上")
 
         # スピード指数バーチャート
         if '近5走_中央値スピード指数' in df_res.columns:
@@ -1849,8 +1849,14 @@ elif action == "📅 今週末の全レース予想":
             if results_for_txt:
                 _dw1, _dw2 = st.columns(2)
                 _dw1.download_button(f"📥 {target_date[4:6]}/{target_date[6:]} 予想レポート(.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_weekend_{target_date}.txt", mime="text/plain")
-                _pdf_w = generate_pdf_report(results_for_txt)
-                if _pdf_w: _dw2.download_button(f"📄 {target_date[4:6]}/{target_date[6:]} 予想レポート(.pdf)", data=_pdf_w, file_name=f"keiba_weekend_{target_date}.pdf", mime="application/pdf")
+                try:
+                    _pdf_w = generate_pdf_report(results_for_txt)
+                    if _pdf_w:
+                        _dw2.download_button(f"📄 {target_date[4:6]}/{target_date[6:]} 予想レポート(.pdf)", data=_pdf_w, file_name=f"keiba_weekend_{target_date}.pdf", mime="application/pdf")
+                    else:
+                        _dw2.warning("PDF生成失敗（日本語フォント未検出の可能性）")
+                except Exception as _pdf_e:
+                    _dw2.warning(f"PDF生成エラー: {_pdf_e}")
 
 elif action == "📝 1日の振り返り (答え合わせ)":
     st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
@@ -1891,7 +1897,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
 
                     with st.expander(expander_label, expanded=False):
                         if res_df is not None:
-                            display_result(res_df, topics, reco, pace_text, conf_text)
+                            display_result(res_df, topics, reco, pace_text, conf_text, show_change_table=False)
                             # 払い戻し結果を表示
                             if payouts['tansho']:
                                 st.markdown("##### 📋 払い戻し結果")
@@ -2000,10 +2006,25 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     existing_df = pd.read_csv(csv_file)
                     for col in ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']:
                         if col not in existing_df.columns: existing_df[col] = 0.0
-                    existing_df = existing_df[existing_df['日付'] != target_date.strftime('%Y/%m/%d')] 
+                    existing_df = existing_df[existing_df['日付'] != target_date.strftime('%Y/%m/%d')]
                     updated_df = pd.concat([existing_df, daily_data])
                     updated_df.to_csv(csv_file, index=False)
                 else: daily_data.to_csv(csv_file, index=False)
+
+                # HF Dataset Hubにai_daily_history.csvを保存（再起動対策）
+                if _HF_TOKEN and _HF_REPO_ID:
+                    try:
+                        from huggingface_hub import HfApi as _HfApi
+                        _api = _HfApi(token=_HF_TOKEN)
+                        _api.upload_file(
+                            path_or_fileobj=csv_file,
+                            path_in_repo="ai_daily_history.csv",
+                            repo_id=_HF_REPO_ID,
+                            repo_type="dataset",
+                            commit_message=f"成績履歴更新 {target_date.strftime('%Y-%m-%d')}",
+                            token=_HF_TOKEN,
+                        )
+                    except Exception: pass
 
                 st.markdown("---")
                 # ── 的中アニメーション ─────────────────────────
@@ -2046,6 +2067,19 @@ elif action == "📈 長期成績分析":
     st.subheader("📈 長期成績分析 & 回収率ダッシュボード")
     import altair as alt
     csv_file = "ai_daily_history.csv"
+
+    # 起動時にGitHubからai_daily_history.csvを取得（再起動でリセット防止）
+    if not os.path.exists(csv_file) and _HF_TOKEN and _HF_REPO_ID:
+        try:
+            from huggingface_hub import hf_hub_download
+            _hist_path = hf_hub_download(
+                repo_id=_HF_REPO_ID, filename="ai_daily_history.csv",
+                repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache"
+            )
+            import shutil
+            shutil.copy(_hist_path, csv_file)
+        except Exception: pass
+
     if not os.path.exists(csv_file):
         st.info("まだデータがありません。「1日の振り返り」を実行するとここにデータが蓄積されます。")
     else:
@@ -2080,7 +2114,11 @@ elif action == "📈 長期成績分析":
             st.markdown("---")
 
             # ── 移動平均オプション ────────────────────────────
-            ma_window = st.slider("移動平均ウィンドウ (日)", 1, min(10, n), min(3, n), 1)
+            if n <= 1:
+                ma_window = 1
+                st.caption("データが1件のため移動平均は適用されません。")
+            else:
+                ma_window = st.slider("移動平均ウィンドウ (日)", 1, min(10, n-1), min(3, n-1), 1)
 
             # ── 折れ線グラフ ─────────────────────────────────
             plot_cols = ['本命単勝回収率','本命複勝回収率','穴馬単勝回収率','穴馬複勝回収率']
@@ -2227,7 +2265,7 @@ elif action == "🧪 性能試験 (バックテスト)":
                         t_dict, f_dict = get_payouts(r['id'])
 
                         if res_df is not None:
-                            display_result(res_df, topics, reco, pace_text, conf_text)
+                            display_result(res_df, topics, reco, pace_text, conf_text, show_change_table=False)
                             results_for_txt.append({'date': test_date.strftime('%Y年%m月%d日'), 'place': place, 'num': r['num'], 'track': track_type, 'dist': dist, 'pace': pace_text, 'confidence': conf_text, 'df': res_df, 'topics': topics, 'reco': reco})
 
                             if not t_dict:
