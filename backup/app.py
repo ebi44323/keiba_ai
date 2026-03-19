@@ -632,120 +632,85 @@ def get_odds_from_soup(s_soup):
     return o_dict
 
 def generate_pdf_report(results_list, ev_threshold=1.5):
-    """予想レポートをPDF形式で生成して bytes を返す"""
+    """
+    予想レポートをHTML形式で生成してbytesを返す。
+    ブラウザで開いてCtrl+P(Cmd+P)で印刷・PDF保存できる。
+    reportlabのフォント問題を回避するためHTML方式に変更。
+    """
     try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import mm
-        from reportlab.lib import colors
-        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
-                                         Table, TableStyle, HRFlowable)
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        import io
-
-        buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=A4,
-                                leftMargin=15*mm, rightMargin=15*mm,
-                                topMargin=15*mm, bottomMargin=15*mm)
-
-        # フォント: reportlab内蔵CIDフォント → 外部ファイル不要、HF環境で確実に動く
-        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-        font_name = 'HeiseiKakuGo-W5'
-        try:
-            if 'HeiseiKakuGo-W5' not in pdfmetrics.getRegisteredFontNames():
-                pdfmetrics.registerFont(UnicodeCIDFont('HeiseiKakuGo-W5'))
-        except Exception:
-            # さらにフォールバック: .ttfを探す
-            for fp in [
-                '/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf',
-                '/usr/share/fonts/truetype/fonts-japanese-gothic.ttf',
-            ]:
-                if os.path.exists(fp):
-                    try:
-                        if 'JP' not in pdfmetrics.getRegisteredFontNames():
-                            pdfmetrics.registerFont(TTFont('JP', fp))
-                        font_name = 'JP'
-                        break
-                    except Exception: continue
-
-        styles = getSampleStyleSheet()
-        style_title  = ParagraphStyle('T', fontName=font_name, fontSize=13, spaceAfter=4, textColor=colors.HexColor('#1a1a2e'), leading=18)
-        style_sub    = ParagraphStyle('S', fontName=font_name, fontSize=9,  spaceAfter=2, textColor=colors.HexColor('#555'), leading=13)
-        style_body   = ParagraphStyle('B', fontName=font_name, fontSize=9,  spaceAfter=3, leading=14)
-        style_reco   = ParagraphStyle('R', fontName=font_name, fontSize=9,  spaceAfter=3, leading=14,
-                                       backColor=colors.HexColor('#f0f8ff'), borderPadding=4)
-
-        story = []
-        story.append(Paragraph(f"keiba-ebye AI予想レポート", style_title))
-        if results_list:
-            story.append(Paragraph(f"{results_list[0]['date']} 生成", style_sub))
-        story.append(HRFlowable(width='100%', thickness=1, color=colors.HexColor('#ddd'), spaceAfter=6))
-
         ev_summary = []
-
+        races_html = ""
         for r in results_list:
-            story.append(Paragraph(
-                f"■ {r['place']} {r['num']}R　{r['track']}{r['dist']}m　{r['confidence'][:30]}",
-                style_title))
-            story.append(Paragraph(f"展開: {r['pace'][:60]}", style_sub))
-
-            # 馬柱テーブル
             df = r['df']
-            tbl_data = [['印','馬番','馬名','脚質','オッズ','勝率','複勝率','EV']]
+            rows_html = ""
             for rank, row in df.iterrows():
-                ev_val = float(row['期待値'])
-                ev_str = f"{ev_val:.2f}"
-                tbl_data.append([
-                    str(row['印']),
-                    str(int(row['馬番'])),
-                    str(row['馬名'])[:8],
-                    str(row.get('脚質カテゴリ',''))[:4],
-                    f"{float(row['単勝オッズ']):.1f}",
-                    f"{float(row['勝率(AI予測)'])*100:.1f}%",
-                    f"{float(row['複勝率(AI予測)'])*100:.1f}%",
-                    ev_str,
-                ])
+                try:
+                    ev_val = float(row.get('期待値', 0) or 0)
+                except: ev_val = 0.0
+                bg = ' style="background:#fff0f0"' if ev_val >= ev_threshold else (' style="background:#fffde7"' if rank == 0 else '')
+                ev_color = ' color:#cc0000;font-weight:bold' if ev_val >= ev_threshold else ''
+                rows_html += f"""<tr{bg}>
+                  <td>{row.get('印','')}</td>
+                  <td>{int(float(row.get('馬番',0)))}</td>
+                  <td>{row.get('馬名','')}</td>
+                  <td>{row.get('脚質カテゴリ','')}</td>
+                  <td>{float(row.get('単勝オッズ',0)):.1f}</td>
+                  <td>{float(row.get('勝率(AI予測)',0))*100:.1f}%</td>
+                  <td>{float(row.get('複勝率(AI予測)',0))*100:.1f}%</td>
+                  <td style="{ev_color}">{ev_val:.2f}</td>
+                </tr>"""
                 if rank < 5 and ev_val >= ev_threshold:
-                    ev_summary.append({'レース': f"{r['place']}{r['num']}R",
-                                       '印': row['印'], '馬名': row['馬名'], 'EV': ev_val})
-
-            col_w = [8*mm, 10*mm, 28*mm, 14*mm, 14*mm, 15*mm, 16*mm, 12*mm]
-            tbl = Table(tbl_data, colWidths=col_w, repeatRows=1)
-            tbl_style = TableStyle([
-                ('FONTNAME',  (0,0),(-1,-1), font_name),
-                ('FONTSIZE',  (0,0),(-1,-1), 7.5),
-                ('BACKGROUND',(0,0),(-1, 0), colors.HexColor('#2c3e7a')),
-                ('TEXTCOLOR', (0,0),(-1, 0), colors.white),
-                ('ALIGN',     (0,0),(-1,-1), 'CENTER'),
-                ('ALIGN',     (2,1),(2,-1),  'LEFT'),
-                ('GRID',      (0,0),(-1,-1), 0.3, colors.HexColor('#ccc')),
-                ('ROWBACKGROUNDS',(0,1),(-1,-1), [colors.white, colors.HexColor('#f8f8f8')]),
-                ('TOPPADDING',(0,0),(-1,-1), 2),
-                ('BOTTOMPADDING',(0,0),(-1,-1), 2),
-            ])
-            # EV高い行をハイライト
-            for i, (_, row) in enumerate(df.iterrows(), 1):
-                if float(row['期待値']) >= ev_threshold:
-                    tbl_style.add('BACKGROUND', (0,i), (-1,i), colors.HexColor('#fff0f0'))
-                    tbl_style.add('TEXTCOLOR',  (7,i), (7, i), colors.HexColor('#cc0000'))
-            tbl.setStyle(tbl_style)
-            story.append(tbl)
-            story.append(Paragraph(f"推奨: {r['reco'][:80]}", style_reco))
-            story.append(Spacer(1, 4*mm))
-
-        # EV横断まとめ
+                    ev_summary.append({'レース': f"{r['place']}{r['num']}R", '印': row.get('印',''), '馬名': row.get('馬名',''), 'EV': ev_val})
+            races_html += f"""
+            <div class="race-block">
+              <h3>■ {r['place']} {r['num']}R ({r['track']}{r['dist']}m)</h3>
+              <p class="conf">{r.get('confidence','')[:60]}</p>
+              <p class="pace">展開: {r.get('pace','')[:80]}</p>
+              <table>
+                <thead><tr><th>印</th><th>馬番</th><th>馬名</th><th>脚質</th><th>オッズ</th><th>勝率</th><th>複勝率</th><th>EV</th></tr></thead>
+                <tbody>{rows_html}</tbody>
+              </table>
+              <p class="reco">推奨: {r.get('reco','')[:100]}</p>
+            </div>"""
+        
+        ev_html = ""
         if ev_summary:
-            story.append(HRFlowable(width='100%', thickness=1, color=colors.HexColor('#ddd')))
-            story.append(Paragraph(f"本日の注目馬 (EV{ev_threshold}以上・上位5頭内)", style_title))
-            for row in sorted(ev_summary, key=lambda x: x['EV'], reverse=True):
-                story.append(Paragraph(
-                    f"{row['印']} {row['レース']}  {row['馬名']}  EV:{row['EV']:.2f}", style_body))
-
-        doc.build(story)
-        return buf.getvalue()
+            ev_rows = "".join(f"<tr><td>{r['印']}</td><td>{r['レース']}</td><td>{r['馬名']}</td><td style='color:#cc0000;font-weight:bold'>{r['EV']:.2f}</td></tr>"
+                             for r in sorted(ev_summary, key=lambda x: x['EV'], reverse=True))
+            ev_html = f"""<div class="ev-summary">
+              <h3>💰 本日の注目馬 (EV{ev_threshold}以上・上位5頭内)</h3>
+              <table><thead><tr><th>印</th><th>レース</th><th>馬名</th><th>EV</th></tr></thead>
+              <tbody>{ev_rows}</tbody></table></div>"""
+        
+        date_str = results_list[0]['date'] if results_list else ''
+        html = f"""<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8">
+<title>keiba-ebye 予想レポート {date_str}</title>
+<style>
+  body {{ font-family: 'Hiragino Kaku Gothic ProN','Noto Sans JP','Meiryo',sans-serif; font-size:11px; margin:10px; color:#222; }}
+  h1 {{ font-size:16px; border-bottom:2px solid #2c3e7a; padding-bottom:4px; color:#2c3e7a; }}
+  h3 {{ font-size:12px; margin:12px 0 4px; color:#2c3e7a; border-left:3px solid #2c3e7a; padding-left:6px; }}
+  .race-block {{ margin-bottom:16px; page-break-inside:avoid; }}
+  .conf {{ font-size:10px; color:#555; margin:2px 0; }}
+  .pace {{ font-size:10px; color:#444; margin:2px 0; }}
+  .reco {{ font-size:10px; background:#f0f8ff; padding:4px 6px; border-radius:3px; margin-top:4px; }}
+  table {{ border-collapse:collapse; width:100%; margin:4px 0; font-size:10px; }}
+  th {{ background:#2c3e7a; color:white; padding:3px 5px; text-align:center; }}
+  td {{ border:1px solid #ddd; padding:2px 4px; text-align:center; }}
+  tr:nth-child(even) {{ background:#f8f8f8; }}
+  .ev-summary {{ margin-top:16px; padding:8px; background:#fff8f0; border:1px solid #ffd0a0; border-radius:4px; }}
+  @media print {{ body {{ margin:5mm; }} .race-block {{ page-break-inside:avoid; }} }}
+</style></head>
+<body>
+<h1>🐴 keiba-ebye AI予想レポート — {date_str}</h1>
+{races_html}
+{ev_html}
+<p style="font-size:9px;color:#888;margin-top:20px">Generated by keiba-ebye / ブラウザでCtrl+P→PDFで保存できます</p>
+</body></html>"""
+        return html.encode('utf-8')
     except Exception as e:
         return None
+
 
 
 def generate_txt_report(results_list, ev_threshold=1.5):
@@ -1084,6 +1049,21 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
 
         race_date_obj = pd.to_datetime(race_date_str)
 
+        # ★ データリーク防止: バックテスト・振り返り時は
+        # 「最新_日付 >= race_date」の馬の前走情報をNaNにマスクする
+        if skip_live_scrape and '最新_日付' in df_test.columns:
+            future_mask = pd.to_datetime(df_test['最新_日付'], errors='coerce') >= race_date_obj
+            leak_cols = ['最新_日付','最新_着順','最新_スピード指数','最新_人気','最新_上り',
+                         '最新_距離','最新_馬体重','最新_騎手','最新_芝ダート','最新_着順パーセント',
+                         '最新_失速フラグ','最新_上り偏差','最新_距離補正タイム差','最新_直近3走着順パーセント',
+                         '前走_着順','2走前_着順','3走前_着順',
+                         '前走_スピード指数','2走前_スピード指数','3走前_スピード指数',
+                         '4走前_スピード指数','5走前_スピード指数',
+                         '前走_最終コーナー','2走前_最終コーナー']
+            for col in leak_cols:
+                if col in df_test.columns:
+                    df_test.loc[future_mask, col] = np.nan
+
         # =====================================================================
         # 前走情報をnetkeibaから直接スクレイプして上書き
         # CSVベースのlatest_horse_dataより確実（表記ゆれ・古いデータ問題を解決）
@@ -1342,7 +1322,6 @@ else:
 
 # Proのみのメニュー項目
 _PRO_ACTIONS = [
-    "📜 本日の全レース予想",
     "📅 今週末の全レース予想",
     "🔍 レースを指定して予想",
     "📝 1日の振り返り (答え合わせ)",
@@ -1724,7 +1703,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             st.dataframe(df_san.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
 
 
-if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想", "🔍 レースを指定して予想"]:
+if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予想"]:
     todays_races = get_todays_races()
     if not todays_races: st.warning(f"本日 ({now.strftime('%Y/%m/%d')}) はJRAのレースが開催されていません。")
     else:
@@ -1776,54 +1755,6 @@ if action in ["⏩ 次のレースを予想", "📜 本日の全レース予想"
             else:
                 st.success("🏁 本日の全レースは終了しました。")
             
-        elif action == "📜 本日の全レース予想":
-            st.subheader(f"📅 本日の全レース一覧")
-            if st.button("🚀 全レース一括予想", type="primary"):
-                my_bar = st.progress(0, text="推論中...")
-                results_for_txt = []
-                for i, r in enumerate(todays_races):
-                    st.markdown(f"#### ■ {r['place']} {r['num']}R")
-                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], now.strftime('%Y-%m-%d'))
-                    if res_df is not None:
-                        display_result(res_df, topics, reco, pace_text, conf_text)
-                        results_for_txt.append({'date': now.strftime('%Y年%m月%d日'), 'place': place, 'num': r['num'], 'track': track_type, 'dist': dist, 'pace': pace_text, 'confidence': conf_text, 'df': res_df, 'topics': topics, 'reco': reco})
-                    else: display_error_log(err_log)
-                    time.sleep(1.0)
-                    my_bar.progress((i + 1) / len(todays_races))
-                if results_for_txt:
-                    # 横断EV一覧
-                    ev_rows = []
-                    for res in results_for_txt:
-                        if res['df'] is None: continue
-                        for rank, row in res['df'].iterrows():
-                            if rank < 5 and row.get('期待値', 0) >= sim_ev_filter:
-                                ev_rows.append({
-                                    'レース': f"{res['place']}{res['num']}R",
-                                    '印':     row['印'],
-                                    '馬番':   row['馬番'],
-                                    '馬名':   row['馬名'],
-                                    'EV':     round(float(row['期待値']), 2),
-                                    '推奨ベット': f"¥{int(float(row.get('💰推奨ベット', '0').replace('見送り','0').replace('¥','').replace(',','') or 0)):,}"
-                                              if '💰推奨ベット' in row.index else '-',
-                                    'オッズ': float(row['単勝オッズ']),
-                                })
-                    if ev_rows:
-                        st.markdown("---")
-                        st.markdown(f"### 💰 本日の注目馬一覧 (印上位5頭内・EV{sim_ev_filter}以上)")
-                        df_ev = pd.DataFrame(ev_rows).sort_values('EV', ascending=False)
-                        def ev_row_color(row):
-                            if row['EV'] >= 2.0: return ['background-color:rgba(255,75,75,0.15)']*len(row)
-                            if row['EV'] >= sim_ev_filter: return ['background-color:rgba(255,165,0,0.1)']*len(row)
-                            return ['']*len(row)
-                        st.dataframe(
-                            df_ev.style.apply(ev_row_color, axis=1).format({'EV':'{:.2f}','オッズ':'{:.1f}'}),
-                            use_container_width=True, hide_index=True
-                        )
-                    _dc1, _dc2 = st.columns(2)
-                    _dc1.download_button("📥 予想レポート (.txt)", data=generate_txt_report(results_for_txt, sim_ev_filter), file_name=f"keiba_ebye_{now.strftime('%Y%m%d')}.txt", mime="text/plain")
-                    _pdf1 = generate_pdf_report(results_for_txt, sim_ev_filter)
-                    if _pdf1: _dc2.download_button("📄 予想レポート (.pdf)", data=_pdf1, file_name=f"keiba_ebye_{now.strftime('%Y%m%d')}.pdf", mime="application/pdf")
-                    
         elif action == "🔍 レースを指定して予想":
             options = [f"{r['place']} {r['num']}R - {r['title']}" for r in todays_races]
             selected = st.selectbox("レースを選んでください", options)
@@ -1861,14 +1792,9 @@ elif action == "📅 今週末の全レース予想":
             if results_for_txt:
                 _dw1, _dw2 = st.columns(2)
                 _dw1.download_button(f"📥 {target_date[4:6]}/{target_date[6:]} 予想レポート(.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_weekend_{target_date}.txt", mime="text/plain")
-                try:
-                    _pdf_w = generate_pdf_report(results_for_txt)
-                    if _pdf_w:
-                        _dw2.download_button(f"📄 {target_date[4:6]}/{target_date[6:]} 予想レポート(.pdf)", data=_pdf_w, file_name=f"keiba_weekend_{target_date}.pdf", mime="application/pdf")
-                    else:
-                        _dw2.warning("PDF生成失敗（日本語フォント未検出の可能性）")
-                except Exception as _pdf_e:
-                    _dw2.warning(f"PDF生成エラー: {_pdf_e}")
+                _html_w = generate_pdf_report(results_for_txt)
+                if _html_w:
+                    _dw2.download_button(f"🌐 {target_date[4:6]}/{target_date[6:]} 予想レポート(.html)", data=_html_w, file_name=f"keiba_weekend_{target_date}.html", mime="text/html")
 
 elif action == "📝 1日の振り返り (答え合わせ)":
     st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
@@ -2072,6 +1998,14 @@ elif action == "📈 長期成績分析":
     st.subheader("📈 長期成績分析 & 回収率ダッシュボード")
     import altair as alt
     csv_file = "ai_daily_history.csv"
+    # ダッシュボード設定
+    db_col1, db_col2 = st.columns([3,1])
+    with db_col2:
+        target_rate = st.number_input("目標回収率 (%)", 80, 200, 100, 5,
+            help="このラインをグラフに表示します。損益分岐点=100%")
+        focus_col = st.selectbox("重点分析指標",
+            ['本命単勝回収率','本命複勝回収率','穴馬単勝回収率','穴馬複勝回収率'],
+            help="累積損益グラフで比較する主指標")
 
     # 起動時にGitHubからai_daily_history.csvを取得（再起動でリセット防止）
     if not os.path.exists(csv_file) and _HF_TOKEN and _HF_REPO_ID:
@@ -2156,7 +2090,7 @@ elif action == "📈 長期成績分析":
                 tooltip=['日付_str','指標','回収率(%)']
             ).properties(height=320)
             st.altair_chart(line + rule100, use_container_width=True)
-            st.caption(f"灰色破線 = 100%（損益分岐点）/ {ma_window}日移動平均を表示中")
+            st.caption(f"灰色破線 = 損益分岐点 / {ma_window}日移動平均を表示中 / 目標: {target_rate}%")
 
             st.markdown("---")
             st.markdown("#### 📋 日別詳細テーブル")
@@ -2193,10 +2127,13 @@ elif action == "📈 長期成績分析":
 
             # ── 累積損益シミュレーション ────────────────────
             st.markdown("---")
-            st.markdown("#### 📈 累積損益シミュレーション")
+            st.markdown("#### 📈 累積損益シミュレーション (4戦略比較)")
             sim_unit = st.number_input("1レースあたりの賭け金 (円)", 100, 10000, 100, 100, key="sim_unit_hist")
-            history_df['損益']   = (history_df['本命単勝回収率'] - 100) / 100 * sim_unit
-            history_df['累積損益'] = history_df['損益'].cumsum()
+            for col in plot_cols:
+                history_df[f'損益_{col}'] = (history_df[col] - 100) / 100 * sim_unit
+                history_df[f'累積_{col}'] = history_df[f'損益_{col}'].cumsum()
+            history_df['損益']   = history_df[f'損益_{focus_col}']
+            history_df['累積損益'] = history_df[f'累積_{focus_col}']
             history_df['日付_str2'] = history_df['日付'].dt.strftime('%m/%d')
 
             cum_chart = alt.Chart(history_df).mark_line(
@@ -2206,8 +2143,10 @@ elif action == "📈 長期成績分析":
                 y=alt.Y('累積損益:Q', title='累積損益 (円)'),
                 tooltip=['日付_str2', alt.Tooltip('累積損益:Q', format=',')]
             ).properties(height=220)
-            zero_rule = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(
-                color='gray', strokeDash=[4,4], opacity=0.6
+            # 目標回収率ライン（損益分岐点 + ユーザー設定ライン）
+            rule_data = pd.DataFrame({'y': [0], 'label': ['損益0円']})
+            zero_rule = alt.Chart(rule_data).mark_rule(
+                color='gray', strokeDash=[4,4], opacity=0.5
             ).encode(y='y:Q')
             st.altair_chart(cum_chart + zero_rule, use_container_width=True)
 
@@ -2248,6 +2187,17 @@ elif action == "📈 長期成績分析":
 # ==========================================
 elif action == "🧪 性能試験 (バックテスト)":
     st.subheader("🧪 性能試験 (バックテスト)")
+    with st.expander("ℹ️ バックテスト精度について（必読）", expanded=False):
+        st.info("""**バックテスト結果の見方**
+
+過去2週間以内のバックテストは信頼性が高いです。それより古い日付は参考値として扱ってください。
+
+モデルは「学習データの最終日」までの全期間で学習されています。
+古い日付でのバックテストでは、直近2週間より前の検証で一部の馬情報（コース適性・直近成績）に
+「その時点では知り得なかった未来情報」が混入する場合があります。
+
+今回のバージョンからリーク防止処理を追加済みです（最新_日付がバックテスト日以降の馬は前走情報をNaNマスク）。
+それでも学習モデル自体は全期間データで学習されているため、完全な隔離ではありません。""")
 
     # ── 設定エリア ────────────────────────────────────────
     col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
@@ -2417,8 +2367,8 @@ elif action == "🧪 性能試験 (バックテスト)":
                 if results_for_txt:
                     _db1, _db2 = st.columns(2)
                     _db1.download_button("📥 バックテスト結果 (.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.txt", mime="text/plain")
-                    _pdf_b = generate_pdf_report(results_for_txt)
-                    if _pdf_b: _db2.download_button("📄 バックテスト結果 (.pdf)", data=_pdf_b, file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.pdf", mime="application/pdf")
+                    _html_b = generate_pdf_report(results_for_txt)
+                    if _html_b: _db2.download_button("🌐 バックテスト結果 (.html)", data=_html_b, file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.html", mime="text/html")
 
 # 🌟 新機能: 一口馬主・推し馬向け 成長記録グラフ
 

@@ -907,8 +907,22 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
         r_api = requests.get(odds_api_url, headers=api_headers, timeout=5)
         api_data = json.loads(r_api.text)
         if 'data' in api_data and 'odds' in api_data['data'] and '1' in api_data['data']['odds']:
-            for uma_num, odds_list in api_data['data']['odds']['1'].items():
-                if str(uma_num).isdigit(): odds_dict[int(uma_num)] = float(odds_list[0])
+            # APIレスポンスには馬名も含まれる場合がある → 馬名でマッチング
+            odds_raw = api_data['data']['odds']['1']
+            # 馬名がAPIに含まれていれば馬名→オッズのdictも作る
+            name_odds_dict = {}
+            if 'horses' in api_data.get('data', {}):
+                for h in api_data['data']['horses']:
+                    hname = h.get('name', '').strip()
+                    hnum  = h.get('num', '')
+                    if hname and hnum and str(hnum) in odds_raw:
+                        name_odds_dict[hname] = float(odds_raw[str(hnum)][0])
+                        odds_dict[int(hnum)] = float(odds_raw[str(hnum)][0])
+            if not name_odds_dict:
+                # 旧形式: キーが馬番か人気順か不明 → とりあえず馬番として格納
+                for uma_num, odds_list in odds_raw.items():
+                    if str(uma_num).isdigit():
+                        odds_dict[int(uma_num)] = float(odds_list[0])
     except Exception as e: error_log.append(f"netkeiba APIオッズ取得失敗: {e}")
 
     if not odds_dict:
@@ -962,6 +976,7 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
     sex_age_idx=get_idx(['性齢']); jockey_idx=get_idx(['騎手']); trainer_idx=get_idx(['調教師','厩舎'])
 
     horses = []
+    waku_confirmed = False  # 枠番確定フラグ
     for tr in table.find_all('tr')[1:]:
         tds = tr.find_all('td')
         if len(tds) < 5: continue
@@ -976,9 +991,14 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
                 continue
 
             umaban = int(re.search(r'\d+', tds[uma_idx].text).group(0)) if uma_idx!=-1 and len(tds)>uma_idx and re.search(r'\d+',tds[uma_idx].text) else len(horses)+1
-            waku   = int(re.search(r'\d+', tds[waku_idx].text).group(0)) if waku_idx!=-1 and len(tds)>waku_idx and re.search(r'\d+',tds[waku_idx].text) else 0
+            waku_raw = tds[waku_idx].text.strip() if waku_idx!=-1 and len(tds)>waku_idx else ""
+            waku_m = re.search(r'\d+', waku_raw)
+            waku = int(waku_m.group(0)) if waku_m and int(waku_m.group(0)) > 0 else 0
+            if waku > 0: waku_confirmed = True
+
             horse_a = tr.find('a', href=re.compile(r'/horse/'))
             if not horse_a: continue
+            horse_name = horse_a.text.strip()
             horse_id = re.search(r'\d+', horse_a['href']).group(0)
             jockey_name  = resolve_name(tds[jockey_idx].text.strip() if jockey_idx!=-1 and len(tds)>jockey_idx else "不明", known_jockeys)
             trainer_name = resolve_name(tds[trainer_idx].text.strip() if trainer_idx!=-1 and len(tds)>trainer_idx else "不明", known_trainers)
@@ -986,7 +1006,14 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
             kinryo = float(km.group(0)) if km else 55.0
             wm = re.search(r'^(\d{3})', (tds[weight_idx].text if weight_idx!=-1 and len(tds)>weight_idx else "").strip())
             weight_val = float(wm.group(1)) if wm else np.nan
+
+            # ── オッズ取得: 馬番→馬名の順でフォールバック ──────────────
             odds_val = odds_dict.get(umaban, 0.0)
+            # name_odds_dictが構築済みなら馬名でも試みる
+            if odds_val == 0.0:
+                try: odds_val = name_odds_dict.get(horse_name, 0.0)
+                except: pass
+            # 出馬表のオッズ列から直接読む
             if odds_val==0.0 and odds_idx!=-1 and len(tds)>odds_idx:
                 om = re.search(r'\d{1,4}\.\d+', tds[odds_idx].text)
                 if om: odds_val = float(om.group(0))
@@ -996,9 +1023,14 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
                         om = re.search(r'\d{1,4}\.\d+', td.text)
                         if om: odds_val=float(om.group(0)); break
             if odds_val==0.0: odds_val=10.0
+
             sex_age = tds[sex_age_idx].text.strip() if sex_age_idx!=-1 and len(tds)>sex_age_idx else "牡3"
-            horses.append({'枠番':waku,'馬番':umaban,'馬名':horse_a.text.strip(),'馬ID':horse_id,'性齢':sex_age,'斤量':kinryo,'騎手':jockey_name,'調教師':trainer_name,'距離':distance,'競馬場':place,'芝/ダート':track_type,'馬場':todays_baba,'天候':todays_tenki,'馬体重_num':weight_val,'単勝オッズ':odds_val})
+            horses.append({'枠番':waku,'馬番':umaban,'馬名':horse_name,'馬ID':horse_id,'性齢':sex_age,'斤量':kinryo,'騎手':jockey_name,'調教師':trainer_name,'距離':distance,'競馬場':place,'芝/ダート':track_type,'馬場':todays_baba,'天候':todays_tenki,'馬体重_num':weight_val,'単勝オッズ':odds_val})
         except: pass
+
+    # 枠番未確定の場合はWarningをログに追加
+    if not waku_confirmed and horses:
+        error_log.append("⚠️ 枠順未確定のため枠番=0・オッズは暫定値です。枠順確定後に再実行してください。")
 
     if not horses: return None,None,None,None,None,None,None,None,["❌ 出走馬データの読み取りに失敗しました。"]
 
@@ -1783,6 +1815,10 @@ elif action == "📅 今週末の全レース予想":
             for i, r in enumerate(target_races):
                 with st.expander(f"🏁 {r['place']} {r['num']}R"):
                     res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], f"{target_date[:4]}-{target_date[4:6]}-{target_date[6:]}")
+                    # 枠番未確定・オッズ暫定の警告を表示
+                    waku_warn = [e for e in (err_log or []) if '枠順未確定' in e]
+                    if waku_warn:
+                        st.warning(waku_warn[0])
                     if res_df is not None:
                         display_result(res_df, topics, reco, pace_text, conf_text)
                         results_for_txt.append({'date': f"{target_date[:4]}年{target_date[4:6]}月{target_date[6:]}日", 'place': place, 'num': r['num'], 'track': track_type, 'dist': dist, 'pace': pace_text, 'confidence': conf_text, 'df': res_df, 'topics': topics, 'reco': reco})
