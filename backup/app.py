@@ -649,22 +649,25 @@ def generate_pdf_report(results_list, ev_threshold=1.5):
                                 leftMargin=15*mm, rightMargin=15*mm,
                                 topMargin=15*mm, bottomMargin=15*mm)
 
-        # フォント: システムの日本語フォントを探す
-        font_name = 'Helvetica'
-        # .ttcはreportlabが非サポート → .ttfのみ試みる
-        for fp in [
-            '/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf',      # IPAゴシック (HF環境)
-            '/usr/share/fonts/truetype/fonts-japanese-gothic.ttf',    # 日本語ゴシック (HF環境)
-            '/usr/share/fonts/opentype/ipafont-mincho/ipam.ttf',      # IPA明朝
-            '/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf',
-            '/System/Library/Fonts/Hiragino Sans GB.ttc',             # macOS (ttcだが試みる)
-        ]:
-            if os.path.exists(fp):
-                try:
-                    pdfmetrics.registerFont(TTFont('JP', fp))
-                    font_name = 'JP'
-                    break
-                except Exception: continue
+        # フォント: reportlab内蔵CIDフォント → 外部ファイル不要、HF環境で確実に動く
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        font_name = 'HeiseiKakuGo-W5'
+        try:
+            if 'HeiseiKakuGo-W5' not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(UnicodeCIDFont('HeiseiKakuGo-W5'))
+        except Exception:
+            # さらにフォールバック: .ttfを探す
+            for fp in [
+                '/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf',
+                '/usr/share/fonts/truetype/fonts-japanese-gothic.ttf',
+            ]:
+                if os.path.exists(fp):
+                    try:
+                        if 'JP' not in pdfmetrics.getRegisteredFontNames():
+                            pdfmetrics.registerFont(TTFont('JP', fp))
+                        font_name = 'JP'
+                        break
+                    except Exception: continue
 
         styles = getSampleStyleSheet()
         style_title  = ParagraphStyle('T', fontName=font_name, fontSize=13, spaceAfter=4, textColor=colors.HexColor('#1a1a2e'), leading=18)
@@ -2116,11 +2119,16 @@ elif action == "📈 長期成績分析":
             st.markdown("---")
 
             # ── 移動平均オプション ────────────────────────────
-            if n <= 1:
+            if n <= 2:
                 ma_window = 1
-                st.caption("データが1件のため移動平均は適用されません。")
+                if n == 2:
+                    st.caption("データが2件のため移動平均は適用されません（3件以上で有効）。")
+                else:
+                    st.caption("データが1件のため移動平均は適用されません。")
             else:
-                ma_window = st.slider("移動平均ウィンドウ (日)", 1, min(10, n-1), min(3, n-1), 1)
+                _ma_max = min(10, n - 1)          # 最大: min(10, n-1)、n>=3なら最低2
+                _ma_def = min(3, _ma_max)          # default: _ma_maxを超えない
+                ma_window = st.slider("移動平均ウィンドウ (日)", 1, _ma_max, _ma_def, 1)
 
             # ── 折れ線グラフ ─────────────────────────────────
             plot_cols = ['本命単勝回収率','本命複勝回収率','穴馬単勝回収率','穴馬複勝回収率']
