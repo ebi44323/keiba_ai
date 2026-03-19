@@ -1007,22 +1007,6 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
         df_test['出走頭数'] = len(df_test)
         df_test = pd.merge(df_test, latest_horse_data, on='馬ID', how='left')
 
-        # ★ データリーク防止: バックテスト・振り返り時は
-        # 「最新_日付 >= race_date」の馬の前走情報をNaNにマスクする
-        # （例: 2026/01バックテスト時に2026/03の成績データが使われるのを防ぐ）
-        if skip_live_scrape and '最新_日付' in df_test.columns:
-            future_mask = pd.to_datetime(df_test['最新_日付'], errors='coerce') >= race_date_obj
-            leak_cols = ['最新_日付','最新_着順','最新_スピード指数','最新_人気','最新_上り',
-                         '最新_距離','最新_馬体重','最新_騎手','最新_芝ダート','最新_着順パーセント',
-                         '最新_失速フラグ','最新_上り偏差','最新_距離補正タイム差','最新_直近3走着順パーセント',
-                         '前走_着順','2走前_着順','3走前_着順',
-                         '前走_スピード指数','2走前_スピード指数','3走前_スピード指数',
-                         '4走前_スピード指数','5走前_スピード指数',
-                         '前走_最終コーナー','2走前_最終コーナー']
-            for col in leak_cols:
-                if col in df_test.columns:
-                    df_test.loc[future_mask, col] = np.nan
-
         for col in ['父','父系','母','母系','母父','母父系']:
             if col not in df_test.columns: df_test[col] = np.nan
         for i, row in df_test.iterrows():
@@ -1064,6 +1048,21 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
         df_test['位置取りショック'] = df_test['前走_最終コーナー'] - pd.to_numeric(_safe_col(df_test, '2走前_最終コーナー'), errors='coerce')
 
         race_date_obj = pd.to_datetime(race_date_str)
+
+        # ★ データリーク防止: バックテスト・振り返り時は
+        # 「最新_日付 >= race_date」の馬の前走情報をNaNにマスクする
+        if skip_live_scrape and '最新_日付' in df_test.columns:
+            future_mask = pd.to_datetime(df_test['最新_日付'], errors='coerce') >= race_date_obj
+            leak_cols = ['最新_日付','最新_着順','最新_スピード指数','最新_人気','最新_上り',
+                         '最新_距離','最新_馬体重','最新_騎手','最新_芝ダート','最新_着順パーセント',
+                         '最新_失速フラグ','最新_上り偏差','最新_距離補正タイム差','最新_直近3走着順パーセント',
+                         '前走_着順','2走前_着順','3走前_着順',
+                         '前走_スピード指数','2走前_スピード指数','3走前_スピード指数',
+                         '4走前_スピード指数','5走前_スピード指数',
+                         '前走_最終コーナー','2走前_最終コーナー']
+            for col in leak_cols:
+                if col in df_test.columns:
+                    df_test.loc[future_mask, col] = np.nan
 
         # =====================================================================
         # 前走情報をnetkeibaから直接スクレイプして上書き
