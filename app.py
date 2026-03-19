@@ -975,6 +975,16 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
     weight_idx=get_idx(['馬体重']); odds_idx=get_idx(['単勝','オッズ','予想','人気'])
     sex_age_idx=get_idx(['性齢']); jockey_idx=get_idx(['騎手']); trainer_idx=get_idx(['調教師','厩舎'])
 
+    # 枠番確定か事前チェック（最初の3行を確認）
+    pre_waku_confirmed = False
+    for tr in table.find_all('tr')[1:4]:
+        tds = tr.find_all('td')
+        if len(tds) < 5: continue
+        if waku_idx != -1 and len(tds) > waku_idx:
+            w_m = re.search(r'\d+', tds[waku_idx].text.strip())
+            if w_m and int(w_m.group(0)) > 0:
+                pre_waku_confirmed = True; break
+
     horses = []
     row_pos = 0  # テーブル内の行番号（1始まり）
     for tr in table.find_all('tr')[1:]:
