@@ -714,104 +714,88 @@ def generate_pdf_report(results_list, ev_threshold=1.5):
 
 
 def generate_txt_report(results_list, ev_threshold=1.5):
-    """note投稿に最適化したMarkdown形式のレポートを生成"""
-    lines = []
-    ev_summary_rows = []
+    """noteに貼りやすい・読みやすいプレーンテキスト形式のレポートを生成"""
+    out = []
+    ev_summary = []
 
-    if results_list:
-        date_str = results_list[0].get('date', '')
-        lines.append(f"# 🏇 keiba-ebye AI予想 {date_str}")
-        lines.append("")
-        lines.append("> keiba-ebye（ebi × AI × Eye）によるAI予想です。")
-        lines.append("")
-        lines.append("---")
-        lines.append("")
+    date_str = results_list[0].get("date", "") if results_list else ""
+    out.append(f"🏇 keiba-ebye AI予想レポート  {date_str}")
+    out.append("keiba-ebye（ebi × AI × Eye）によるAI競馬予想")
+    out.append("")
 
     for r in results_list:
-        place = r.get('place', '')
-        num   = r.get('num', '')
-        track = r.get('track', '')
-        dist  = r.get('dist', '')
-        lines.append(f"## {place} {num}R　{track}{dist}m")
-        lines.append("")
+        place = r.get("place", "")
+        num   = r.get("num", "")
+        track = r.get("track", "")
+        dist  = r.get("dist", "")
+        conf  = r.get("confidence", "")
+        pace  = r.get("pace", "")
 
-        # 自信度
-        conf = r.get('confidence', '')
-        if conf:
-            lines.append(f"**{conf}**")
-            lines.append("")
+        out.append("=" * 44)
+        out.append(f"■ {place} {num}R  {track}{dist}m")
+        if conf: out.append(conf)
+        out.append("=" * 44)
 
-        # 展開予想（SHAP含む買い目部分を除いて展開のみ）
-        pace = r.get('pace', '')
         if pace:
-            lines.append(f"**🐎 展開予想**")
-            lines.append(pace)
-            lines.append("")
+            out.append(f"[展開予想] {pace}")
+            out.append("")
 
-        # 印付き予想表
-        lines.append("**📊 AI予想**")
-        lines.append("")
-        lines.append("| 印 | 馬番 | 馬名 | 脚質 | オッズ | 勝率 | 複勝率 |")
-        lines.append("|---|---|---|---|---|---|---|")
-        for rank, row in r['df'].iterrows():
+        # 予想表（固定幅テキスト）
+        out.append(f"{'印':<3} {'馬番':>3} {'馬名':<12} {'脚質':<5} {'オッズ':>7} {'勝率':>6} {'複勝率':>7} {'EV':>5}")
+        out.append("-" * 56)
+        for rank, row in r["df"].iterrows():
             try:
-                imp  = row['印'] or ''
-                num_ = int(row['馬番'])
-                name = row['馬名']
-                stle = row.get('脚質カテゴリ', '')
-                odds = row['単勝オッズ']
-                wp   = f"{row['勝率(AI予測)']*100:.1f}%"
-                fp   = f"{row['複勝率(AI予測)']*100:.1f}%"
-                ev   = float(row.get('期待値', 0) or 0)
-                # EV高い馬は太字
-                name_str = f"**{name}**" if (imp and imp != '') else name
-                ev_mark  = " 💰" if ev >= ev_threshold else ""
-                lines.append(f"| {imp} | {num_} | {name_str}{ev_mark} | {stle} | {odds}倍 | {wp} | {fp} |")
+                imp  = str(row["印"] or "").ljust(2)
+                num_ = int(row["馬番"])
+                name = str(row["馬名"])[:10]
+                stle = str(row.get("脚質カテゴリ", ""))[:4]
+                odds = float(row["単勝オッズ"])
+                wp   = row["勝率(AI予測)"] * 100
+                fp   = row["複勝率(AI予測)"] * 100
+                ev   = float(row.get("期待値", 0) or 0)
+                ev_str = f"{ev:4.2f}"
+                mark = " ★" if ev >= ev_threshold else ""
+                out.append(f"{imp:<3} {num_:>3} {name:<12} {stle:<5} {odds:>6.1f}倍 {wp:>5.1f}% {fp:>6.1f}% {ev_str}{mark}")
                 if rank < 5 and ev >= ev_threshold:
-                    ev_summary_rows.append({
-                        'レース': f"{r['place']}{r['num']}R",
-                        '印': imp, '馬番': num_, '馬名': name,
-                        'EV': ev, '勝率': wp, 'オッズ': odds,
-                    })
+                    ev_summary.append({"レース": f"{place}{num}R", "印": row["印"],
+                                       "馬番": num_, "馬名": row["馬名"],
+                                       "EV": ev, "勝率": f"{wp:.1f}%", "オッズ": odds})
             except: pass
-        lines.append("")
+        out.append("-" * 56)
+        out.append("★ = 期待値" + str(ev_threshold) + "以上の注目馬")
+        out.append("")
 
-        # トピック馬
-        if r.get('topics'):
-            lines.append("**📝 注目トピック**")
-            for t in r['topics']:
-                lines.append(f"- {t}")
-            lines.append("")
+        # 注目トピック
+        if r.get("topics"):
+            out.append("[注目トピック]")
+            for t in r["topics"]:
+                clean_t = t.replace("**", "")
+                out.append(f"  {clean_t}")
+            out.append("")
 
-        # 買い目（SHAPテキストを除去してrecoのみ）
-        reco_raw = r.get('reco', '')
-        # SHAP分析テキストを除去（
+        # 推奨買い目
+        reco_raw = r.get("reco", "")
+        if "AIの推し理由" in reco_raw:
+            reco_raw = reco_raw[:reco_raw.index("AIの推し理由")].strip()
+        if reco_raw:
+            out.append("[推奨買い目]")
+            out.append(f"  {reco_raw.strip()}")
+            out.append("")
 
-        if 'AIの推し理由' in reco_raw:
-            reco_clean = reco_raw[:reco_raw.index('AIの推し理由')].strip()
-        else:
-            reco_clean = reco_raw.strip()
-        if reco_clean:
-            lines.append(reco_clean)
-            lines.append("")
+    # 横断EV注目馬まとめ
+    if ev_summary:
+        out.append("")
+        out.append("=" * 44)
+        out.append(f"💰 本日の注目馬（期待値{ev_threshold}以上・印あり）")
+        out.append("=" * 44)
+        for row in sorted(ev_summary, key=lambda x: x["EV"], reverse=True):
+            out.append(f"  {row['印']} {row['レース']} {row['馬番']}番 {row['馬名']}"
+                       f"  EV:{row['EV']:.2f}  オッズ:{row['オッズ']}倍  勝率:{row['勝率']}")
+        out.append("")
 
-        lines.append("---")
-        lines.append("")
-
-    # 横断EV一覧
-    if ev_summary_rows:
-        lines.append("## 💰 本日の注目馬（EV上位・印あり）")
-        lines.append("")
-        lines.append("| レース | 印 | 馬番 | 馬名 | EV | オッズ |")
-        lines.append("|---|---|---|---|---|---|")
-        for row in sorted(ev_summary_rows, key=lambda x: x['EV'], reverse=True):
-            lines.append(f"| {row['レース']} | {row['印']} | {row['馬番']} | **{row['馬名']}** | {row['EV']:.2f} | {row['オッズ']}倍 |")
-        lines.append("")
-        lines.append("---")
-        lines.append("")
-
-    lines.append("*keiba-ebye (AI×競馬予想) / 予想はAIによる参考情報です。馬券購入は自己責任でお願いします。*")
-    return "\n".join(lines)
+    out.append("=" * 44)
+    out.append("keiba-ebye / 予想はAI参考情報です。馬券は自己責任でお願いします。")
+    return "\n".join(out)
 
 
 # ==========================================
@@ -1867,50 +1851,65 @@ elif action == "📅 今週末の全レース予想":
     col1, col2 = st.columns(2)
     with col1: run_sat = st.button(f"🚀 土曜日 ({sat_str[4:6]}/{sat_str[6:]}) の予想", type="primary")
     with col2: run_sun = st.button(f"🚀 日曜日 ({sun_str[4:6]}/{sun_str[6:]}) の予想", type="primary")
-    target_date = sat_str if run_sat else sun_str if run_sun else None
-    
-    if target_date:
-        with st.spinner(f'出馬表を収集中...'):
-            target_races = get_todays_races(target_date)
-        if not target_races: st.error("出馬表が未発表です。")
+
+    # 予想ボタンが押されたときだけ実行（ダウンロードボタン等の再実行では走らない）
+    if run_sat or run_sun:
+        _td = sat_str if run_sat else sun_str
+        with st.spinner("出馬表を収集中..."):
+            _races = get_todays_races(_td)
+        if not _races:
+            st.error("出馬表が未発表です。")
         else:
-            my_bar = st.progress(0, text="推論中...")
-            results_for_txt = []
-            for i, r in enumerate(target_races):
-                with st.expander(f"🏁 {r['place']} {r['num']}R"):
-                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], f"{target_date[:4]}-{target_date[4:6]}-{target_date[6:]}")
-                    # 枠番未確定・オッズ暫定の警告を表示
-                    waku_warn = [e for e in (err_log or []) if '枠順未確定' in e]
-                    if waku_warn:
-                        st.warning(waku_warn[0])
-                    if res_df is not None:
-                        display_result(res_df, topics, reco, pace_text, conf_text)
-                        results_for_txt.append({'date': f"{target_date[:4]}年{target_date[4:6]}月{target_date[6:]}日", 'place': place, 'num': r['num'], 'track': track_type, 'dist': dist, 'pace': pace_text, 'confidence': conf_text, 'df': res_df, 'topics': topics, 'reco': reco})
-                    else: display_error_log(err_log)
+            _bar = st.progress(0, text="推論中...")
+            _results = []
+            for _i, _r in enumerate(_races):
+                _res_df, _topics, _reco, _pace, _conf, _track, _place, _dist, _elog = run_real_prediction(
+                    _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}")
+                _results.append({
+                    "date": f"{_td[:4]}年{_td[4:6]}月{_td[6:]}日",
+                    "place": _place or _r["place"], "num": _r["num"],
+                    "track": _track, "dist": _dist,
+                    "pace": _pace, "confidence": _conf,
+                    "df": _res_df, "topics": _topics, "reco": _reco,
+                    "err_log": _elog or [],
+                })
                 time.sleep(1.0)
-                my_bar.progress((i + 1) / len(target_races))
-            if results_for_txt:
-                # session_stateに保存してボタン押下後もリフレッシュしないようにする
-                st.session_state[f'results_{target_date}'] = results_for_txt
-            if f'results_{target_date}' in st.session_state:
-                _rft = st.session_state[f'results_{target_date}']
-                _dw1, _dw2 = st.columns(2)
-                _dw1.download_button(
-                    f"📥 {target_date[4:6]}/{target_date[6:]} 予想レポート(.txt)",
-                    data=generate_txt_report(_rft),
-                    file_name=f"keiba_weekend_{target_date}.txt",
-                    mime="text/plain",
-                    key=f"dl_txt_{target_date}"
+                _bar.progress((_i + 1) / len(_races))
+            st.session_state["weekend_results"] = _results
+            st.session_state["weekend_date"]    = _td
+
+    # session_stateから結果を表示（ダウンロードボタン押下後も消えない）
+    if "weekend_results" in st.session_state:
+        _cached = st.session_state["weekend_results"]
+        _td2    = st.session_state.get("weekend_date", "")
+        for _r in _cached:
+            with st.expander(f"🏁 {_r.get('place','')} {_r.get('num','')}R"):
+                _ww = [e for e in _r.get("err_log", []) if "枠順未確定" in e]
+                if _ww: st.warning(_ww[0])
+                if _r.get("df") is not None:
+                    display_result(_r["df"], _r["topics"], _r["reco"], _r["pace"], _r["confidence"])
+                else:
+                    display_error_log(_r.get("err_log", []))
+        _valid = [r for r in _cached if r.get("df") is not None]
+        if _valid:
+            st.markdown("---")
+            _c1, _c2 = st.columns(2)
+            _c1.download_button(
+                f"📥 {_td2[4:6]}/{_td2[6:]} 予想レポート(.txt)",
+                data=generate_txt_report(_valid),
+                file_name=f"keiba_weekend_{_td2}.txt",
+                mime="text/plain",
+                key="dl_txt_weekend",
+            )
+            _hw = generate_pdf_report(_valid)
+            if _hw:
+                _c2.download_button(
+                    f"🌐 {_td2[4:6]}/{_td2[6:]} 予想レポート(.html)",
+                    data=_hw,
+                    file_name=f"keiba_weekend_{_td2}.html",
+                    mime="text/html",
+                    key="dl_html_weekend",
                 )
-                _html_w = generate_pdf_report(_rft)
-                if _html_w:
-                    _dw2.download_button(
-                        f"🌐 {target_date[4:6]}/{target_date[6:]} 予想レポート(.html)",
-                        data=_html_w,
-                        file_name=f"keiba_weekend_{target_date}.html",
-                        mime="text/html",
-                        key=f"dl_html_{target_date}"
-                    )
 
 elif action == "📝 1日の振り返り (答え合わせ)":
     st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
