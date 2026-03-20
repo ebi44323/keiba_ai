@@ -1852,9 +1852,10 @@ elif action == "📅 今週末の全レース予想":
     with col1: run_sat = st.button(f"🚀 土曜日 ({sat_str[4:6]}/{sat_str[6:]}) の予想", type="primary")
     with col2: run_sun = st.button(f"🚀 日曜日 ({sun_str[4:6]}/{sun_str[6:]}) の予想", type="primary")
 
-    # 予想ボタンが押されたときだけ実行（ダウンロードボタン等の再実行では走らない）
     if run_sat or run_sun:
         _td = sat_str if run_sat else sun_str
+        st.session_state["weekend_date"] = _td
+        st.session_state["weekend_results"] = []
         with st.spinner("出馬表を収集中..."):
             _races = get_todays_races(_td)
         if not _races:
@@ -1863,53 +1864,51 @@ elif action == "📅 今週末の全レース予想":
             _bar = st.progress(0, text="推論中...")
             _results = []
             for _i, _r in enumerate(_races):
-                _res_df, _topics, _reco, _pace, _conf, _track, _place, _dist, _elog = run_real_prediction(
-                    _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}")
-                _results.append({
-                    "date": f"{_td[:4]}年{_td[4:6]}月{_td[6:]}日",
-                    "place": _place or _r["place"], "num": _r["num"],
-                    "track": _track, "dist": _dist,
-                    "pace": _pace, "confidence": _conf,
-                    "df": _res_df, "topics": _topics, "reco": _reco,
-                    "err_log": _elog or [],
-                })
+                # レースごとにリアルタイム表示
+                with st.expander(f"🏁 {_r['place']} {_r['num']}R", expanded=True):
+                    _res_df, _topics, _reco, _pace, _conf, _track, _place, _dist, _elog = run_real_prediction(
+                        _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}")
+                    _ww = [e for e in (_elog or []) if "枠順未確定" in e]
+                    if _ww: st.warning(_ww[0])
+                    if _res_df is not None:
+                        display_result(_res_df, _topics, _reco, _pace, _conf)
+                        _results.append({
+                            "date": f"{_td[:4]}年{_td[4:6]}月{_td[6:]}日",
+                            "place": _place or _r["place"], "num": _r["num"],
+                            "track": _track, "dist": _dist,
+                            "pace": _pace, "confidence": _conf,
+                            "df": _res_df, "topics": _topics, "reco": _reco,
+                        })
+                    else:
+                        display_error_log(_elog)
                 time.sleep(1.0)
                 _bar.progress((_i + 1) / len(_races))
+            # 完了後にsession_stateへ保存
             st.session_state["weekend_results"] = _results
-            st.session_state["weekend_date"]    = _td
 
-    # session_stateから結果を表示（ダウンロードボタン押下後も消えない）
-    if "weekend_results" in st.session_state:
-        _cached = st.session_state["weekend_results"]
-        _td2    = st.session_state.get("weekend_date", "")
-        for _r in _cached:
-            with st.expander(f"🏁 {_r.get('place','')} {_r.get('num','')}R"):
-                _ww = [e for e in _r.get("err_log", []) if "枠順未確定" in e]
-                if _ww: st.warning(_ww[0])
-                if _r.get("df") is not None:
-                    display_result(_r["df"], _r["topics"], _r["reco"], _r["pace"], _r["confidence"])
-                else:
-                    display_error_log(_r.get("err_log", []))
-        _valid = [r for r in _cached if r.get("df") is not None]
-        if _valid:
-            st.markdown("---")
-            _c1, _c2 = st.columns(2)
-            _c1.download_button(
-                f"📥 {_td2[4:6]}/{_td2[6:]} 予想レポート(.txt)",
-                data=generate_txt_report(_valid),
-                file_name=f"keiba_weekend_{_td2}.txt",
-                mime="text/plain",
-                key="dl_txt_weekend",
+    # ダウンロードボタンはsession_stateから（再実行でも消えない）
+    _cached = st.session_state.get("weekend_results", [])
+    _td2    = st.session_state.get("weekend_date", "")
+    _valid  = [r for r in _cached if r.get("df") is not None]
+    if _valid and _td2:
+        st.markdown("---")
+        _c1, _c2 = st.columns(2)
+        _c1.download_button(
+            f"📥 {_td2[4:6]}/{_td2[6:]} 予想レポート(.txt)",
+            data=generate_txt_report(_valid),
+            file_name=f"keiba_weekend_{_td2}.txt",
+            mime="text/plain",
+            key="dl_txt_weekend",
+        )
+        _hw = generate_pdf_report(_valid)
+        if _hw:
+            _c2.download_button(
+                f"🌐 {_td2[4:6]}/{_td2[6:]} 予想レポート(.html)",
+                data=_hw,
+                file_name=f"keiba_weekend_{_td2}.html",
+                mime="text/html",
+                key="dl_html_weekend",
             )
-            _hw = generate_pdf_report(_valid)
-            if _hw:
-                _c2.download_button(
-                    f"🌐 {_td2[4:6]}/{_td2[6:]} 予想レポート(.html)",
-                    data=_hw,
-                    file_name=f"keiba_weekend_{_td2}.html",
-                    mime="text/html",
-                    key="dl_html_weekend",
-                )
 
 elif action == "📝 1日の振り返り (答え合わせ)":
     st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
