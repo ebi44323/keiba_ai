@@ -438,10 +438,24 @@ def get_todays_races(date_str=None):
     return sorted(races, key=lambda x: x['sort_key'])
 
 def get_weekend_dates():
+    """今週末（月〜日曜視点で直近の土・日）の日付を返す。
+    月〜土: 当週の土日
+    日曜:   当日(日)と翌週の土 ではなく → 当日(日)を「今週日曜」として当週の土日を返す
+    """
     tokyo_tz = pytz.timezone('Asia/Tokyo')
     now = datetime.datetime.now(tokyo_tz)
-    saturday = now + datetime.timedelta(days=(5 - now.weekday()) % 7)
-    sunday = saturday + datetime.timedelta(days=1)
+    wd = now.weekday()  # 月=0 ... 土=5, 日=6
+
+    if wd == 6:
+        # 日曜日: 今日が日曜なので「今週の土曜(昨日)」と「今週の日曜(今日)」
+        saturday = now - datetime.timedelta(days=1)
+        sunday   = now
+    else:
+        # 月〜土: 今週の土曜・日曜
+        days_to_sat = 5 - wd          # 土曜まであと何日（月なら5, 土なら0）
+        saturday = now + datetime.timedelta(days=days_to_sat)
+        sunday   = saturday + datetime.timedelta(days=1)
+
     return saturday.strftime('%Y%m%d'), sunday.strftime('%Y%m%d')
 
 def get_payouts(race_id):
