@@ -428,14 +428,14 @@ def main():
     if fetch_all and df_existing is not None:
         last_dt = pd.to_datetime(df_existing['日付'], errors='coerce').max()
         start_d = (last_dt + pd.Timedelta(days=1)).date()
-        target_dates = [d.date() for d in pd.date_range(start=start_d, end=today-datetime.timedelta(days=1)) if d.weekday() in (5,6)]
+        target_dates = [d.date() for d in pd.date_range(start=start_d, end=today) if d.weekday() in (5,6)]
     else:
         target_dates = []
         for w in range(weeks_back):
             base = today - datetime.timedelta(weeks=w)
             sat  = base - datetime.timedelta(days=(base.weekday()-5)%7)
             for d in [sat, sat+datetime.timedelta(days=1)]:
-                if d < today: target_dates.append(d)
+                if d <= today: target_dates.append(d)
         target_dates = sorted(set(target_dates))
 
     if not target_dates:
@@ -515,10 +515,6 @@ def main():
     print("\n"+"="*60)
     print("🎉 更新完了！")
     print("="*60)
-
-
-if __name__ == '__main__':
-    main()
 
 
 # ================================================================
