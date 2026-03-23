@@ -980,11 +980,14 @@ def generate_txt_report(results_list, ev_threshold=1.5):
 _DISCORD_QUEUE_FILE = "discord_queue.json"
 
 def _push_discord_queue(content: str, channel: str = "prediction",
-                        username: str = "keiba-ebye 🐴") -> bool:
+                        username: str = "keiba-ebye 🐴",
+                        dedup_key: str = "") -> bool:
     """
     Discord送信キューにメッセージを追加し、HF Datasetに保存する。
     channel: "prediction"（直前予想）or "review"（振り返り）
     GitHub Actionsのdiscord_notify.ymlが読み取って送信する。
+    dedup_key: 重複防止キー（同一キーが未送信で存在する場合はスキップ）
+               予想: race_id  振り返り: 日付文字列
     """
     if not _HF_TOKEN or not _HF_REPO_ID:
         logger.warning("HF_TOKEN/HF_REPO_IDが未設定のためDiscordキューに書き込めません")
@@ -1006,9 +1009,21 @@ def _push_discord_queue(content: str, channel: str = "prediction",
         except Exception:
             queue = []  # ファイルがなければ新規作成
 
+        # ── 重複防止チェック ───────────────────────────────────────────
+        # dedup_keyが同じ未送信エントリが既にあればスキップ（再起動・複数タブ対策）
+        if dedup_key:
+            already = any(
+                q.get("dedup_key") == dedup_key and not q.get("sent", False)
+                for q in queue
+            )
+            if already:
+                logger.info(f"Discord重複スキップ: {dedup_key}")
+                return True  # 既にキューにある → 成功扱い
+
         # 新規エントリを追加
         entry = {
             "id": f"{channel}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+            "dedup_key": dedup_key or "",
             "channel": channel,
             "content": content[:1990],
             "username": username,
@@ -1018,7 +1033,8 @@ def _push_discord_queue(content: str, channel: str = "prediction",
         queue.append(entry)
 
         # 送信済みの古いエントリを削除（最新50件だけ保持）
-        queue = [q for q in queue if not q.get("sent", False)][-50:] +                 [q for q in queue if q.get("sent", False)][-20:]
+        queue = [q for q in queue if not q.get("sent", False)][-50:] + \
+                [q for q in queue if q.get("sent", False)][-20:]
 
         # HF Datasetに保存
         import io
@@ -1095,7 +1111,8 @@ def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
         lines.append("-# keiba-ebye AI予想 / 馬券は自己責任でお願いします")
 
         content = "\n".join(lines)
-        return _push_discord_queue(content, channel="prediction", username="keiba-ebye 🐴")
+        return _push_discord_queue(content, channel="prediction", username="keiba-ebye 🐴",
+                                   dedup_key=race_info.get('race_id', ''))
     except Exception as _e:
         logger.warning(f"send_discord_prediction エラー: {_e}")
         return False
@@ -1143,7 +1160,8 @@ def send_discord_review(stats: dict, rates: dict, target_date_str: str,
             "-# keiba-ebye / 結果は参考情報です",
         ]
         content = "\n".join(lines)
-        return _push_discord_queue(content, channel="review", username="keiba-ebye 📊")
+        return _push_discord_queue(content, channel="review", username="keiba-ebye 📊",
+                                   dedup_key=f"review_{target_date_str}")
     except Exception as _e:
         logger.warning(f"send_discord_review エラー: {_e}")
         return False
@@ -1852,7 +1870,7 @@ else:
     _discord_enabled = st.sidebar.checkbox(
         "📤 直前予想 自動投稿",
         value=True,
-        help="発走5分前の自動更新時にDiscordへ予想を投稿します"
+        help="発走15分前にDiscord通知（GitHub Actions経由）、5分前に画面を最新オッズで更新します"
     )
 
     # 接続テストボタン
@@ -2246,11 +2264,12 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                 st.info(f"👉 **{next_race['place']} {next_race['num']}R** 「{next_race['title']}」 (あと **{mins_left}** 分)")
 
                 # ── オッズ自動再取得 ─────────────────────────────────
-                # 発走5分前になったら自動で予想を更新するオプション
+                # Discord通知: 発走15分前（GitHub Actionsの遅延を考慮して余裕を持たせる）
+                # 画面更新:    発走5分前（最新オッズで予想を更新）
                 auto_refresh = st.checkbox(
-                    "🔄 発走5分前になったら自動でオッズを再取得して予想を更新する",
+                    "🔄 発走前に自動でオッズ再取得・Discord通知する",
                     value=False,
-                    help="チェックを入れると発走5分前に自動で予想を再実行します"
+                    help="15分前にDiscord通知 → 5分前に画面の予想を最新オッズで更新します"
                 )
                 col_btn1, col_btn2 = st.columns([2, 1])
                 with col_btn1:
@@ -2258,16 +2277,33 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                 with col_btn2:
                     force_refresh = st.button("🔄 オッズ再取得して更新", help="最新オッズで予想を再実行します")
 
-                # 自動更新ロジック: 10分前になったら自動実行
+                # 自動トリガー判定
+                # discord_triggered: 15分前に一度だけ → Discordに通知
+                # auto_triggered:     5分前に一度だけ → 画面の予想を更新
+                discord_triggered = False
                 auto_triggered = False
-                if auto_refresh and 0 <= mins_left <= 5:
-                    last_auto = st.session_state.get(f'last_auto_{next_race["id"]}', 0)
-                    if time.time() - last_auto > 300:  # 5分以上経過したら再実行
-                        auto_triggered = True
-                        st.session_state[f'last_auto_{next_race["id"]}'] = time.time()
-                        st.warning(f"⚡ 発走{mins_left}分前！最新オッズで予想を更新します...")
 
-                if manual_run or force_refresh or auto_triggered:
+                if auto_refresh:
+                    _last_discord_key = f'last_discord_{next_race["id"]}'
+                    _last_refresh_key = f'last_auto_{next_race["id"]}'
+
+                    # Discord通知: 発走10〜20分前の間に一度だけ発火
+                    # （GitHub Actionsの最大5分遅延を加味して15分前を狙う）
+                    if 10 <= mins_left <= 20:
+                        if not st.session_state.get(_last_discord_key, False):
+                            discord_triggered = True
+                            st.session_state[_last_discord_key] = True
+                            st.info(f"📤 発走{mins_left}分前！Discord通知をキューに追加します...")
+
+                    # 画面更新: 発走0〜6分前に一度だけ発火（最新オッズ取得）
+                    if 0 <= mins_left <= 6:
+                        last_auto = st.session_state.get(_last_refresh_key, 0)
+                        if time.time() - last_auto > 300:
+                            auto_triggered = True
+                            st.session_state[_last_refresh_key] = time.time()
+                            st.warning(f"⚡ 発走{mins_left}分前！最新オッズで予想を更新します...")
+
+                if manual_run or force_refresh or auto_triggered or discord_triggered:
                     with st.spinner('AIが推論中（最新オッズ取得含む）...'):
                         res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'))
                         if res_df is not None:
@@ -2275,13 +2311,14 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                             if force_refresh or auto_triggered:
                                 st.success("✅ オッズを再取得して予想を更新しました")
 
-                            # ── Discord自動投稿（自動トリガー時 & 有効時）──────
-                            if auto_triggered and _discord_enabled and _DISCORD_WEBHOOK_URL:
+                            # ── Discord自動投稿（discord_triggered: 15分前）──────
+                            if discord_triggered and _discord_enabled and _DISCORD_WEBHOOK_URL:
                                 _race_info = {
-                                    'place': next_race['place'],
-                                    'num':   next_race['num'],
-                                    'title': next_race['title'],
+                                    'place':   next_race['place'],
+                                    'num':     next_race['num'],
+                                    'title':   next_race['title'],
                                     'mins_left': mins_left,
+                                    'race_id': next_race['id'],   # 重複防止キー
                                 }
                                 _sent_key = f'discord_sent_{next_race["id"]}'
                                 if not st.session_state.get(_sent_key, False):
@@ -2301,10 +2338,11 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                                 if st.button("📤 Discordに投稿", key=_discord_btn_key,
                                              help="この予想をDiscordに手動で投稿します"):
                                     _race_info = {
-                                        'place': next_race['place'],
-                                        'num':   next_race['num'],
-                                        'title': next_race['title'],
+                                        'place':   next_race['place'],
+                                        'num':     next_race['num'],
+                                        'title':   next_race['title'],
                                         'mins_left': mins_left,
+                                        'race_id': f"manual_{next_race['id']}",  # 手動は別キー
                                     }
                                     _ok = send_discord_prediction(
                                         res_df, topics, reco, pace_text, conf_text,
@@ -2317,10 +2355,11 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                         else: display_error_log(err_log)
 
                 # 自動更新チェック用ページ再読み込み
-                if auto_refresh and mins_left > 5:
-                    st.caption(f"次の自動確認まで... 発走{mins_left}分前（5分前になると自動更新）")
-                    # 1分ごとに再確認
-                    time.sleep(0)  # Streamlitの再実行をトリガーしない（ボタン待ち）
+                if auto_refresh and mins_left > 6:
+                    if mins_left > 20:
+                        st.caption(f"発走{mins_left}分前 — 15〜20分前になるとDiscord通知、5分前に予想を更新します")
+                    elif mins_left > 6:
+                        st.caption(f"発走{mins_left}分前 — Discord通知済み。5分前に最新オッズで予想を更新します")
             else:
                 st.success("🏁 本日の全レースは終了しました。")
             
@@ -2337,10 +2376,11 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                         if _DISCORD_WEBHOOK_URL:
                             if st.button("📤 Discordに投稿", key=f"discord_spec_{target_race['id']}"):
                                 _race_info = {
-                                    'place': target_race['place'],
-                                    'num':   target_race['num'],
-                                    'title': target_race['title'],
+                                    'place':   target_race['place'],
+                                    'num':     target_race['num'],
+                                    'title':   target_race['title'],
                                     'mins_left': 0,
+                                    'race_id': f"manual_{target_race['id']}",
                                 }
                                 _ok = send_discord_prediction(
                                     res_df, topics, reco, pace_text, conf_text,
