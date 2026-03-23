@@ -1120,8 +1120,8 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
                     o_m = re.search(r'\d{1,4}\.\d+', odds_span.text) if odds_span else None
                     if u_m and o_m: odds_dict[int(u_m.group(1))] = float(o_m.group(0))
         except Exception as e:
-        logger.warning(f'Yahoo競馬オッズ取得失敗: {e}')
-        error_log.append(f"Yahoo競馬オッズ取得失敗: {e}")
+            logger.warning(f'Yahoo競馬オッズ取得失敗: {e}')
+            error_log.append(f"Yahoo競馬オッズ取得失敗: {e}")
 
     for fetch_url in [f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}',f'https://race.netkeiba.com/race/result.html?race_id={race_id}',f'https://db.netkeiba.com/race/{race_id}/']:
         try:
