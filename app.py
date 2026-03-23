@@ -85,6 +85,10 @@ _HF_REPO_ID = os.environ.get("HF_REPO_ID", "")   # 例: "username/keiba-ebye"
 _MODEL_FILE = "keiba_model.pkl"                    # Hub上のファイル名
 _META_FILE  = "keiba_model_meta.json"             # 学習日時などのメタデータ
 
+# ── Discord Webhook設定 ──────────────────────────────────────────
+# HuggingFace Secrets に DISCORD_WEBHOOK_URL を設定してください
+_DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
 def _get_zip_mtime():
     """学習データZIPの最終更新日時(文字列)を返す"""
     for p in ['learning_data_perfect_tier.zip', 'learning_data_perfect_tier.csv']:
@@ -961,6 +965,97 @@ def generate_txt_report(results_list, ev_threshold=1.5):
 
 
 # ==========================================
+# Discord 連携
+# ==========================================
+def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
+                             race_info: dict, webhook_url: str = "") -> bool:
+    """
+    予想結果をDiscordに投稿する。
+    race_info: {'place': '東京', 'num': 5, 'title': '...', 'mins_left': 4}
+    返値: 成功=True / 失敗=False
+    """
+    if not webhook_url:
+        return False
+    try:
+        place    = race_info.get('place', '')
+        num      = race_info.get('num', '')
+        title    = race_info.get('title', '')
+        mins     = race_info.get('mins_left', 0)
+
+        # ── ヘッダー ──────────────────────────────────────────
+        lines = [
+            f"🐴 **keiba-ebye 予想** | {place} {num}R「{title}」",
+            f"⏰ 発走まであと **{mins}分**",
+            "",
+        ]
+
+        # ── 信頼度・展開 ─────────────────────────────────────
+        if conf_text:
+            lines.append(f"> {conf_text}")
+        if pace_text:
+            lines.append(f"> {pace_text}")
+        lines.append("")
+
+        # ── 上位5頭テーブル ───────────────────────────────────
+        lines.append("```")
+        lines.append(f"{'印':<3} {'馬番':>3} {'馬名':<12} {'オッズ':>6} {'勝率':>6} {'EV':>5}")
+        lines.append("-" * 42)
+        for rank, row in res_df.head(7).iterrows():
+            try:
+                imp  = str(row.get('印', '') or '').ljust(2)
+                num_ = int(float(row.get('馬番', 0)))
+                name = str(row.get('馬名', ''))[:10]
+                odds = float(row.get('単勝オッズ', 0))
+                wp   = float(row.get('勝率(AI予測)', 0)) * 100
+                ev   = float(row.get('期待値', 0) or 0)
+                ev_mark = " ★" if ev >= 1.5 else ""
+                lines.append(f"{imp:<3} {num_:>3} {name:<12} {odds:>5.1f}倍 {wp:>5.1f}% {ev:>4.2f}{ev_mark}")
+            except Exception:
+                continue
+        lines.append("```")
+        lines.append("★ = 期待値1.5以上の注目馬")
+        lines.append("")
+
+        # ── トピック（最大3件）────────────────────────────────
+        if topics:
+            lines.append("**📝 注目トピック**")
+            for t in topics[:3]:
+                clean = t.replace("**", "")
+                lines.append(f"• {clean}")
+            lines.append("")
+
+        # ── 推奨買い目（長すぎる場合は切り詰め）─────────────
+        if reco:
+            reco_short = reco[:200] + ("…" if len(reco) > 200 else "")
+            lines.append(f"**🎯 推奨** {reco_short}")
+
+        # ── フッター ─────────────────────────────────────────
+        lines.append("")
+        lines.append("-# keiba-ebye AI予想 / 馬券は自己責任でお願いします")
+
+        content = "\n".join(lines)
+
+        # Discordの1メッセージ上限は2000文字
+        if len(content) > 1990:
+            content = content[:1990] + "\n…(省略)"
+
+        resp = requests.post(
+            webhook_url,
+            json={"content": content, "username": "keiba-ebye 🐴"},
+            timeout=10
+        )
+        if resp.status_code in (200, 204):
+            logger.info(f"Discord送信成功: {place}{num}R")
+            return True
+        else:
+            logger.warning(f"Discord送信失敗: status={resp.status_code}")
+            return False
+    except Exception as _e:
+        logger.warning(f"Discord送信エラー: {_e}")
+        return False
+
+
+# ==========================================
 # 3. 本格AI予測関数 (★BUG修正版)
 
 # 騎手名の既知の表記ゆれ辞書（出馬表の短縮表記 → 正式名）
@@ -1628,6 +1723,21 @@ if action in _PRO_ACTIONS and not _is_pro:
     st.warning("この機能はProメンバー限定です。サイドバーにアクセスコードを入力してください。")
     st.stop()
 
+# ── Discord 設定 ─────────────────────────────────────────────
+if _DISCORD_WEBHOOK_URL:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 💬 Discord 連携")
+    st.sidebar.success("✅ Webhook設定済み")
+    _discord_enabled = st.sidebar.checkbox("📤 自動投稿を有効にする", value=True,
+        help="発走5分前の自動更新時にDiscordへ予想を投稿します")
+    st.sidebar.caption("手動予想時は画面下の「Discordに投稿」ボタンからも送れます")
+else:
+    _discord_enabled = False
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 💬 Discord 連携")
+    st.sidebar.caption("💡 HuggingFace Secrets に `DISCORD_WEBHOOK_URL` を設定すると"
+                       "発走5分前に自動で予想をDiscordに投稿できます")
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 💰 軍資金シミュレーター")
 sim_budget     = st.sidebar.number_input("軍資金 (円)", 1000, 500000, 30000, 1000,
@@ -1645,14 +1755,10 @@ if _is_pro and _hub_available:
     st.sidebar.markdown("### ⚙️ モデル管理")
     st.sidebar.caption(f"HF Hub: `{_HF_REPO_ID}`")
     st.sidebar.caption(f"🎚 アンサンブル重み: 複勝={ensemble_weight:.1f} / 1着={1-ensemble_weight:.1f}")
-    def _auc_label(v):
-        if v >= 0.70: return f"🟢 {v:.4f} (優秀)"
-        if v >= 0.65: return f"🟡 {v:.4f} (良好)"
-        if v >= 0.60: return f"🟠 {v:.4f} (普通)"
-        return f"🔴 {v:.4f} (要改善)"
+    # AUC: 特徴量計算にリークが含まれるため表示は参考値扱い
     if auc_win > 0:
-        st.sidebar.caption(f"📊 AUC 1着: {_auc_label(auc_win)}")
-        st.sidebar.caption(f"📊 AUC 複勝: {_auc_label(auc_place)}")
+        st.sidebar.caption(f"⚠️ AUC(参考): 1着={auc_win:.4f} / 複勝={auc_place:.4f}")
+        st.sidebar.caption("　└ 特徴量リークにより過大評価の可能性あり")
     if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
         st.cache_resource.clear()
         with st.spinner("再学習中... (数分かかります)"):
@@ -2038,6 +2144,46 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                             display_result(res_df, topics, reco, pace_text, conf_text)
                             if force_refresh or auto_triggered:
                                 st.success("✅ オッズを再取得して予想を更新しました")
+
+                            # ── Discord自動投稿（自動トリガー時 & 有効時）──────
+                            if auto_triggered and _discord_enabled and _DISCORD_WEBHOOK_URL:
+                                _race_info = {
+                                    'place': next_race['place'],
+                                    'num':   next_race['num'],
+                                    'title': next_race['title'],
+                                    'mins_left': mins_left,
+                                }
+                                _sent_key = f'discord_sent_{next_race["id"]}'
+                                if not st.session_state.get(_sent_key, False):
+                                    _ok = send_discord_prediction(
+                                        res_df, topics, reco, pace_text, conf_text,
+                                        _race_info, _DISCORD_WEBHOOK_URL
+                                    )
+                                    if _ok:
+                                        st.session_state[_sent_key] = True
+                                        st.success("📤 Discordに予想を投稿しました！")
+                                    else:
+                                        st.warning("⚠️ Discord投稿に失敗しました（ログを確認してください）")
+
+                            # ── 手動Discord投稿ボタン ─────────────────────────
+                            if _DISCORD_WEBHOOK_URL:
+                                _discord_btn_key = f'discord_btn_{next_race["id"]}'
+                                if st.button("📤 Discordに投稿", key=_discord_btn_key,
+                                             help="この予想をDiscordに手動で投稿します"):
+                                    _race_info = {
+                                        'place': next_race['place'],
+                                        'num':   next_race['num'],
+                                        'title': next_race['title'],
+                                        'mins_left': mins_left,
+                                    }
+                                    _ok = send_discord_prediction(
+                                        res_df, topics, reco, pace_text, conf_text,
+                                        _race_info, _DISCORD_WEBHOOK_URL
+                                    )
+                                    if _ok:
+                                        st.success("📤 Discordに投稿しました！")
+                                    else:
+                                        st.error("❌ Discord投稿失敗（Webhook URLを確認してください）")
                         else: display_error_log(err_log)
 
                 # 自動更新チェック用ページ再読み込み
@@ -2055,7 +2201,22 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
             if st.button("🚀 予想開始", type="primary"):
                 with st.spinner('推論中...'):
                     res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'))
-                    if res_df is not None: display_result(res_df, topics, reco, pace_text, conf_text)
+                    if res_df is not None:
+                        display_result(res_df, topics, reco, pace_text, conf_text)
+                        # 手動Discord投稿ボタン
+                        if _DISCORD_WEBHOOK_URL:
+                            if st.button("📤 Discordに投稿", key=f"discord_spec_{target_race['id']}"):
+                                _race_info = {
+                                    'place': target_race['place'],
+                                    'num':   target_race['num'],
+                                    'title': target_race['title'],
+                                    'mins_left': 0,
+                                }
+                                _ok = send_discord_prediction(
+                                    res_df, topics, reco, pace_text, conf_text,
+                                    _race_info, _DISCORD_WEBHOOK_URL
+                                )
+                                st.success("📤 投稿しました！") if _ok else st.error("❌ 投稿失敗")
                     else: display_error_log(err_log)
 
 elif action == "📅 今週末の全レース予想":

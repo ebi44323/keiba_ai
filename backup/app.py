@@ -15,12 +15,41 @@ import random
 
 from features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 
+# ── ロギング設定 ────────────────────────────────────────────────
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(funcName)s: %(message)s',
+    handlers=[
+        logging.FileHandler('keiba.log', encoding='utf-8'),
+        logging.StreamHandler(),
+    ]
+)
+logger = logging.getLogger('keiba_ebye')
+
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
 
 VENUE_MAWARI = {'札幌':'右回り','函館':'右回り','福島':'右回り','新潟':'左回り','東京':'左回り','中山':'右回り','中京':'左回り','京都':'右回り','阪神':'右回り','小倉':'右回り'}
 VENUE_CHIKEI = {'札幌':'平坦','函館':'平坦','福島':'急坂','新潟':'平坦','東京':'急坂','中山':'急坂','中京':'急坂','京都':'緩坂','阪神':'急坂','小倉':'平坦'}
+
+# ── 馬場状態 → 数値マッピング ───────────────────────────────────
+TRACK_CONDITION_MAP = {'良': 0, '稍重': 1, '重': 2, '不良': 3}
+
+def classify_race_class(race_name: str) -> int:
+    """レース名からクラスコードを返す（G1=9 〜 新馬=0）"""
+    t = str(race_name)
+    if 'G1' in t or 'GⅠ' in t or 'ＧＩ' in t: return 9
+    if 'G2' in t or 'GⅡ' in t or 'ＧⅡ' in t: return 8
+    if 'G3' in t or 'GⅢ' in t or 'ＧⅢ' in t: return 7
+    if 'リステッド' in t or 'Listed' in t:        return 6
+    if '新馬' in t:                               return 0
+    if '未勝利' in t:                             return 1
+    if '1勝' in t or '500万' in t:               return 2
+    if '2勝' in t or '1000万' in t:              return 3
+    if '3勝' in t or '1600万' in t:              return 4
+    return 5  # オープン
 
 def resolve_name(short_name, known_names):
     if pd.isna(short_name) or short_name == '不明': return '不明'
@@ -89,8 +118,8 @@ def _try_load_model_from_hub():
             local_mtime    = _get_zip_mtime()
             if local_mtime != hub_data_mtime:
                 return None  # データが更新されているので再学習
-        except Exception:
-            pass  # メタデータなし = 初回 → そのままロードを試みる
+        except Exception as _e:
+            logger.info(f'HF Hubメタデータなし（初回）: {_e}')  # 初回 → そのままロードを試みる
 
         # モデル本体をロード
         model_path = hf_hub_download(
@@ -170,6 +199,21 @@ def prepare_model_and_data(force_retrain=False):
     cat_features = list(CAT_FEATURES)
     te_cols = list(TE_COLS)
 
+    # ── 追加特徴量（CSVに存在するが未使用だったもの）──────────────
+    EXTRA_NUM = [
+        'キャリア数',       # 累計出走回数（新馬・1勝馬の識別）
+        '上り順位率',       # レース内末脚順位（0〜1、低いほど末脚◎）
+        '前走_上り順位率',  # 前走末脚順位
+        '前走_前半ペース値', # 前走前半ペース（展開適性）
+        '前走_後半ペース値', # 前走後半ペース（展開適性）
+        '馬場指数',          # 馬場状態の数値（良=0〜不良=3）
+        'レースクラスコード', # レースグレード（新馬=0〜G1=9）
+        '市場勝率',          # 単勝オッズの逆数（大衆の評価する勝率）
+    ]
+    for f in EXTRA_NUM:
+        if f not in num_features:
+            num_features.append(f)
+
     try:
         df = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
     except FileNotFoundError:
@@ -226,7 +270,49 @@ def prepare_model_and_data(force_retrain=False):
     df['スピード指数'] = np.where(df['コース標準偏差'].fillna(0)>0,
         50-((df['走破タイム秒']-df['コース平均'])/df['コース標準偏差'])*10, 50)
     df['調教師_騎手'] = df['調教師'].astype(str)+'_'+df['騎手'].astype(str)
+
+    # ── 馬場指数（学習データに馬場列があれば使用）────────────────────
+    if '馬場' in df.columns:
+        df['馬場指数'] = df['馬場'].map(TRACK_CONDITION_MAP).fillna(0).astype(float)
+    else:
+        df['馬場指数'] = 0.0  # データなし時はデフォルト「良」
+
+    # ── レースクラスコード（レース名から判別）────────────────────────
+    if 'レース名' in df.columns:
+        df['レースクラスコード'] = df['レース名'].apply(classify_race_class).astype(float)
+    else:
+        df['レースクラスコード'] = 5.0  # デフォルト オープン
+
+    # ── 市場勝率（単勝オッズの逆数 = 大衆が評価する勝率）──────────────
+    # 学習データの単勝列は単勝払戻額(例:1230→12.3倍)ではなく
+    # オッズ値(例:5.3)として扱う（run_real_predictionの回収計算と対応）
+    df['市場勝率'] = pd.to_numeric(df['単勝'], errors='coerce').replace(0, np.nan)
+    df['市場勝率'] = (1.0 / df['市場勝率']).clip(0, 1)
+
     df = df.sort_values(['馬ID','日付']).reset_index(drop=True)
+
+    # ── 新特徴量1: キャリア数（累計出走回数）─────────────────────
+    # 新馬・キャリア浅い馬の識別に使う（スピード指数等がNaNの馬を正しく評価）
+    df['キャリア数'] = df.groupby('馬ID').cumcount()  # 0始まり（初出走=0）
+
+    # ── 新特徴量2: 上り順位（レース内での末脚の相対順位）──────────
+    # 上り絶対値から順位を計算（1=最も末脚が速い）
+    if '上り' in df.columns:
+        df['上り'] = pd.to_numeric(df['上り'], errors='coerce')
+        df['上り順位'] = df.groupby('レースID')['上り'].rank(method='min', ascending=True)
+        df['上り順位率'] = df['上り順位'] / df['出走頭数']  # 0〜1で正規化（低いほど末脚◎）
+    else:
+        df['上り順位'] = np.nan
+        df['上り順位率'] = np.nan
+
+    # ── 新特徴量3: 前走上り順位（前走での末脚順位）─────────────────
+    df['前走_上り順位率'] = df.groupby('馬ID')['上り順位率'].shift(1)
+
+    # ── 新特徴量4: 前半・後半ペース値（展開適性）────────────────────
+    for col in ['前半ペース値', '後半ペース値']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[f'前走_{col}'] = df.groupby('馬ID')[col].shift(1)
 
     df['前走_着順']  = df.groupby('馬ID')['着順'].shift(1)
     df['2走前_着順'] = df.groupby('馬ID')['着順'].shift(2)
@@ -289,7 +375,8 @@ def prepare_model_and_data(force_retrain=False):
           '前走_着順','2走前_着順','3走前_着順','過去3走平均着順',
           '前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数',
           '過去3走平均スピード指数','近5走_中央値スピード指数','近5走_最高スピード指数','上昇度_スピード指数',
-          '前走_通過','2走前_通過','前走_最終コーナー','2走前_最終コーナー']
+          '前走_通過','2走前_通過','前走_最終コーナー','2走前_最終コーナー',
+          'キャリア数','上り順位率','前走_上り順位率']
     ck = [c for c in ck if c in df_latest.columns]
     latest_horse_data = df_latest[ck].copy()
     horse_course_dict = df.groupby(['馬ID','競馬場','芝/ダート'])['着順パーセント'].mean().to_dict()
@@ -334,6 +421,7 @@ def prepare_model_and_data(force_retrain=False):
     test_groups  = test_df.groupby('レースID',sort=False).size().values
 
     # ★修正BUG3: model定義とfitの間に無関係コードを入れない
+    # ── モデルA: 複勝(3着以内)Ranker ─────────────────────────────
     model = lgb.LGBMRanker(n_estimators=500, learning_rate=0.01, num_leaves=63, max_bin=255,
                             cat_smooth=10, random_state=42, importance_type='gain',
                             colsample_bytree=0.7, subsample=0.8)
@@ -341,7 +429,44 @@ def prepare_model_and_data(force_retrain=False):
               categorical_feature=[f for f in cat_features if f in features],
               eval_set=[(test_df[features], test_df['馬券内'])], eval_group=[test_groups])
 
-    test_df['予測スコア'] = model.predict(test_df[features])
+    # ── モデルB: 1着予測Ranker（アンサンブル用）──────────────────
+    train_df['win_label'] = (train_df['着順'] == 1).astype(int) if '着順' in train_df.columns else train_df['馬券内']
+    test_df['win_label']  = (test_df['着順']  == 1).astype(int) if '着順' in test_df.columns  else test_df['馬券内']
+    model_win = lgb.LGBMRanker(n_estimators=400, learning_rate=0.02, num_leaves=48, max_bin=255,
+                                cat_smooth=10, random_state=123, importance_type='gain',
+                                colsample_bytree=0.7, subsample=0.8)
+    model_win.fit(train_df[features], train_df['win_label'], group=train_groups,
+                  categorical_feature=[f for f in cat_features if f in features],
+                  eval_set=[(test_df[features], test_df['win_label'])], eval_group=[test_groups])
+
+    # ── アンサンブルスコア（重み最適化版）──────────────────────────
+    score_a = model.predict(test_df[features])
+    score_b = model_win.predict(test_df[features])
+    def _norm_scores(s):
+        mn, mx = s.min(), s.max()
+        return (s - mn) / (mx - mn + 1e-9)
+    _sa_norm = _norm_scores(score_a)
+    _sb_norm = _norm_scores(score_b)
+
+    # バリデーションセット上で最適なアンサンブル重みを探索
+    best_weight = 0.5  # デフォルト（複勝モデルの重み）
+    best_rr = -1.0
+    _test_tmp = test_df.copy()
+    for _w in [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]:
+        _tmp_score = _sa_norm * _w + _sb_norm * (1 - _w)
+        _test_tmp['__s__'] = _tmp_score
+        _exp = np.exp(_tmp_score - _test_tmp.groupby('レースID')['__s__'].transform('max'))
+        _test_tmp['__wp__'] = _exp / _test_tmp.groupby('レースID')['__s__'].transform('sum')
+        _top1 = _test_tmp.sort_values(['レースID','__wp__'], ascending=[True,False]).groupby('レースID').head(1)
+        _hits = _top1[pd.to_numeric(_top1['着順'], errors='coerce') == 1]
+        _invest = len(_top1) * 100
+        _ret = (pd.to_numeric(_hits['単勝'], errors='coerce') * 100).sum()
+        _rr = (_ret / _invest * 100) if _invest > 0 else 0
+        if _rr > best_rr:
+            best_rr = _rr
+            best_weight = _w
+    logger.info(f'アンサンブル重み最適化: 複勝モデル={best_weight:.1f} / 1着モデル={1-best_weight:.1f} (検証回収率={best_rr:.1f}%)')
+    test_df['予測スコア'] = _sa_norm * best_weight + _sb_norm * (1 - best_weight)
     test_df['exp_score'] = np.exp(test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max'))
     test_df['AI勝率'] = test_df['exp_score']/test_df.groupby('レースID')['exp_score'].transform('sum')
     top_preds = test_df.sort_values(['レースID','AI勝率'],ascending=[True,False]).groupby('レースID').head(1)
@@ -350,15 +475,30 @@ def prepare_model_and_data(force_retrain=False):
     win_return = (pd.to_numeric(win_hits['単勝'],errors='coerce')*100).sum()
     recent_return_rate = (win_return/invest_amount*100) if invest_amount>0 else 0
 
+    # ── AUC計算（1着予測 & 複勝予測）──────────────────────────────────
+    auc_win = auc_place = 0.0
+    try:
+        from sklearn.metrics import roc_auc_score
+        test_df['win_true']   = (pd.to_numeric(test_df['着順'], errors='coerce') == 1).astype(int)
+        test_df['place_true'] = (pd.to_numeric(test_df['着順'], errors='coerce') <= 3).astype(int)
+        auc_win   = roc_auc_score(test_df['win_true'],   _sb_norm)
+        auc_place = roc_auc_score(test_df['place_true'], _sa_norm)
+        logger.info(f'モデルAUC: 1着={auc_win:.4f} / 複勝={auc_place:.4f}')
+    except Exception as _e:
+        logger.warning(f'AUC計算失敗: {_e}')
+
     try:
         ped_df = pd.read_csv('pedigree_master_all.csv', dtype=str)
         ped_df['馬ID'] = ped_df['馬ID'].astype(str).str.zfill(10)
         ped_dict = ped_df.set_index('馬ID')[['父','父系','母','母系','母父','母父系']].to_dict('index')
-    except: ped_dict = {}
+    except Exception as _e:
+        logger.warning(f'pedigree_master_all.csv 読み込み失敗: {_e}')
+        ped_dict = {}
 
-    bundle = (model, features, cat_features, num_features, cat_categories_dict,
+    bundle = (model, model_win, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
-              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate)
+              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
+              auc_win, auc_place)
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)
@@ -369,9 +509,10 @@ _hub_available = bool(_HF_TOKEN and _HF_REPO_ID)
 _hub_label = "HF Hub" if _hub_available else "ローカル学習"
 
 with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)'):
-    (model, features, cat_features, num_features, cat_categories_dict,
+    (model, model_win, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
-     known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate) = prepare_model_and_data()
+     known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
+     auc_win, auc_place) = prepare_model_and_data()
 
 # ==========================================
 # 2. スクレイピング ＆ アナリティクス関数群 (省略せず記載)
@@ -418,7 +559,8 @@ def get_todays_races(date_str=None):
                     start_dt = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} 12:00", "%Y%m%d %H:%M"))
                     title = f"{place} {r_num}R"
                 races.append({'id': r_id, 'place': place, 'num': r_num, 'title': title, 'time': start_dt, 'sort_key': f"{r_id[4:6]}{r_num:02d}"})
-        except: pass
+        except Exception as _e:
+            logger.warning(f'get_todays_races スクレイプ失敗 url={url}: {_e}')
         if races: break
 
     if not races:
@@ -434,7 +576,8 @@ def get_todays_races(date_str=None):
                 r_num = int(r_id[10:12])
                 dummy_time = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} 12:00", "%Y%m%d %H:%M"))
                 races.append({'id': r_id, 'place': place, 'num': r_num, 'title': f"{place} {r_num}R", 'time': dummy_time, 'sort_key': f"{r_id[4:6]}{r_num:02d}"})
-        except: pass
+        except Exception as _e:
+            logger.warning(f'get_todays_races db.netkeiba スクレイプ失敗: {_e}')
     return sorted(races, key=lambda x: x['sort_key'])
 
 def get_weekend_dates():
@@ -484,7 +627,8 @@ def get_payouts(race_id):
                                     if th.text.strip() == '単勝': tansho_dict[int(u)] = int(p)
                                     else: fukusho_dict[int(u)] = int(p)
             if tansho_dict: break
-        except: pass
+        except Exception as _e:
+            logger.warning(f'get_payouts 失敗 url={url}: {_e}')
     return tansho_dict, fukusho_dict
 
 def get_all_payouts(race_id):
@@ -566,7 +710,8 @@ def get_all_payouts(race_id):
                         elif current_kind == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
 
             if payouts['tansho'] and payouts['wide']: return payouts
-        except: pass
+        except Exception as _e:
+            logger.warning(f'get_all_payouts netkeiba失敗: {_e}')
 
     # 2. Yahoo!競馬 (裏ルート保険版)
     try:
@@ -612,7 +757,8 @@ def get_all_payouts(race_id):
                 elif current_kind == '複勝' and len(nums) >= 1: payouts['fukusho'][nums[0]] = pay
                 elif current_kind == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
                 elif current_kind == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
-    except: pass
+    except Exception as _e:
+        logger.warning(f'get_all_payouts Yahoo解析失敗: {_e}')
 
     return payouts
 
@@ -642,7 +788,8 @@ def get_odds_from_soup(s_soup):
                         
             # 斤量誤爆を防ぐため、怪しいクラスから強引に数字を拾う処理を削除
             if odds_val > 0.0: o_dict[umaban] = odds_val
-    except: pass
+    except Exception as _e:
+        logger.warning(f'get_odds_from_soup 解析エラー: {_e}')
     return o_dict
 
 def generate_pdf_report(results_list, ev_threshold=1.5):
@@ -774,7 +921,8 @@ def generate_txt_report(results_list, ev_threshold=1.5):
                     ev_summary.append({"レース": f"{place}{num}R", "印": row["印"],
                                        "馬番": num_, "馬名": row["馬名"],
                                        "EV": ev, "勝率": f"{wp:.1f}%", "オッズ": odds})
-            except: pass
+            except Exception as _e:
+                logger.debug(f'generate_txt_report行処理スキップ: {_e}')
         out.append("-" * 56)
         out.append("★ = 期待値" + str(ev_threshold) + "以上の注目馬")
         out.append("")
@@ -924,8 +1072,8 @@ def fetch_horse_last_race(horse_id: str) -> dict:
         if rank_m:
             result['前走着順'] = int(rank_str)
 
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f'fetch_horse_last_race 失敗 horse_id={horse_id}: {_e}')
     return result
 
 
@@ -970,7 +1118,9 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
                 for uma_num, odds_list in odds_raw.items():
                     if str(uma_num).isdigit():
                         odds_dict[int(uma_num)] = float(odds_list[0])
-    except Exception as e: error_log.append(f"netkeiba APIオッズ取得失敗: {e}")
+    except Exception as e:
+        logger.warning(f'netkeiba APIオッズ取得失敗: {e}')
+        error_log.append(f"netkeiba APIオッズ取得失敗: {e}")
 
     if not odds_dict:
         try:
@@ -983,7 +1133,9 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
                     odds_span = tr.find('span', class_='fB')
                     o_m = re.search(r'\d{1,4}\.\d+', odds_span.text) if odds_span else None
                     if u_m and o_m: odds_dict[int(u_m.group(1))] = float(o_m.group(0))
-        except Exception as e: error_log.append(f"Yahoo競馬オッズ取得失敗: {e}")
+        except Exception as e:
+            logger.warning(f'Yahoo競馬オッズ取得失敗: {e}')
+            error_log.append(f"Yahoo競馬オッズ取得失敗: {e}")
 
     for fetch_url in [f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}',f'https://race.netkeiba.com/race/result.html?race_id={race_id}',f'https://db.netkeiba.com/race/{race_id}/']:
         try:
@@ -991,7 +1143,8 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
             soup = BeautifulSoup(r.text, 'html.parser')
             if soup.select_one('.Shutuba_Table') or soup.select_one('.RaceTable01') or soup.select_one('.race_table_01') or soup.select_one('#All_Result_Table'):
                 html_text = r.text; break
-        except: pass
+        except Exception as _e:
+            logger.warning(f'出馬表取得失敗 {fetch_url}: {_e}')
 
     if not html_text: return None,None,None,None,None,None,None,None,["❌ 出馬表が取得できませんでした。"]
     soup = BeautifulSoup(html_text, 'html.parser')
@@ -1071,7 +1224,7 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
             # name_odds_dict(馬名キー)があれば補完
             if odds_val == 0.0:
                 try: odds_val = name_odds_dict.get(horse_name, 0.0)
-                except: pass
+                except Exception as _e: logger.debug(f'name_odds_dict参照失敗: {_e}')
 
             # ページ内オッズ列
             if odds_val == 0.0 and odds_idx != -1 and len(tds) > odds_idx:
@@ -1089,7 +1242,8 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
 
             sex_age = tds[sex_age_idx].text.strip() if sex_age_idx!=-1 and len(tds)>sex_age_idx else "牡3"
             horses.append({'枠番':waku,'馬番':umaban,'馬名':horse_name,'馬ID':horse_id,'性齢':sex_age,'斤量':kinryo,'騎手':jockey_name,'調教師':trainer_name,'距離':distance,'競馬場':place,'芝/ダート':track_type,'馬場':todays_baba,'天候':todays_tenki,'馬体重_num':weight_val,'単勝オッズ':odds_val})
-        except: pass
+        except Exception as _e:
+            logger.warning(f'出走馬パース失敗 race_id={race_id}: {_e}')
 
     if not pre_waku_confirmed and horses:
         error_log.append("⚠️ 枠順未確定のため枠番=0・オッズは暫定値です。枠順確定後に再実行してください。")
@@ -1185,7 +1339,8 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
                         prev_dt = pd.to_datetime(prev['前走日付'], errors='coerce')
                         if pd.notna(prev_dt) and prev_dt >= race_date_obj:
                             continue  # 未来データは無視してCSVデータのまま
-                    except: pass
+                    except Exception as _e:
+                        logger.debug(f'前走日付パース失敗: {_e}')
 
                 if '前走日付'   in prev: df_test.at[idx, '最新_日付']     = prev['前走日付']
                 if '前走距離'   in prev: df_test.at[idx, '最新_距離']     = prev['前走距離']
@@ -1244,6 +1399,13 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
         df_test['直近3走着順パーセント'] = pd.to_numeric(_safe_col(df_test, '最新_直近3走着順パーセント', 0.5), errors='coerce').fillna(0.5)
         df_test['前走距離補正タイム差']  = pd.to_numeric(_safe_col(df_test, '最新_距離補正タイム差',  np.nan), errors='coerce')
         df_test['前走大敗フラグ']        = (pd.to_numeric(_safe_col(df_test, '最新_着順', np.nan), errors='coerce') / df_test['出走頭数'].replace(0,1) > 0.7).astype(int)
+
+        # 追加特徴量の推論時設定
+        df_test['キャリア数']        = pd.to_numeric(_safe_col(df_test, 'キャリア数',        np.nan), errors='coerce')
+        df_test['上り順位率']        = pd.to_numeric(_safe_col(df_test, '上り順位率',        np.nan), errors='coerce')
+        df_test['前走_上り順位率']   = pd.to_numeric(_safe_col(df_test, '前走_上り順位率',   np.nan), errors='coerce')
+        df_test['前走_前半ペース値'] = pd.to_numeric(_safe_col(df_test, '前走_前半ペース値', np.nan), errors='coerce')
+        df_test['前走_後半ペース値'] = pd.to_numeric(_safe_col(df_test, '前走_後半ペース値', np.nan), errors='coerce')
         df_test['馬体重増減']            = df_test['馬体重_num'] - pd.to_numeric(_safe_col(df_test, '最新_馬体重', np.nan), errors='coerce')
         df_test['斤量差'] = pd.to_numeric(df_test['斤量'],errors='coerce') - pd.to_numeric(df_test['斤量'],errors='coerce').mean()
         df_test['穴馬_距離変更一変']     = ((df_test['距離変更フラグ']==1)&(df_test['直近3走着順パーセント']<0.4)).astype(int)
@@ -1254,6 +1416,20 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
         df_test['コース地形'] = df_test['競馬場'].map(VENUE_CHIKEI).fillna('不明')
         df_test['騎手_競馬場'] = df_test['騎手'].astype(str)+'_'+df_test['競馬場'].astype(str)
         df_test['騎手_距離']   = df_test['騎手'].astype(str)+'_'+df_test['距離'].astype(str)
+
+        # ── 新特徴量: 馬場指数 ──────────────────────────────────────
+        if '馬場' in df_test.columns:
+            df_test['馬場指数'] = df_test['馬場'].map(TRACK_CONDITION_MAP).fillna(0).astype(float)
+        else:
+            df_test['馬場指数'] = TRACK_CONDITION_MAP.get(todays_baba, 0)
+
+        # ── 新特徴量: レースクラスコード ───────────────────────────
+        # レース情報からクラスを取得（全馬共通値）
+        _race_class = classify_race_class(race_text)
+        df_test['レースクラスコード'] = float(_race_class)
+
+        # ── 新特徴量: 市場勝率（オッズの逆数） ─────────────────────
+        df_test['市場勝率'] = (1.0 / df_test['単勝オッズ'].replace(0, np.nan)).clip(0, 1)
 
         # ★修正BUG2: TE は TE_COLS と完全一致させる
         for col in TE_COLS:
@@ -1275,7 +1451,16 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
         elif nige_count==0: pace_text=f"🐌 【スローペース濃厚】 確たる逃げ馬が不在。先行馬({senko_count}頭)の押し切り、前残りに注意。"
         else: pace_text=f"🐎 【ミドルペース】 逃げ馬{nige_count}頭、先行馬{senko_count}頭。平均的なペースで実力が反映されやすい展開。"
 
-        raw_scores = model.predict(df_test[features])
+        # アンサンブル: 最適化済み重みを使用
+        _sa = model.predict(df_test[features]).astype(float)
+        _sa = (_sa - _sa.min()) / (_sa.max() - _sa.min() + 1e-9)
+        try:
+            _sb = model_win.predict(df_test[features]).astype(float)
+            _sb = (_sb - _sb.min()) / (_sb.max() - _sb.min() + 1e-9)
+            raw_scores = _sa * ensemble_weight + _sb * (1 - ensemble_weight)
+        except Exception as _e:
+            logger.warning(f'model_win予測失敗、model_aのみ使用: {_e}')
+            raw_scores = _sa  # model_win失敗時はmodel_aのみ
         exp_scores = np.exp(raw_scores-np.max(raw_scores))
         win_probs  = exp_scores/np.sum(exp_scores)
         df_test['勝率(AI予測)']   = win_probs
@@ -1340,6 +1525,9 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
                 top3 = feat_contrib_sorted[:3]
                 # 特徴量名を日本語ラベルに変換
                 feat_label = {
+                    '馬場指数': '馬場状態への適性',
+                    'レースクラスコード': 'レースグレードへの対応力',
+                    '市場勝率': '市場オッズが示す評価',
                     '近5走_中央値スピード指数': '近5走のスピード指数(中央値)',
                     '近5走_最高スピード指数': '過去最高スピード指数',
                     '上昇度_スピード指数': 'スピード指数の上昇度',
@@ -1456,12 +1644,22 @@ if _is_pro and _hub_available:
     st.sidebar.markdown("---")
     st.sidebar.markdown("### ⚙️ モデル管理")
     st.sidebar.caption(f"HF Hub: `{_HF_REPO_ID}`")
+    st.sidebar.caption(f"🎚 アンサンブル重み: 複勝={ensemble_weight:.1f} / 1着={1-ensemble_weight:.1f}")
+    def _auc_label(v):
+        if v >= 0.70: return f"🟢 {v:.4f} (優秀)"
+        if v >= 0.65: return f"🟡 {v:.4f} (良好)"
+        if v >= 0.60: return f"🟠 {v:.4f} (普通)"
+        return f"🔴 {v:.4f} (要改善)"
+    if auc_win > 0:
+        st.sidebar.caption(f"📊 AUC 1着: {_auc_label(auc_win)}")
+        st.sidebar.caption(f"📊 AUC 複勝: {_auc_label(auc_place)}")
     if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
         st.cache_resource.clear()
         with st.spinner("再学習中... (数分かかります)"):
-            (model, features, cat_features, num_features, cat_categories_dict,
+            (model, model_win, features, cat_features, num_features, cat_categories_dict,
              latest_horse_data, horse_course_dict, ped_dict,
-             known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate) = prepare_model_and_data(force_retrain=True)
+             known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
+             auc_win, auc_place) = prepare_model_and_data(force_retrain=True)
         st.sidebar.success("✅ 再学習完了・Hubにアップロードしました")
         st.rerun()
 
@@ -1505,7 +1703,8 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             try:
                 with open("horse_memos.json", encoding="utf-8") as _mf:
                     all_memos = json.load(_mf)
-            except: pass
+            except Exception as _e:
+                logger.debug(f'horse_memos.json読み込みスキップ: {_e}')
 
         # ── 🏇 馬柱UI ─────────────────────────────────────────
         import altair as alt
@@ -2712,7 +2911,8 @@ elif action == "📝 馬券メモ管理":
             try:
                 with open(MEMO_FILE, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except: pass
+            except Exception as _e:
+                logger.warning(f'load_memos ファイル読み込み失敗: {_e}')
         # 2. GitHubから取得を試みる（ローカルにない場合）
         gh_token = os.environ.get("GITHUB_TOKEN", "")
         gh_repo  = os.environ.get("GITHUB_REPO", "")   # 例: "username/keiba-ebye"
