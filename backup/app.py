@@ -86,8 +86,11 @@ _MODEL_FILE = "keiba_model.pkl"                    # Hub上のファイル名
 _META_FILE  = "keiba_model_meta.json"             # 学習日時などのメタデータ
 
 # ── Discord Webhook設定 ──────────────────────────────────────────
-# HuggingFace Secrets に DISCORD_WEBHOOK_URL を設定してください
-_DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+# HuggingFace Secrets に以下の2つを設定してください
+# DISCORD_WEBHOOK_URL        → 直前予想投稿チャンネル
+# DISCORD_REVIEW_WEBHOOK_URL → 振り返り結果投稿チャンネル（省略時は予想チャンネルと同じ）
+_DISCORD_WEBHOOK_URL        = os.environ.get("DISCORD_WEBHOOK_URL", "")
+_DISCORD_REVIEW_WEBHOOK_URL = os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "") or _DISCORD_WEBHOOK_URL
 
 def _get_zip_mtime():
     """学習データZIPの最終更新日時(文字列)を返す"""
@@ -1055,6 +1058,98 @@ def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
         return False
 
 
+def send_discord_review(stats: dict, rates: dict, target_date_str: str,
+                        webhook_url: str = "") -> bool:
+    """
+    振り返り結果（1日の成績サマリー）をDiscordに投稿する。
+    stats: 的中・回収の集計dict
+    rates: tan_rate, fuku_rate, ev_tan_rate, ev_fuku_rate 等
+    """
+    if not webhook_url:
+        return False
+    try:
+        tan_rate     = rates.get('tan_rate', 0)
+        fuku_rate    = rates.get('fuku_rate', 0)
+        ev_tan_rate  = rates.get('ev_tan_rate', 0)
+        ev_fuku_rate = rates.get('ev_fuku_rate', 0)
+        uma_rate     = rates.get('uma_rate', 0)
+        shiba_rate   = rates.get('shiba_rate', 0)
+        dart_rate    = rates.get('dart_rate', 0)
+        races        = stats.get('honmei_races', 0)
+
+        def _emoji(v):
+            if v >= 150: return "🔥"
+            if v >= 100: return "✅"
+            if v >= 70:  return "🟡"
+            return "❌"
+
+        lines = [
+            f"📊 **keiba-ebye 振り返りレポート** | {target_date_str}",
+            f"対象 {races}レース",
+            "",
+            "**【本命(◎) 成績】**",
+            f"```",
+            f"単勝  {_emoji(tan_rate)} {tan_rate:6.1f}%   "
+            f"的中 {stats.get('honmei_tan_hits',0)}/{races}R",
+            f"複勝  {_emoji(fuku_rate)} {fuku_rate:6.1f}%   "
+            f"的中 {stats.get('honmei_fuku_hits',0)}/{races}R",
+            f"```",
+            "",
+            "**【期待値馬(EV1.5+) ベタ買い】**",
+            f"```",
+            f"単勝  {_emoji(ev_tan_rate)} {ev_tan_rate:6.1f}%   "
+            f"的中 {stats.get('ev_tan_hits',0)}/{int(stats.get('ev_invest',0)//100)}頭",
+            f"複勝  {_emoji(ev_fuku_rate)} {ev_fuku_rate:6.1f}%   "
+            f"的中 {stats.get('ev_fuku_hits',0)}/{int(stats.get('ev_invest',0)//100)}頭",
+            f"```",
+            "",
+            f"🌱 芝: {shiba_rate:.1f}%  🏜️ ダート: {dart_rate:.1f}%  "
+            f"🔗 馬連: {uma_rate:.1f}%",
+            "",
+            "-# keiba-ebye / 結果は参考情報です",
+        ]
+
+        content = "\n".join(lines)
+        if len(content) > 1990:
+            content = content[:1990] + "\n…(省略)"
+
+        resp = requests.post(
+            webhook_url,
+            json={"content": content, "username": "keiba-ebye 📊"},
+            timeout=10
+        )
+        if resp.status_code in (200, 204):
+            logger.info(f"Discord振り返り送信成功: {target_date_str}")
+            return True
+        else:
+            logger.warning(f"Discord振り返り送信失敗: status={resp.status_code}")
+            return False
+    except Exception as _e:
+        logger.warning(f"Discord振り返り送信エラー: {_e}")
+        return False
+
+
+def _test_discord_webhook(webhook_url: str, label: str = "テスト") -> tuple[bool, str]:
+    """Webhookの疎通テストを行い (成功フラグ, メッセージ) を返す"""
+    if not webhook_url:
+        return False, "Webhook URLが未設定です"
+    try:
+        resp = requests.post(
+            webhook_url,
+            json={
+                "content": f"🐴 **keiba-ebye** Webhook接続テスト成功！ ({label}チャンネル)",
+                "username": "keiba-ebye 🐴"
+            },
+            timeout=10
+        )
+        if resp.status_code in (200, 204):
+            return True, f"✅ {label}チャンネルへの接続成功！"
+        else:
+            return False, f"❌ 送信失敗 (HTTP {resp.status_code})"
+    except Exception as _e:
+        return False, f"❌ 接続エラー: {_e}"
+
+
 # ==========================================
 # 3. 本格AI予測関数 (★BUG修正版)
 
@@ -1724,19 +1819,40 @@ if action in _PRO_ACTIONS and not _is_pro:
     st.stop()
 
 # ── Discord 設定 ─────────────────────────────────────────────
-if _DISCORD_WEBHOOK_URL:
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 💬 Discord 連携")
-    st.sidebar.success("✅ Webhook設定済み")
-    _discord_enabled = st.sidebar.checkbox("📤 自動投稿を有効にする", value=True,
-        help="発走5分前の自動更新時にDiscordへ予想を投稿します")
-    st.sidebar.caption("手動予想時は画面下の「Discordに投稿」ボタンからも送れます")
-else:
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 💬 Discord 連携")
+
+if not _DISCORD_WEBHOOK_URL:
     _discord_enabled = False
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 💬 Discord 連携")
-    st.sidebar.caption("💡 HuggingFace Secrets に `DISCORD_WEBHOOK_URL` を設定すると"
-                       "発走5分前に自動で予想をDiscordに投稿できます")
+    st.sidebar.caption("💡 HuggingFace Secrets に以下を設定してください")
+    st.sidebar.code("DISCORD_WEBHOOK_URL        # 直前予想チャンネル\nDISCORD_REVIEW_WEBHOOK_URL # 振り返りチャンネル")
+else:
+    # チャンネル設定状況表示
+    _pred_ok   = bool(_DISCORD_WEBHOOK_URL)
+    _review_ok = bool(_DISCORD_REVIEW_WEBHOOK_URL and
+                      _DISCORD_REVIEW_WEBHOOK_URL != _DISCORD_WEBHOOK_URL)
+    st.sidebar.caption(f"📢 直前予想: {'✅ 専用ch' if _pred_ok else '❌ 未設定'}")
+    st.sidebar.caption(f"📊 振り返り: {'✅ 専用ch' if _review_ok else '⚠️ 予想chと共用'}")
+
+    # 自動投稿 ON/OFF
+    _discord_enabled = st.sidebar.checkbox(
+        "📤 直前予想 自動投稿",
+        value=True,
+        help="発走5分前の自動更新時にDiscordへ予想を投稿します"
+    )
+
+    # 接続テストボタン
+    _test_col1, _test_col2 = st.sidebar.columns(2)
+    with _test_col1:
+        if st.button("🔌 予想ch テスト", key="discord_test_pred", use_container_width=True):
+            _ok, _msg = _test_discord_webhook(_DISCORD_WEBHOOK_URL, "直前予想")
+            if _ok: st.sidebar.success(_msg)
+            else:   st.sidebar.error(_msg)
+    with _test_col2:
+        if st.button("🔌 振返ch テスト", key="discord_test_review", use_container_width=True):
+            _ok, _msg = _test_discord_webhook(_DISCORD_REVIEW_WEBHOOK_URL, "振り返り")
+            if _ok: st.sidebar.success(_msg)
+            else:   st.sidebar.error(_msg)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 💰 軍資金シミュレーター")
@@ -2481,6 +2597,47 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     st.write(f"- 該当数: {int(stats['ev_invest']/100)} 頭")
                     st.write(f"- **単勝 回収率**: **{ev_tan_rate:.1f}%** (的中 {stats['ev_tan_hits']}頭)")
                     st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
+
+                # ── Discord 振り返り投稿エリア ─────────────────────────────
+                if _DISCORD_REVIEW_WEBHOOK_URL:
+                    st.markdown("---")
+                    _review_rates = {
+                        'tan_rate': tan_rate, 'fuku_rate': fuku_rate,
+                        'ev_tan_rate': ev_tan_rate, 'ev_fuku_rate': ev_fuku_rate,
+                        'uma_rate': uma_rate, 'shiba_rate': shiba_rate, 'dart_rate': dart_rate,
+                    }
+                    _review_date_str = target_date.strftime('%Y/%m/%d')
+
+                    # 自動送信チェック: 当日のレース開催日 & 17時以降 & 未送信
+                    _today_jst = datetime.datetime.now(pytz.timezone('Asia/Tokyo'))
+                    _is_race_day = target_date == _today_jst.date()
+                    _after_17h   = _today_jst.hour >= 17
+                    _auto_sent_key = f'review_auto_sent_{target_date}'
+                    _already_sent  = st.session_state.get(_auto_sent_key, False)
+
+                    if _is_race_day and _after_17h and not _already_sent:
+                        _ok = send_discord_review(stats, _review_rates,
+                                                  _review_date_str, _DISCORD_REVIEW_WEBHOOK_URL)
+                        if _ok:
+                            st.session_state[_auto_sent_key] = True
+                            st.success("📤 振り返り結果をDiscordに自動投稿しました！（17時以降の初回実行）")
+                        else:
+                            st.warning("⚠️ Discord自動投稿に失敗しました")
+
+                    # 手動送信ボタン
+                    _dc1, _dc2 = st.columns([3, 1])
+                    with _dc1:
+                        st.caption("📊 振り返り結果をDiscordに投稿できます"
+                                   "（当日17時以降は振り返り実行時に自動送信）")
+                    with _dc2:
+                        if st.button("📤 Discordに投稿", key=f"review_discord_{target_date}",
+                                     type="primary"):
+                            _ok = send_discord_review(stats, _review_rates,
+                                                      _review_date_str, _DISCORD_REVIEW_WEBHOOK_URL)
+                            if _ok:
+                                st.success("📤 振り返り結果をDiscordに投稿しました！")
+                            else:
+                                st.error("❌ 投稿失敗（Webhook URLを確認してください）")
 
 elif action == "📈 長期成績分析":
     st.subheader("📈 長期成績分析 & 回収率ダッシュボード")

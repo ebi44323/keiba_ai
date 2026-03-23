@@ -970,36 +970,99 @@ def generate_txt_report(results_list, ev_threshold=1.5):
 # ==========================================
 # Discord 連携
 # ==========================================
+# ──────────────────────────────────────────────────────────────
+# Discord送信共通ユーティリティ
+# HF SpacesはDiscordへの直接通信が制限されているため、
+# HF Datasetに「送信キュー」を書き込む方式を採用。
+# GitHub Actionsのdiscord_notify.ymlが5分おきにキューを読んで
+# Discordに送信し、sentフラグを立てる。
+# ──────────────────────────────────────────────────────────────
+_DISCORD_QUEUE_FILE = "discord_queue.json"
+
+def _push_discord_queue(content: str, channel: str = "prediction",
+                        username: str = "keiba-ebye 🐴") -> bool:
+    """
+    Discord送信キューにメッセージを追加し、HF Datasetに保存する。
+    channel: "prediction"（直前予想）or "review"（振り返り）
+    GitHub Actionsのdiscord_notify.ymlが読み取って送信する。
+    """
+    if not _HF_TOKEN or not _HF_REPO_ID:
+        logger.warning("HF_TOKEN/HF_REPO_IDが未設定のためDiscordキューに書き込めません")
+        return False
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+        api = HfApi(token=_HF_TOKEN)
+
+        # 既存キューを取得
+        queue = []
+        try:
+            qpath = hf_hub_download(
+                repo_id=_HF_REPO_ID, filename=_DISCORD_QUEUE_FILE,
+                repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache",
+                force_download=True
+            )
+            with open(qpath, "r", encoding="utf-8") as f:
+                queue = json.load(f)
+        except Exception:
+            queue = []  # ファイルがなければ新規作成
+
+        # 新規エントリを追加
+        entry = {
+            "id": f"{channel}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+            "channel": channel,
+            "content": content[:1990],
+            "username": username,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "sent": False,
+        }
+        queue.append(entry)
+
+        # 送信済みの古いエントリを削除（最新50件だけ保持）
+        queue = [q for q in queue if not q.get("sent", False)][-50:] +                 [q for q in queue if q.get("sent", False)][-20:]
+
+        # HF Datasetに保存
+        import io
+        buf = io.BytesIO(json.dumps(queue, ensure_ascii=False, indent=2).encode("utf-8"))
+        api.upload_file(
+            path_or_fileobj=buf,
+            path_in_repo=_DISCORD_QUEUE_FILE,
+            repo_id=_HF_REPO_ID,
+            repo_type="dataset",
+            commit_message=f"Discord queue: {channel} {entry['id']}",
+            token=_HF_TOKEN,
+        )
+        logger.info(f"Discord送信キューに追加: {entry['id']}")
+        return True
+    except Exception as _e:
+        logger.warning(f"Discord送信キュー書き込み失敗: {_e}")
+        return False
+
+
 def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
                              race_info: dict, webhook_url: str = "") -> bool:
     """
-    予想結果をDiscordに投稿する。
+    予想結果をDiscordキューに積む（GitHub Actionsが送信）
     race_info: {'place': '東京', 'num': 5, 'title': '...', 'mins_left': 4}
-    返値: 成功=True / 失敗=False
     """
-    if not webhook_url:
+    if not _HF_TOKEN or not _HF_REPO_ID:
         return False
     try:
-        place    = race_info.get('place', '')
-        num      = race_info.get('num', '')
-        title    = race_info.get('title', '')
-        mins     = race_info.get('mins_left', 0)
+        place = race_info.get('place', '')
+        num   = race_info.get('num', '')
+        title = race_info.get('title', '')
+        mins  = race_info.get('mins_left', 0)
 
-        # ── ヘッダー ──────────────────────────────────────────
         lines = [
             f"🐴 **keiba-ebye 予想** | {place} {num}R「{title}」",
             f"⏰ 発走まであと **{mins}分**",
             "",
         ]
-
-        # ── 信頼度・展開 ─────────────────────────────────────
         if conf_text:
             lines.append(f"> {conf_text}")
         if pace_text:
             lines.append(f"> {pace_text}")
         lines.append("")
 
-        # ── 上位5頭テーブル ───────────────────────────────────
         lines.append("```")
         lines.append(f"{'印':<3} {'馬番':>3} {'馬名':<12} {'オッズ':>6} {'勝率':>6} {'EV':>5}")
         lines.append("-" * 42)
@@ -1019,53 +1082,29 @@ def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
         lines.append("★ = 期待値1.5以上の注目馬")
         lines.append("")
 
-        # ── トピック（最大3件）────────────────────────────────
         if topics:
             lines.append("**📝 注目トピック**")
             for t in topics[:3]:
-                clean = t.replace("**", "")
-                lines.append(f"• {clean}")
+                lines.append(f"• {t.replace('**', '')}")
             lines.append("")
 
-        # ── 推奨買い目（長すぎる場合は切り詰め）─────────────
         if reco:
-            reco_short = reco[:200] + ("…" if len(reco) > 200 else "")
-            lines.append(f"**🎯 推奨** {reco_short}")
+            lines.append(f"**🎯 推奨** {reco[:200]}{'…' if len(reco)>200 else ''}")
 
-        # ── フッター ─────────────────────────────────────────
         lines.append("")
         lines.append("-# keiba-ebye AI予想 / 馬券は自己責任でお願いします")
 
         content = "\n".join(lines)
-
-        # Discordの1メッセージ上限は2000文字
-        if len(content) > 1990:
-            content = content[:1990] + "\n…(省略)"
-
-        resp = requests.post(
-            webhook_url,
-            json={"content": content, "username": "keiba-ebye 🐴"},
-            timeout=10
-        )
-        if resp.status_code in (200, 204):
-            logger.info(f"Discord送信成功: {place}{num}R")
-            return True
-        else:
-            logger.warning(f"Discord送信失敗: status={resp.status_code}")
-            return False
+        return _push_discord_queue(content, channel="prediction", username="keiba-ebye 🐴")
     except Exception as _e:
-        logger.warning(f"Discord送信エラー: {_e}")
+        logger.warning(f"send_discord_prediction エラー: {_e}")
         return False
 
 
 def send_discord_review(stats: dict, rates: dict, target_date_str: str,
                         webhook_url: str = "") -> bool:
-    """
-    振り返り結果（1日の成績サマリー）をDiscordに投稿する。
-    stats: 的中・回収の集計dict
-    rates: tan_rate, fuku_rate, ev_tan_rate, ev_fuku_rate 等
-    """
-    if not webhook_url:
+    """振り返り結果をDiscordキューに積む（GitHub Actionsが送信）"""
+    if not _HF_TOKEN or not _HF_REPO_ID:
         return False
     try:
         tan_rate     = rates.get('tan_rate', 0)
@@ -1088,66 +1127,41 @@ def send_discord_review(stats: dict, rates: dict, target_date_str: str,
             f"対象 {races}レース",
             "",
             "**【本命(◎) 成績】**",
-            f"```",
-            f"単勝  {_emoji(tan_rate)} {tan_rate:6.1f}%   "
-            f"的中 {stats.get('honmei_tan_hits',0)}/{races}R",
-            f"複勝  {_emoji(fuku_rate)} {fuku_rate:6.1f}%   "
-            f"的中 {stats.get('honmei_fuku_hits',0)}/{races}R",
-            f"```",
+            "```",
+            f"単勝  {_emoji(tan_rate)} {tan_rate:6.1f}%   的中 {stats.get('honmei_tan_hits',0)}/{races}R",
+            f"複勝  {_emoji(fuku_rate)} {fuku_rate:6.1f}%   的中 {stats.get('honmei_fuku_hits',0)}/{races}R",
+            "```",
             "",
             "**【期待値馬(EV1.5+) ベタ買い】**",
-            f"```",
-            f"単勝  {_emoji(ev_tan_rate)} {ev_tan_rate:6.1f}%   "
-            f"的中 {stats.get('ev_tan_hits',0)}/{int(stats.get('ev_invest',0)//100)}頭",
-            f"複勝  {_emoji(ev_fuku_rate)} {ev_fuku_rate:6.1f}%   "
-            f"的中 {stats.get('ev_fuku_hits',0)}/{int(stats.get('ev_invest',0)//100)}頭",
-            f"```",
+            "```",
+            f"単勝  {_emoji(ev_tan_rate)} {ev_tan_rate:6.1f}%   的中 {stats.get('ev_tan_hits',0)}/{int(stats.get('ev_invest',0)//100)}頭",
+            f"複勝  {_emoji(ev_fuku_rate)} {ev_fuku_rate:6.1f}%   的中 {stats.get('ev_fuku_hits',0)}/{int(stats.get('ev_invest',0)//100)}頭",
+            "```",
             "",
-            f"🌱 芝: {shiba_rate:.1f}%  🏜️ ダート: {dart_rate:.1f}%  "
-            f"🔗 馬連: {uma_rate:.1f}%",
+            f"🌱 芝: {shiba_rate:.1f}%  🏜️ ダート: {dart_rate:.1f}%  🔗 馬連: {uma_rate:.1f}%",
             "",
             "-# keiba-ebye / 結果は参考情報です",
         ]
-
         content = "\n".join(lines)
-        if len(content) > 1990:
-            content = content[:1990] + "\n…(省略)"
-
-        resp = requests.post(
-            webhook_url,
-            json={"content": content, "username": "keiba-ebye 📊"},
-            timeout=10
-        )
-        if resp.status_code in (200, 204):
-            logger.info(f"Discord振り返り送信成功: {target_date_str}")
-            return True
-        else:
-            logger.warning(f"Discord振り返り送信失敗: status={resp.status_code}")
-            return False
+        return _push_discord_queue(content, channel="review", username="keiba-ebye 📊")
     except Exception as _e:
-        logger.warning(f"Discord振り返り送信エラー: {_e}")
+        logger.warning(f"send_discord_review エラー: {_e}")
         return False
 
 
 def _test_discord_webhook(webhook_url: str, label: str = "テスト") -> tuple[bool, str]:
-    """Webhookの疎通テストを行い (成功フラグ, メッセージ) を返す"""
-    if not webhook_url:
-        return False, "Webhook URLが未設定です"
-    try:
-        resp = requests.post(
-            webhook_url,
-            json={
-                "content": f"🐴 **keiba-ebye** Webhook接続テスト成功！ ({label}チャンネル)",
-                "username": "keiba-ebye 🐴"
-            },
-            timeout=10
-        )
-        if resp.status_code in (200, 204):
-            return True, f"✅ {label}チャンネルへの接続成功！"
-        else:
-            return False, f"❌ 送信失敗 (HTTP {resp.status_code})"
-    except Exception as _e:
-        return False, f"❌ 接続エラー: {_e}"
+    """テストメッセージをDiscordキューに積む"""
+    if not _HF_TOKEN or not _HF_REPO_ID:
+        return False, "HF_TOKEN / HF_REPO_ID が未設定です"
+    channel = "review" if label == "振り返り" else "prediction"
+    ok = _push_discord_queue(
+        f"🔌 **keiba-ebye** 接続テスト！ ({label}チャンネル) — GitHub Actionsが送信します",
+        channel=channel,
+        username="keiba-ebye 🔌"
+    )
+    if ok:
+        return True, f"✅ キューに追加しました！GitHub Actionsが数分以内に{label}chへ送信します"
+    return False, "❌ HF Datasetへの書き込み失敗（HF_TOKEN/HF_REPO_IDを確認）"
 
 
 # ==========================================

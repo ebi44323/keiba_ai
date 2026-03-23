@@ -1,0 +1,125 @@
+name: Discord通知 (キュー送信)
+
+# ================================================================
+# HuggingFace SpacesはDiscordへの直接通信が制限されているため
+# このワークフローがHF DatasetのキューをポーリングしてDiscordに送信する
+#
+# 【必要なGitHub Secrets】
+#   HF_TOKEN                  - HuggingFace APIトークン（write権限）
+#   HF_REPO_ID                - 例: "yourname/keiba-ebye"
+#   DISCORD_WEBHOOK_URL        - 直前予想チャンネルのWebhook URL
+#   DISCORD_REVIEW_WEBHOOK_URL - 振り返りチャンネルのWebhook URL
+#                                (省略時は予想チャンネルと共用)
+# ================================================================
+
+on:
+  schedule:
+    # 平日・週末を問わず5分ごとに実行（GitHub Actions の最短間隔）
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    # 手動実行も可能
+
+jobs:
+  send-discord:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Python セットアップ
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージインストール
+        run: pip install requests huggingface_hub --quiet
+
+      - name: Discord通知スクリプト実行
+        env:
+          HF_TOKEN:                  ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID:                ${{ secrets.HF_REPO_ID }}
+          DISCORD_WEBHOOK_URL:       ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_REVIEW_WEBHOOK_URL: ${{ secrets.DISCORD_REVIEW_WEBHOOK_URL }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, requests, io
+          from huggingface_hub import HfApi, hf_hub_download
+
+          HF_TOKEN   = os.environ.get("HF_TOKEN", "")
+          HF_REPO_ID = os.environ.get("HF_REPO_ID", "")
+          PRED_URL   = os.environ.get("DISCORD_WEBHOOK_URL", "")
+          REVIEW_URL = os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "") or PRED_URL
+
+          if not HF_TOKEN or not HF_REPO_ID:
+              print("❌ HF_TOKEN / HF_REPO_ID が未設定")
+              exit(0)
+
+          QUEUE_FILE = "discord_queue.json"
+          api = HfApi(token=HF_TOKEN)
+
+          # キューを取得
+          try:
+              qpath = hf_hub_download(
+                  repo_id=HF_REPO_ID, filename=QUEUE_FILE,
+                  repo_type="dataset", token=HF_TOKEN,
+                  cache_dir="/tmp/hf", force_download=True
+              )
+              with open(qpath, "r", encoding="utf-8") as f:
+                  queue = json.load(f)
+          except Exception as e:
+              print(f"キューファイルなし or 読み込み失敗: {e}")
+              exit(0)
+
+          # 未送信メッセージを処理
+          updated = False
+          sent_count = 0
+
+          for entry in queue:
+              if entry.get("sent", False):
+                  continue
+
+              channel  = entry.get("channel", "prediction")
+              content  = entry.get("content", "")
+              username = entry.get("username", "keiba-ebye 🐴")
+              url      = REVIEW_URL if channel == "review" else PRED_URL
+
+              if not url:
+                  print(f"⚠️ {channel}チャンネルのWebhook URLが未設定。スキップ")
+                  entry["sent"] = True  # 再試行しないようにマーク
+                  updated = True
+                  continue
+
+              try:
+                  resp = requests.post(
+                      url,
+                      json={"content": content, "username": username},
+                      timeout=15
+                  )
+                  if resp.status_code in (200, 204):
+                      entry["sent"] = True
+                      updated = True
+                      sent_count += 1
+                      print(f"✅ 送信成功: {entry.get('id','?')} → {channel}ch")
+                  else:
+                      print(f"❌ 送信失敗 HTTP {resp.status_code}: {entry.get('id','?')}")
+              except Exception as e:
+                  print(f"❌ 送信エラー: {e}")
+
+          print(f"送信完了: {sent_count}件")
+
+          # キューを更新して保存（変更があった場合のみ）
+          if updated:
+              buf = io.BytesIO(
+                  json.dumps(queue, ensure_ascii=False, indent=2).encode("utf-8")
+              )
+              api.upload_file(
+                  path_or_fileobj=buf,
+                  path_in_repo=QUEUE_FILE,
+                  repo_id=HF_REPO_ID,
+                  repo_type="dataset",
+                  commit_message=f"Discord queue: {sent_count}件送信完了",
+                  token=HF_TOKEN,
+              )
+              print("✅ キュー更新保存完了")
+          else:
+              print("送信待ちメッセージなし")
+          PYEOF
