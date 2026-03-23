@@ -475,6 +475,18 @@ def prepare_model_and_data(force_retrain=False):
     win_return = (pd.to_numeric(win_hits['単勝'],errors='coerce')*100).sum()
     recent_return_rate = (win_return/invest_amount*100) if invest_amount>0 else 0
 
+    # ── AUC計算（1着予測 & 複勝予測）──────────────────────────────────
+    auc_win = auc_place = 0.0
+    try:
+        from sklearn.metrics import roc_auc_score
+        test_df['win_true']   = (pd.to_numeric(test_df['着順'], errors='coerce') == 1).astype(int)
+        test_df['place_true'] = (pd.to_numeric(test_df['着順'], errors='coerce') <= 3).astype(int)
+        auc_win   = roc_auc_score(test_df['win_true'],   _sb_norm)
+        auc_place = roc_auc_score(test_df['place_true'], _sa_norm)
+        logger.info(f'モデルAUC: 1着={auc_win:.4f} / 複勝={auc_place:.4f}')
+    except Exception as _e:
+        logger.warning(f'AUC計算失敗: {_e}')
+
     try:
         ped_df = pd.read_csv('pedigree_master_all.csv', dtype=str)
         ped_df['馬ID'] = ped_df['馬ID'].astype(str).str.zfill(10)
@@ -485,7 +497,8 @@ def prepare_model_and_data(force_retrain=False):
 
     bundle = (model, model_win, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
-              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight)
+              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
+              auc_win, auc_place)
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)
@@ -498,7 +511,8 @@ _hub_label = "HF Hub" if _hub_available else "ローカル学習"
 with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)'):
     (model, model_win, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
-     known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight) = prepare_model_and_data()
+     known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
+     auc_win, auc_place) = prepare_model_and_data()
 
 # ==========================================
 # 2. スクレイピング ＆ アナリティクス関数群 (省略せず記載)
@@ -1630,12 +1644,22 @@ if _is_pro and _hub_available:
     st.sidebar.markdown("---")
     st.sidebar.markdown("### ⚙️ モデル管理")
     st.sidebar.caption(f"HF Hub: `{_HF_REPO_ID}`")
+    st.sidebar.caption(f"🎚 アンサンブル重み: 複勝={ensemble_weight:.1f} / 1着={1-ensemble_weight:.1f}")
+    def _auc_label(v):
+        if v >= 0.70: return f"🟢 {v:.4f} (優秀)"
+        if v >= 0.65: return f"🟡 {v:.4f} (良好)"
+        if v >= 0.60: return f"🟠 {v:.4f} (普通)"
+        return f"🔴 {v:.4f} (要改善)"
+    if auc_win > 0:
+        st.sidebar.caption(f"📊 AUC 1着: {_auc_label(auc_win)}")
+        st.sidebar.caption(f"📊 AUC 複勝: {_auc_label(auc_place)}")
     if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
         st.cache_resource.clear()
         with st.spinner("再学習中... (数分かかります)"):
             (model, model_win, features, cat_features, num_features, cat_categories_dict,
              latest_horse_data, horse_course_dict, ped_dict,
-             known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight) = prepare_model_and_data(force_retrain=True)
+             known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
+             auc_win, auc_place) = prepare_model_and_data(force_retrain=True)
         st.sidebar.success("✅ 再学習完了・Hubにアップロードしました")
         st.rerun()
 
