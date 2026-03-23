@@ -170,6 +170,18 @@ def prepare_model_and_data(force_retrain=False):
     cat_features = list(CAT_FEATURES)
     te_cols = list(TE_COLS)
 
+    # ── 追加特徴量（CSVに存在するが未使用だったもの）──────────────
+    EXTRA_NUM = [
+        'キャリア数',       # 累計出走回数（新馬・1勝馬の識別）
+        '上り順位率',       # レース内末脚順位（0〜1、低いほど末脚◎）
+        '前走_上り順位率',  # 前走末脚順位
+        '前走_前半ペース値', # 前走前半ペース（展開適性）
+        '前走_後半ペース値', # 前走後半ペース（展開適性）
+    ]
+    for f in EXTRA_NUM:
+        if f not in num_features:
+            num_features.append(f)
+
     try:
         df = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
     except FileNotFoundError:
@@ -227,6 +239,29 @@ def prepare_model_and_data(force_retrain=False):
         50-((df['走破タイム秒']-df['コース平均'])/df['コース標準偏差'])*10, 50)
     df['調教師_騎手'] = df['調教師'].astype(str)+'_'+df['騎手'].astype(str)
     df = df.sort_values(['馬ID','日付']).reset_index(drop=True)
+
+    # ── 新特徴量1: キャリア数（累計出走回数）─────────────────────
+    # 新馬・キャリア浅い馬の識別に使う（スピード指数等がNaNの馬を正しく評価）
+    df['キャリア数'] = df.groupby('馬ID').cumcount()  # 0始まり（初出走=0）
+
+    # ── 新特徴量2: 上り順位（レース内での末脚の相対順位）──────────
+    # 上り絶対値から順位を計算（1=最も末脚が速い）
+    if '上り' in df.columns:
+        df['上り'] = pd.to_numeric(df['上り'], errors='coerce')
+        df['上り順位'] = df.groupby('レースID')['上り'].rank(method='min', ascending=True)
+        df['上り順位率'] = df['上り順位'] / df['出走頭数']  # 0〜1で正規化（低いほど末脚◎）
+    else:
+        df['上り順位'] = np.nan
+        df['上り順位率'] = np.nan
+
+    # ── 新特徴量3: 前走上り順位（前走での末脚順位）─────────────────
+    df['前走_上り順位率'] = df.groupby('馬ID')['上り順位率'].shift(1)
+
+    # ── 新特徴量4: 前半・後半ペース値（展開適性）────────────────────
+    for col in ['前半ペース値', '後半ペース値']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[f'前走_{col}'] = df.groupby('馬ID')[col].shift(1)
 
     df['前走_着順']  = df.groupby('馬ID')['着順'].shift(1)
     df['2走前_着順'] = df.groupby('馬ID')['着順'].shift(2)
@@ -289,7 +324,8 @@ def prepare_model_and_data(force_retrain=False):
           '前走_着順','2走前_着順','3走前_着順','過去3走平均着順',
           '前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数',
           '過去3走平均スピード指数','近5走_中央値スピード指数','近5走_最高スピード指数','上昇度_スピード指数',
-          '前走_通過','2走前_通過','前走_最終コーナー','2走前_最終コーナー']
+          '前走_通過','2走前_通過','前走_最終コーナー','2走前_最終コーナー',
+          'キャリア数','上り順位率','前走_上り順位率']
     ck = [c for c in ck if c in df_latest.columns]
     latest_horse_data = df_latest[ck].copy()
     horse_course_dict = df.groupby(['馬ID','競馬場','芝/ダート'])['着順パーセント'].mean().to_dict()
@@ -334,6 +370,7 @@ def prepare_model_and_data(force_retrain=False):
     test_groups  = test_df.groupby('レースID',sort=False).size().values
 
     # ★修正BUG3: model定義とfitの間に無関係コードを入れない
+    # ── モデルA: 複勝(3着以内)Ranker ─────────────────────────────
     model = lgb.LGBMRanker(n_estimators=500, learning_rate=0.01, num_leaves=63, max_bin=255,
                             cat_smooth=10, random_state=42, importance_type='gain',
                             colsample_bytree=0.7, subsample=0.8)
@@ -341,7 +378,24 @@ def prepare_model_and_data(force_retrain=False):
               categorical_feature=[f for f in cat_features if f in features],
               eval_set=[(test_df[features], test_df['馬券内'])], eval_group=[test_groups])
 
-    test_df['予測スコア'] = model.predict(test_df[features])
+    # ── モデルB: 1着予測Ranker（アンサンブル用）──────────────────
+    train_df['win_label'] = (train_df['着順'] == 1).astype(int) if '着順' in train_df.columns else train_df['馬券内']
+    test_df['win_label']  = (test_df['着順']  == 1).astype(int) if '着順' in test_df.columns  else test_df['馬券内']
+    model_win = lgb.LGBMRanker(n_estimators=400, learning_rate=0.02, num_leaves=48, max_bin=255,
+                                cat_smooth=10, random_state=123, importance_type='gain',
+                                colsample_bytree=0.7, subsample=0.8)
+    model_win.fit(train_df[features], train_df['win_label'], group=train_groups,
+                  categorical_feature=[f for f in cat_features if f in features],
+                  eval_set=[(test_df[features], test_df['win_label'])], eval_group=[test_groups])
+
+    # ── アンサンブルスコア（3着以内50% + 1着50%）──────────────────
+    score_a = model.predict(test_df[features])
+    score_b = model_win.predict(test_df[features])
+    # 各スコアをmin-max正規化してから平均
+    def _norm_scores(s):
+        mn, mx = s.min(), s.max()
+        return (s - mn) / (mx - mn + 1e-9)
+    test_df['予測スコア'] = _norm_scores(score_a) * 0.5 + _norm_scores(score_b) * 0.5
     test_df['exp_score'] = np.exp(test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max'))
     test_df['AI勝率'] = test_df['exp_score']/test_df.groupby('レースID')['exp_score'].transform('sum')
     top_preds = test_df.sort_values(['レースID','AI勝率'],ascending=[True,False]).groupby('レースID').head(1)
@@ -356,7 +410,7 @@ def prepare_model_and_data(force_retrain=False):
         ped_dict = ped_df.set_index('馬ID')[['父','父系','母','母系','母父','母父系']].to_dict('index')
     except: ped_dict = {}
 
-    bundle = (model, features, cat_features, num_features, cat_categories_dict,
+    bundle = (model, model_win, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate)
 
@@ -369,7 +423,7 @@ _hub_available = bool(_HF_TOKEN and _HF_REPO_ID)
 _hub_label = "HF Hub" if _hub_available else "ローカル学習"
 
 with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)'):
-    (model, features, cat_features, num_features, cat_categories_dict,
+    (model, model_win, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
      known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate) = prepare_model_and_data()
 
@@ -1244,6 +1298,13 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
         df_test['直近3走着順パーセント'] = pd.to_numeric(_safe_col(df_test, '最新_直近3走着順パーセント', 0.5), errors='coerce').fillna(0.5)
         df_test['前走距離補正タイム差']  = pd.to_numeric(_safe_col(df_test, '最新_距離補正タイム差',  np.nan), errors='coerce')
         df_test['前走大敗フラグ']        = (pd.to_numeric(_safe_col(df_test, '最新_着順', np.nan), errors='coerce') / df_test['出走頭数'].replace(0,1) > 0.7).astype(int)
+
+        # 追加特徴量の推論時設定
+        df_test['キャリア数']        = pd.to_numeric(_safe_col(df_test, 'キャリア数',        np.nan), errors='coerce')
+        df_test['上り順位率']        = pd.to_numeric(_safe_col(df_test, '上り順位率',        np.nan), errors='coerce')
+        df_test['前走_上り順位率']   = pd.to_numeric(_safe_col(df_test, '前走_上り順位率',   np.nan), errors='coerce')
+        df_test['前走_前半ペース値'] = pd.to_numeric(_safe_col(df_test, '前走_前半ペース値', np.nan), errors='coerce')
+        df_test['前走_後半ペース値'] = pd.to_numeric(_safe_col(df_test, '前走_後半ペース値', np.nan), errors='coerce')
         df_test['馬体重増減']            = df_test['馬体重_num'] - pd.to_numeric(_safe_col(df_test, '最新_馬体重', np.nan), errors='coerce')
         df_test['斤量差'] = pd.to_numeric(df_test['斤量'],errors='coerce') - pd.to_numeric(df_test['斤量'],errors='coerce').mean()
         df_test['穴馬_距離変更一変']     = ((df_test['距離変更フラグ']==1)&(df_test['直近3走着順パーセント']<0.4)).astype(int)
@@ -1275,7 +1336,15 @@ def run_real_prediction(race_id, race_date_str, skip_live_scrape=False):
         elif nige_count==0: pace_text=f"🐌 【スローペース濃厚】 確たる逃げ馬が不在。先行馬({senko_count}頭)の押し切り、前残りに注意。"
         else: pace_text=f"🐎 【ミドルペース】 逃げ馬{nige_count}頭、先行馬{senko_count}頭。平均的なペースで実力が反映されやすい展開。"
 
-        raw_scores = model.predict(df_test[features])
+        # アンサンブル: 複勝モデル(model)50% + 1着モデル(model_win)50%
+        _sa = model.predict(df_test[features]).astype(float)
+        _sa = (_sa - _sa.min()) / (_sa.max() - _sa.min() + 1e-9)
+        try:
+            _sb = model_win.predict(df_test[features]).astype(float)
+            _sb = (_sb - _sb.min()) / (_sb.max() - _sb.min() + 1e-9)
+            raw_scores = _sa * 0.5 + _sb * 0.5
+        except Exception:
+            raw_scores = _sa  # model_win失敗時はmodel_aのみ
         exp_scores = np.exp(raw_scores-np.max(raw_scores))
         win_probs  = exp_scores/np.sum(exp_scores)
         df_test['勝率(AI予測)']   = win_probs
@@ -1459,7 +1528,7 @@ if _is_pro and _hub_available:
     if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
         st.cache_resource.clear()
         with st.spinner("再学習中... (数分かかります)"):
-            (model, features, cat_features, num_features, cat_categories_dict,
+            (model, model_win, features, cat_features, num_features, cat_categories_dict,
              latest_horse_data, horse_course_dict, ped_dict,
              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate) = prepare_model_and_data(force_retrain=True)
         st.sidebar.success("✅ 再学習完了・Hubにアップロードしました")

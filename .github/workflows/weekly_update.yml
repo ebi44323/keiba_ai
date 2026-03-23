@@ -1,60 +1,53 @@
-name: 週次データ自動更新
+name: keiba-ebye 週次データ更新
 
 on:
   schedule:
-    # 毎週月曜日 AM6:00 JST (= 日曜 UTC 21:00)
-    - cron: '0 21 * * 0'
+    # 毎週月曜 AM6:00 JST (= UTC 21:00 日曜)
+    - cron: '0 21 * * 1'  # 火曜06:00 JST(月曜21:00 UTC)
   workflow_dispatch:
     inputs:
       weeks_back:
-        description: '何週分遡るか (デフォルト: 1)'
+        description: '何週分遡るか (デフォルト1)'
         required: false
         default: '1'
+      fetch_all:
+        description: '全未取得データ取得する場合は true'
+        required: false
+        default: 'false'
 
 jobs:
-  update-data:
+  update:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: リポジトリをチェックアウト
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.HF_TOKEN }}
-          # HuggingFace Space の場合は以下を使用:
-          # repository: ebi44323/keiba-ebye
-          # ref: main
 
-      - name: Python 3.11 セットアップ
+      - name: Python セットアップ
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
-      - name: 依存ライブラリインストール
-        run: pip install pandas requests beautifulsoup4 numpy
-
-      - name: データ更新実行
+      - name: 依存パッケージをインストール
         run: |
-          WEEKS=${{ github.event.inputs.weeks_back || '1' }}
-          echo "先週 ${WEEKS} 週分を取得します"
-          python update_data.py ${WEEKS}
+          pip install pandas requests beautifulsoup4 huggingface_hub
 
-      - name: 変更チェック & コミット
-        run: |
-          git config --global user.name  "keiba-ebye-bot"
-          git config --global user.email "bot@keiba-ebye"
-          # 変更があるファイルだけ add
-          git add learning_data_perfect_tier.zip learning_data_perfect_tier.csv pedigree_master_all.csv 2>/dev/null || true
-          # 差分がなければスキップ
-          if git diff --cached --quiet; then
-            echo "変更なし - コミットをスキップします"
-          else
-            git commit -m "🏇 週次データ更新 $(date '+%Y-%m-%d')"
-            # HuggingFace へのプッシュ
-            # ※ YOUR_HF_USERNAME と YOUR_SPACE_NAME を実際の値に変更してください
-            git push https://YOUR_HF_USERNAME:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/YOUR_HF_USERNAME/YOUR_SPACE_NAME main
-            echo "✅ HuggingFace Space にプッシュ完了"
-          fi
+      - name: データ更新スクリプトを実行
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ "${{ github.event.inputs.fetch_all }}" = "true" ]; then
+            python update_data.py --all
+          else
+            WEEKS="${{ github.event.inputs.weeks_back }}"
+            python update_data.py ${WEEKS:-1}
+          fi
+
+      - name: 更新データをコミット＆プッシュ
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add learning_data_perfect_tier.zip pedigree_master_all.csv || true
+          git diff --staged --quiet || git commit -m "データ更新 $(date '+%Y-%m-%d')"
+          git push
