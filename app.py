@@ -185,7 +185,7 @@ if _is_pro and _hub_available:
             (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
              latest_horse_data, horse_course_dict, ped_dict,
              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
-             auc_win, auc_place) = prepare_model_and_data(force_retrain=True)
+             auc_win, auc_place, *_extra) = prepare_model_and_data(force_retrain=True)
         st.sidebar.success("✅ 再学習完了・Hubにアップロードしました")
         st.rerun()
 
