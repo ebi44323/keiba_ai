@@ -277,23 +277,11 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                 return ['background-color:rgba(255,200,0,0.10)'] * len(row)
             return [''] * len(row)
 
-
-        mobile_mode = st.toggle("📱 スマホ（カード）表示", value=True, help="不要な列を隠し縦長に最適化します")
-        if mobile_mode:
-            for idx, r in show_df.iterrows():
-                with st.container(border=True):
-                    cols = st.columns([1, 4, 3])
-                    cols[0].markdown(f"**{r['馬番']}**")
-                    cols[1].markdown(f"**{r['印']} {r['馬名']}**")
-                    cols[2].markdown(f"オッズ: **{r['オッズ']}**")
-                    st.caption(f"推奨: **{r['💰推奨']}** | 勝率: {r['勝率']} / 複勝率: {r['複勝率']} / EV: {r.get('期待値', 0)}")
-        else:
-            st.dataframe(
-                show_df.style.apply(highlight_row, axis=1)
-                       .format({'期待値':'{:.2f}','オッズ':'{:.1f}','枠番':'{:.0f}','馬番':'{:.0f}'}),
-                use_container_width=True, hide_index=True
-            )
-
+        st.dataframe(
+            show_df.style.apply(highlight_row, axis=1)
+                   .format({'期待値':'{:.2f}','オッズ':'{:.1f}','枠番':'{:.0f}','馬番':'{:.0f}'}),
+            use_container_width=True, hide_index=True
+        )
 
         # ── リアルタイム勝率バー（下段: グラフ）────────────────
         st.markdown("---")
