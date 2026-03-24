@@ -77,23 +77,37 @@ def create_features(df, te_dicts=None):
     df['出走頭数'] = df.groupby('レースID')['馬ID'].transform('count')
     df['着順パーセント'] = (df['着順']-1)/(df['出走頭数']-1).replace(0,1)
 
-    # ★修正: マージキーの型を統一してからマージ（型不一致でマージ失敗→列不在エラーを防ぐ）
-    for _c in ['競馬場','芝/ダート','距離']:
+    # ── コース統計（リーク防止版: expanding window で過去データのみ使用）────
+    # 従来はdf全体で mean/std を計算してからマージしていたため、
+    # 未来レースの走破タイムが「コース基準値」に混入するリークがあった。
+    # shift(1).expanding() = 「現レース時点より前の実績」のみで基準値を計算 → リーク消滅
+    for _c in ['競馬場', '芝/ダート', '距離']:
         df[_c] = df[_c].astype(str).str.strip()
-    cs = df.groupby(['競馬場','芝/ダート','距離'])['走破タイム秒'].agg(['mean','std']).reset_index()
-    cs.columns = ['競馬場','芝/ダート','距離','コース平均','コース標準偏差']
-    # 既に同名列があれば先に除去（二重マージ防止）
-    for _c in ['コース平均','コース標準偏差']:
-        if _c in df.columns: df = df.drop(columns=[_c])
-    df = pd.merge(df, cs, on=['競馬場','芝/ダート','距離'], how='left')
-    # ★追加：マージが終わったら、AIが計算できるように「距離」を数値型に戻す
+    df = df.sort_values('日付').reset_index(drop=True)
+
+    df['コース平均'] = (
+        df.groupby(['競馬場', '芝/ダート', '距離'])['走破タイム秒']
+        .transform(lambda x: x.shift(1).expanding(min_periods=3).mean())
+    )
+    df['コース標準偏差'] = (
+        df.groupby(['競馬場', '芝/ダート', '距離'])['走破タイム秒']
+        .transform(lambda x: x.shift(1).expanding(min_periods=3).std())
+    )
+
+    # 過去実績3件未満（新設コース・距離）の場合は同コース全体平均でフォールバック
+    _fb_mean = df.groupby(['競馬場', '芝/ダート', '距離'])['走破タイム秒'].transform('mean')
+    _fb_std  = df.groupby(['競馬場', '芝/ダート', '距離'])['走破タイム秒'].transform('std')
+    df['コース平均']       = df['コース平均'].fillna(_fb_mean)
+    df['コース標準偏差'] = df['コース標準偏差'].fillna(_fb_std).fillna(1.0)
+
+    # 距離を数値型に戻す（後続処理用）
     df['距離'] = pd.to_numeric(df['距離'], errors='coerce')
-    # マージ後に列が存在しない場合の安全フォールバック
-    if 'コース標準偏差' not in df.columns:
-        df['コース平均'] = df['走破タイム秒'].mean()
-        df['コース標準偏差'] = df['走破タイム秒'].std()
-    df['スピード指数'] = np.where(df['コース標準偏差'].fillna(0)>0,
-        50-((df['走破タイム秒']-df['コース平均'])/df['コース標準偏差'])*10, 50)
+
+    df['スピード指数'] = np.where(
+        df['コース標準偏差'] > 0,
+        50 - ((df['走破タイム秒'] - df['コース平均']) / df['コース標準偏差']) * 10,
+        50
+    )
     df['調教師_騎手'] = df['調教師'].astype(str)+'_'+df['騎手'].astype(str)
 
     # ── 馬場指数（学習データに馬場列があれば使用）────────────────────

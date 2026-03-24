@@ -136,14 +136,15 @@ def prepare_model_and_data(force_retrain=False):
 
     # ── 追加特徴量（CSVに存在するが未使用だったもの）──────────────
     EXTRA_NUM = [
-        'キャリア数',       # 累計出走回数（新馬・1勝馬の識別）
-        # '上り順位率',       # レース内末脚順位（0〜1、低いほど末脚◎）  # ← 除外: 現レースリーク
-        '前走_上り順位率',  # 前走末脚順位
+        'キャリア数',        # 累計出走回数（新馬・1勝馬の識別）
+        # '上り順位率' は除外: 学習時に現レースの上り3Fから計算されるリーク特徴量
+        #   → 前走_上り順位率（shift済み）のみ使用
+        '前走_上り順位率',   # 前走末脚順位（安全: 前走データのshift）
         '前走_前半ペース値', # 前走前半ペース（展開適性）
         '前走_後半ペース値', # 前走後半ペース（展開適性）
         '馬場指数',          # 馬場状態の数値（良=0〜不良=3）
         'レースクラスコード', # レースグレード（新馬=0〜G1=9）
-        '市場勝率',          # 単勝オッズの逆数（大衆の評価する勝率）
+        '市場勝率',          # 単勝オッズの逆数（市場評価・歪み検出用）
     ]
     for f in EXTRA_NUM:
         if f not in num_features:
@@ -231,9 +232,20 @@ def prepare_model_and_data(force_retrain=False):
     # ── モデルB: 1着予測Ranker（アンサンブル用）──────────────────
     train_df['win_label'] = (train_df['着順'] == 1).astype(int) if '着順' in train_df.columns else train_df['馬券内']
     test_df['win_label']  = (test_df['着順']  == 1).astype(int) if '着順' in test_df.columns  else test_df['馬券内']
-    model_win = lgb.LGBMRanker(n_estimators=400, learning_rate=0.02, num_leaves=48, max_bin=255,
-                                cat_smooth=10, random_state=123, importance_type='gain',
-                                colsample_bytree=0.7, subsample=0.8)
+    # ── モデルBパラメータ: Optunaチューニング済み（ウォークフォワードCV版）──
+    # 前回の229%はリーク込みのため参考程度。再チューニング後に置き換え推奨。
+    model_win = lgb.LGBMRanker(
+        n_estimators=477,
+        learning_rate=0.020536,
+        num_leaves=19,
+        max_bin=197,
+        cat_smooth=36.63,
+        colsample_bytree=0.6777,
+        subsample=0.6289,
+        min_child_samples=20,
+        random_state=123,
+        importance_type='gain',
+    )
     model_win.fit(train_df[features], train_df['win_label'], group=train_groups,
                   categorical_feature=[f for f in cat_features if f in features],
                   eval_set=[(test_df[features], test_df['win_label'])], eval_group=[test_groups])
@@ -268,7 +280,7 @@ def prepare_model_and_data(force_retrain=False):
     win_return = (pd.to_numeric(win_hits['単勝'],errors='coerce')*100).sum()
     recent_return_rate = (win_return/invest_amount*100) if invest_amount>0 else 0
 
-    # ── AUC計算（1着予測 & 複勝予測）──────────────────────────────────
+    # ── AUC計算（コース統計リーク修正後: expanding window使用で信頼性向上）────
     auc_win = auc_place = 0.0
     try:
         from sklearn.metrics import roc_auc_score
