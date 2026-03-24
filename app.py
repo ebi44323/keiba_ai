@@ -39,6 +39,12 @@ from src.reports import generate_pdf_report, generate_txt_report
 from src.discord_utils import _push_discord_queue, send_discord_prediction, send_discord_review, _test_discord_webhook, _DISCORD_WEBHOOK_URL, _DISCORD_REVIEW_WEBHOOK_URL
 from src.inference import run_real_prediction
 
+@st.cache_data(ttl=3600*12, show_spinner=False)
+def get_morning_prediction(race_id, race_date_str, _bundle):
+    # 朝版（直前スクレイピングなし）
+    return run_real_prediction(race_id, race_date_str, _bundle, skip_live_scrape=True)
+
+
 
 _hub_available = bool(_HF_TOKEN and _HF_REPO_ID)
 _hub_label = "HF Hub" if _hub_available else "ローカル学習"
@@ -271,11 +277,23 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                 return ['background-color:rgba(255,200,0,0.10)'] * len(row)
             return [''] * len(row)
 
-        st.dataframe(
-            show_df.style.apply(highlight_row, axis=1)
-                   .format({'期待値':'{:.2f}','オッズ':'{:.1f}','枠番':'{:.0f}','馬番':'{:.0f}'}),
-            use_container_width=True, hide_index=True
-        )
+
+        mobile_mode = st.toggle("📱 スマホ（カード）表示", value=True, help="不要な列を隠し縦長に最適化します")
+        if mobile_mode:
+            for idx, r in show_df.iterrows():
+                with st.container(border=True):
+                    cols = st.columns([1, 4, 3])
+                    cols[0].markdown(f"**{r['馬番']}**")
+                    cols[1].markdown(f"**{r['印']} {r['馬名']}**")
+                    cols[2].markdown(f"オッズ: **{r['オッズ']}**")
+                    st.caption(f"推奨: **{r['💰推奨']}** | 勝率: {r['勝率']} / 複勝率: {r['複勝率']} / EV: {r.get('期待値', 0)}")
+        else:
+            st.dataframe(
+                show_df.style.apply(highlight_row, axis=1)
+                       .format({'期待値':'{:.2f}','オッズ':'{:.1f}','枠番':'{:.0f}','馬番':'{:.0f}'}),
+                use_container_width=True, hide_index=True
+            )
+
 
         # ── リアルタイム勝率バー（下段: グラフ）────────────────
         st.markdown("---")
@@ -572,56 +590,61 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                             st.session_state[_last_refresh_key] = time.time()
                             st.warning(f"⚡ 発走{mins_left}分前！最新オッズで予想を更新します...")
 
-                if manual_run or force_refresh or auto_triggered or discord_triggered:
+
+                live_update = st.button("🔄 直前オッズ・馬体重で最新情報を取得し再予測", use_container_width=True)
+                if manual_run or force_refresh or auto_triggered or discord_triggered or live_update:
                     with st.spinner('AIが推論中（最新オッズ取得含む）...'):
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d', bundle))
-                        if res_df is not None:
-                            display_result(res_df, topics, reco, pace_text, conf_text)
-                            if force_refresh or auto_triggered:
-                                st.success("✅ オッズを再取得して予想を更新しました")
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False)
+                else:
+                    res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle)
 
-                            # ── Discord自動投稿（discord_triggered: 15分前）──────
-                            if discord_triggered and _discord_enabled and _DISCORD_WEBHOOK_URL:
-                                _race_info = {
-                                    'place':   next_race['place'],
-                                    'num':     next_race['num'],
-                                    'title':   next_race['title'],
-                                    'mins_left': mins_left,
-                                    'race_id': next_race['id'],   # 重複防止キー
-                                }
-                                _sent_key = f'discord_sent_{next_race["id"]}'
-                                if not st.session_state.get(_sent_key, False):
-                                    _ok = send_discord_prediction(
-                                        res_df, topics, reco, pace_text, conf_text,
-                                        _race_info, _DISCORD_WEBHOOK_URL
-                                    )
-                                    if _ok:
-                                        st.session_state[_sent_key] = True
-                                        st.success("📤 Discordに予想を投稿しました！")
-                                    else:
-                                        st.warning("⚠️ Discord投稿に失敗しました（ログを確認してください）")
+                if res_df is not None:
+                    display_result(res_df, topics, reco, pace_text, conf_text)
+                    if force_refresh or auto_triggered:
+                        st.success("✅ オッズを再取得して予想を更新しました")
 
-                            # ── 手動Discord投稿ボタン ─────────────────────────
-                            if _DISCORD_WEBHOOK_URL:
-                                _discord_btn_key = f'discord_btn_{next_race["id"]}'
-                                if st.button("📤 Discordに投稿", key=_discord_btn_key,
-                                             help="この予想をDiscordに手動で投稿します"):
-                                    _race_info = {
-                                        'place':   next_race['place'],
-                                        'num':     next_race['num'],
-                                        'title':   next_race['title'],
-                                        'mins_left': mins_left,
-                                        'race_id': f"manual_{next_race['id']}",  # 手動は別キー
-                                    }
-                                    _ok = send_discord_prediction(
-                                        res_df, topics, reco, pace_text, conf_text,
-                                        _race_info, _DISCORD_WEBHOOK_URL
-                                    )
-                                    if _ok:
-                                        st.success("📤 Discordに投稿しました！")
-                                    else:
-                                        st.error("❌ Discord投稿失敗（Webhook URLを確認してください）")
-                        else: display_error_log(err_log)
+                    # ── Discord自動投稿（discord_triggered: 15分前）──────
+                    if discord_triggered and _discord_enabled and _DISCORD_WEBHOOK_URL:
+                        _race_info = {
+                            'place':   next_race['place'],
+                            'num':     next_race['num'],
+                            'title':   next_race['title'],
+                            'mins_left': mins_left,
+                            'race_id': next_race['id'],   # 重複防止キー
+                        }
+                        _sent_key = f'discord_sent_{next_race["id"]}'
+                        if not st.session_state.get(_sent_key, False):
+                            _ok = send_discord_prediction(
+                                res_df, topics, reco, pace_text, conf_text,
+                                _race_info, _DISCORD_WEBHOOK_URL
+                            )
+                            if _ok:
+                                st.session_state[_sent_key] = True
+                                st.success("📤 Discordに予想を投稿しました！")
+                            else:
+                                st.warning("⚠️ Discord投稿に失敗しました（ログを確認してください）")
+
+                    # ── 手動Discord投稿ボタン ─────────────────────────
+                    if _DISCORD_WEBHOOK_URL:
+                        _discord_btn_key = f'discord_btn_{next_race["id"]}'
+                        if st.button("📤 Discordに投稿", key=_discord_btn_key,
+                                     help="この予想をDiscordに手動で投稿します"):
+                            _race_info = {
+                                'place':   next_race['place'],
+                                'num':     next_race['num'],
+                                'title':   next_race['title'],
+                                'mins_left': mins_left,
+                                'race_id': f"manual_{next_race['id']}",  # 手動は別キー
+                            }
+                            _ok = send_discord_prediction(
+                                res_df, topics, reco, pace_text, conf_text,
+                                _race_info, _DISCORD_WEBHOOK_URL
+                            )
+                            if _ok:
+                                st.success("📤 Discordに投稿しました！")
+                            else:
+                                st.error("❌ Discord投稿失敗（Webhook URLを確認してください）")
+                else: display_error_log(err_log)
 
                 # 自動更新チェック用ページ再読み込み
                 if auto_refresh and mins_left > 6:
@@ -636,9 +659,15 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
             options = [f"{r['place']} {r['num']}R - {r['title']}" for r in todays_races]
             selected = st.selectbox("レースを選んでください", options)
             target_race = todays_races[options.index(selected)]
-            if st.button("🚀 予想開始", type="primary"):
+
+            live_update = st.button("🔄 直前オッズ・馬体重で最新情報を取得し再推論", use_container_width=True)
+            if st.button("🚀 朝版 予想開始", type="primary") or live_update:
                 with st.spinner('推論中...'):
-                    res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d', bundle))
+                    if live_update:
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False)
+                    else:
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle)
+
                     if res_df is not None:
                         display_result(res_df, topics, reco, pace_text, conf_text)
                         # 手動Discord投稿ボタン
@@ -746,7 +775,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 }
 
                 for i, r in enumerate(races):
-                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d', bundle), skip_live_scrape=True)
+                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'), bundle, skip_live_scrape=True)
                     payouts = get_all_payouts(r['id'])
 
                     # =========================================================
@@ -1189,7 +1218,7 @@ elif action == "🧪 性能試験 (バックテスト)":
 
                 for i, r in enumerate(test_races):
                     with st.expander(f"🏁 {r['place']} {r['num']}R"):
-                        res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d', bundle), skip_live_scrape=True)
+                        res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d'), bundle, skip_live_scrape=True)
                         t_dict, f_dict = get_payouts(r['id'])
 
                         if res_df is not None:

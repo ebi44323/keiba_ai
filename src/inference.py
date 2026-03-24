@@ -6,9 +6,10 @@ from bs4 import BeautifulSoup
 import re
 import datetime
 import logging
-from src.utils import get_headers, resolve_name
+import traceback
+from src.utils import get_headers, resolve_name, VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class
 from src.scraper import fetch_horse_last_race
-from src.features_engine import classify_style
+from src.features_engine import classify_style, TE_COLS
 
 logger = logging.getLogger('keiba_ebye')
 
@@ -261,7 +262,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
             # 全角スペース・記号除去
             n = re.sub(r'[\s\u3000\u2606\u25b2\u25b3\u25c7\u2605\[\]]', '', str(s))
             # 既知の短縮表記を正式名に変換
-            return _JOCKEY_ABBR.get(n, n)
+            aliases = {"鮫島駿":"鮫島克駿","鮫島良":"鮫島良太","吉田隼":"吉田隼人","武幸":"武幸四郎","菅原明":"菅原明良"}
+            return aliases.get(n, n)
 
         # 各馬の前走情報をnetkeibaから直接スクレイプして上書き
         # skip_live_scrape=True(バックテスト): スキップして高速化
