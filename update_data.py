@@ -26,7 +26,11 @@ import time
 import zipfile
 import os
 import sys
-import random
+import sqlite3
+
+# src パッケージを import できるようにプロジェクトルートを path に追加
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from src.config import PLACE_DICT, VENUE_MAWARI, VENUE_CHIKEI, get_headers, safe_sleep
 
 # ================================================================
 # 設定
@@ -35,27 +39,7 @@ CSV_FILE  = 'learning_data_perfect_tier.csv'
 ZIP_FILE  = 'learning_data_perfect_tier.zip'
 PED_CSV   = 'pedigree_master_all.csv'
 
-PLACE_DICT = {
-    '01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京',
-    '06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'
-}
-VENUE_MAWARI = {
-    '札幌':'右回り','函館':'右回り','福島':'右回り','新潟':'左回り','東京':'左回り',
-    '中山':'右回り','中京':'左回り','京都':'右回り','阪神':'右回り','小倉':'右回り'
-}
-VENUE_CHIKEI = {
-    '札幌':'平坦','函館':'平坦','福島':'急坂','新潟':'平坦','東京':'急坂',
-    '中山':'急坂','中京':'急坂','京都':'緩坂','阪神':'急坂','小倉':'平坦'
-}
-
-_UA_LIST = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.2 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-]
-def get_headers(): return {"User-Agent": random.choice(_UA_LIST)}
-def safe_sleep(base=1.5, jitter=1.0): time.sleep(base + random.uniform(0, jitter))
+# PLACE_DICT, VENUE_MAWARI, VENUE_CHIKEI, get_headers, safe_sleep は src/config.py から import 済み
 
 
 # ================================================================
@@ -100,6 +84,47 @@ def get_pedigree(horse_id, retry=3):
             print(f"    ⚠️ 血統取得エラー {horse_id} (attempt {attempt+1}/{retry}): {e}")
             time.sleep(5)
     return empty
+
+
+# ================================================================
+# 血統 sqlite キャッシュ（一度取得した血統はDBに保存し再取得をスキップ）
+# ================================================================
+_PED_CACHE_DB = 'ped_cache.db'
+
+
+def _init_ped_cache():
+    conn = sqlite3.connect(_PED_CACHE_DB)
+    conn.execute('''CREATE TABLE IF NOT EXISTS pedigree (
+        horse_id TEXT PRIMARY KEY,
+        sire TEXT, sire_sys TEXT, dam TEXT, dam_sys TEXT,
+        bms TEXT, bms_sys TEXT, fetched_at TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+
+def _get_pedigree_cached(horse_id, retry=3):
+    """sqlite キャッシュ付き血統取得。キャッシュヒット時は Web 取得をスキップ。"""
+    conn = sqlite3.connect(_PED_CACHE_DB)
+    row = conn.execute(
+        'SELECT sire, sire_sys, dam, dam_sys, bms, bms_sys FROM pedigree WHERE horse_id=?',
+        (horse_id,)
+    ).fetchone()
+    conn.close()
+    if row:
+        return {'馬ID': horse_id, '父': row[0], '父系': row[1], '母': row[2],
+                '母系': row[3], '母父': row[4], '母父系': row[5]}
+    result = get_pedigree(horse_id, retry)
+    conn = sqlite3.connect(_PED_CACHE_DB)
+    conn.execute(
+        'INSERT OR REPLACE INTO pedigree VALUES (?,?,?,?,?,?,?,?)',
+        (horse_id, result['父'], result['父系'], result['母'],
+         result['母系'], result['母父'], result['母父系'],
+         datetime.datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return result
 
 
 # ================================================================
@@ -406,6 +431,7 @@ def main():
     print("="*60)
     print("keiba-ebye 週次データ更新スクリプト v2.0")
     print("="*60)
+    _init_ped_cache()
 
     weeks_back = 1
     fetch_all  = False
@@ -501,7 +527,7 @@ def main():
     new_peds = []
     for i, hid in enumerate(unique_hids):
         print(f"  血統取得 {i+1}/{len(unique_hids)}: {hid}")
-        ped = get_pedigree(hid)
+        ped = _get_pedigree_cached(hid)
         ped_dict[hid] = ped
         new_peds.append(ped)
         safe_sleep(1.5, 0.5)

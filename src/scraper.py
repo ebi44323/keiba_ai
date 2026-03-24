@@ -7,7 +7,7 @@ import logging
 import pandas as pd
 import numpy as np
 import streamlit as st
-from src.utils import get_headers
+from src.config import PLACE_DICT, get_headers
 
 logger = logging.getLogger('keiba_ebye')
 
@@ -35,8 +35,7 @@ def get_todays_races(date_str=None):
                 if r_id in added_ids: continue
                 added_ids.add(r_id)
                 
-                place_dict = {'01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'}
-                place = place_dict.get(r_id[4:6], '不明')
+                place = PLACE_DICT.get(r_id[4:6], '不明')
                 r_num = int(r_id[10:12])
                 
                 parent = a_tag.find_parent('li') or a_tag.find_parent('dl') or a_tag.find_parent('div')
@@ -66,7 +65,7 @@ def get_todays_races(date_str=None):
             ids = set(re.findall(r'/race/(\d{12})', res.text))
             for r_id in ids:
                 if not (1 <= int(r_id[4:6]) <= 10): continue
-                place = {'01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'}.get(r_id[4:6], '不明')
+                place = PLACE_DICT.get(r_id[4:6], '不明')
                 r_num = int(r_id[10:12])
                 dummy_time = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} 12:00", "%Y%m%d %H:%M"))
                 races.append({'id': r_id, 'place': place, 'num': r_num, 'title': f"{place} {r_num}R", 'time': dummy_time, 'sort_key': f"{r_id[4:6]}{r_num:02d}"})

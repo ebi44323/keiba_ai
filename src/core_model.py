@@ -134,21 +134,6 @@ def prepare_model_and_data(force_retrain=False):
     cat_features = list(CAT_FEATURES)
     te_cols = list(TE_COLS)
 
-    # ── 追加特徴量（CSVに存在するが未使用だったもの）──────────────
-    EXTRA_NUM = [
-        'キャリア数',        # 累計出走回数（新馬・1勝馬の識別）
-        # '上り順位率' は除外: 学習時に現レースの上り3Fから計算されるリーク特徴量
-        #   → 前走_上り順位率（shift済み）のみ使用
-        '前走_上り順位率',   # 前走末脚順位（安全: 前走データのshift）
-        '前走_前半ペース値', # 前走前半ペース（展開適性）
-        '前走_後半ペース値', # 前走後半ペース（展開適性）
-        '馬場指数',          # 馬場状態の数値（良=0〜不良=3）
-        'レースクラスコード', # レースグレード（新馬=0〜G1=9）
-        '市場勝率',          # 単勝オッズの逆数（市場評価・歪み検出用）
-    ]
-    for f in EXTRA_NUM:
-        if f not in num_features:
-            num_features.append(f)
 
     try:
         df = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)

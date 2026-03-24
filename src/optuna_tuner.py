@@ -29,16 +29,16 @@ def _compute_te_for_fold(train_df, test_df, te_cols, target_col='馬券内'):
     return train_df, test_df
 
 
-def _calc_return_rate(test_df, pred_col='optuna_pred'):
-    """単勝1番手評価の回収率を計算"""
-    top1 = (
-        test_df.sort_values(['レースID', pred_col], ascending=[True, False])
-        .groupby('レースID').head(1)
-    )
-    hits = top1[pd.to_numeric(top1['着順'], errors='coerce') == 1]
-    invest = len(top1) * 100
-    ret = (pd.to_numeric(hits['単勝'], errors='coerce') * 100).sum()
-    return (ret / invest * 100) if invest > 0 else 0
+def _calc_auc(test_df, pred_col='optuna_pred'):
+    """AUC（1着予測精度）を計算。0.5=ランダム、0.7以上で有効、0.8以上で優秀。"""
+    from sklearn.metrics import roc_auc_score
+    try:
+        y_true = (pd.to_numeric(test_df['着順'], errors='coerce') == 1).astype(int)
+        if y_true.sum() == 0:
+            return 0.5
+        return float(roc_auc_score(y_true, test_df[pred_col]))
+    except Exception:
+        return 0.5
 
 
 def run_optuna_tuning(df, features, cat_features, te_cols,
@@ -153,7 +153,7 @@ def run_optuna_tuning(df, features, cat_features, te_cols,
                 preds = m.predict(te[local_features])
                 te = te.copy()
                 te['optuna_pred'] = preds
-                fold_scores.append(_calc_return_rate(te))
+                fold_scores.append(_calc_auc(te))
             except Exception as e:
                 logger.debug(f'Optuna trial fold {fold_idx} エラー: {e}')
                 fold_scores.append(0.0)
@@ -176,7 +176,7 @@ def run_optuna_tuning(df, features, cat_features, te_cols,
 
     summary = (
         f"チューニング完了 ({len(folds)}fold ウォークフォワードCV)\n"
-        f"  最適CV回収率: {best_score:.1f}%  (試行数: {n_trials})\n"
+        f"  最適CV AUC: {best_score:.4f}  (試行数: {n_trials})\n"
         f"  n_estimators:      {best_params.get('n_estimators')}\n"
         f"  learning_rate:     {best_params.get('learning_rate'):.6f}\n"
         f"  num_leaves:        {best_params.get('num_leaves')}\n"
@@ -185,7 +185,7 @@ def run_optuna_tuning(df, features, cat_features, te_cols,
         f"  colsample_bytree:  {best_params.get('colsample_bytree'):.4f}\n"
         f"  subsample:         {best_params.get('subsample'):.4f}\n"
         f"  min_child_samples: {best_params.get('min_child_samples')}\n"
-        f"  ※ リーク修正済み・foldCV平均のため前回(229%)より低い値が正常です"
+        f"  ※ AUC 0.5=ランダム / 0.7以上で有効 / 0.8以上で優秀"
     )
 
     logger.info(summary)

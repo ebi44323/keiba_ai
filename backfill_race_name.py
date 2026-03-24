@@ -23,30 +23,17 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import time
-import random
 import zipfile
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from src.config import PLACE_DICT, get_headers, safe_sleep
+
 CSV_FILE = 'learning_data_perfect_tier.csv'
 ZIP_FILE = 'learning_data_perfect_tier.zip'
 
-_UA_LIST = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.2 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-]
-def get_headers():
-    return {"User-Agent": random.choice(_UA_LIST)}
-
-def safe_sleep(base=1.8, jitter=0.8):
-    time.sleep(base + random.uniform(0, jitter))
-
-PLACE_DICT = {
-    '01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京',
-    '06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'
-}
+# PLACE_DICT, get_headers, safe_sleep は src/config.py から import 済み
 
 def fetch_race_name(race_id: str, retry=3) -> str:
     """
