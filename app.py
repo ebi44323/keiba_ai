@@ -1407,11 +1407,23 @@ elif action == "📊 AIチューニング & バックテスト":
                     from src.optuna_tuner import run_optuna_tuning
                     from src.features_engine import TE_COLS, create_features
                     df_op, _ = create_features(df_op, te_dicts)
-                    best_p, msg = run_optuna_tuning(df_op, features, cat_features, list(TE_COLS), n_trials=n_trials)
+                    # 戻り値は (best_params, summary_str, cv_results_df) の3つ
+                    best_p, msg, cv_df = run_optuna_tuning(
+                        df_op, features, cat_features, list(TE_COLS), n_trials=n_trials
+                    )
 
                     st.success(msg)
-                    st.json(best_p)
-                    st.warning("⚠️ 新しいパラメータをシステムに適用するには、`src/core_model.py` の `lgb.LGBMRanker` の引数を書き換えてください。")
+                    if best_p:
+                        st.subheader("最適パラメータ")
+                        st.json(best_p)
+                    if cv_df is not None and not cv_df.empty:
+                        st.subheader("試行結果 (上位10件)")
+                        st.dataframe(cv_df.head(10), use_container_width=True)
+                    st.info(
+                        "✅ **適用方法**: 上記パラメータを `src/core_model.py` の "
+                        "`model_win = lgb.LGBMRanker(...)` に設定して再学習してください。\n\n"
+                        "※ CV回収率が100〜130%程度なら信頼できる最適化結果です。"
+                    )
                 except Exception as e:
                     import traceback
                     st.error(f"Optunaチューニングエラー: {e}")
