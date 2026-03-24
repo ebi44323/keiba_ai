@@ -465,6 +465,10 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
             if booster is not None:
                 shap_vals = booster.predict(X_arr, pred_contrib=True)
                 contribs = shap_vals[0, :-1]  # 最後の列はbias
+                # 特徴量名とSHAP値を紐付け、上位3つを抽出
+                feat_contrib = list(zip(features, contribs))
+                feat_contrib_sorted = sorted(feat_contrib, key=lambda x: x[1], reverse=True)
+                top3 = feat_contrib_sorted[:3]
                 # 特徴量名を日本語ラベルに変換
                 feat_label = {
                     '近5走_中央値スピード指数': '近5走の地力(中央値)',
@@ -492,20 +496,11 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
                     '距離変更フラグ':            '距離変更への対応',
                     '馬場替わりフラグ':          '馬場替わりへの対応',
                 }
-                # ⚠️ SHAPから除外する特徴量
-                # 市場勝率: 循環論法（「オッズが低い→推す」は同義語）
-                # 上り順位率: 学習時に現レース値が混入するリーク特徴量
-                _shap_exclude = {'市場勝率', '上り順位率', 'キャリア数'}
-
-                # 除外後の上位3特徴量を抽出
-                feat_contrib = [
-                    (f, v) for f, v in zip(features, contribs)
-                    if f not in _shap_exclude
-                ]
-                feat_contrib_sorted = sorted(feat_contrib, key=lambda x: x[1], reverse=True)
-                top3 = feat_contrib_sorted[:3]
+                # 除外特徴量: 市場勝率(循環論法)・上り順位率(現レースリーク)
+                _exclude = {'市場勝率', '上り順位率', 'キャリア数'}
+                feat_contrib_filtered = [(f,v) for f,v in zip(features, contribs) if f not in _exclude]
+                top3 = sorted(feat_contrib_filtered, key=lambda x: x[1], reverse=True)[:3]
                 reasons = [feat_label.get(f, f) for f, _ in top3]
-                # 改行して見やすく表示
                 shap_reason = (
                     f"AIの推し理由: {best_horse_name}\n"
                     f"　「{reasons[0]}」「{reasons[1]}」「{reasons[2]}」が高評価"
