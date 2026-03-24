@@ -424,6 +424,7 @@ def prepare_model_and_data(force_retrain=False):
         logger.warning(f'pedigree_master_all.csv 読み込み失敗: {_e}')
         ped_dict = {}
 
+    best_weight = 0.35  # 後方互換性および参照用
     bundle = (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
