@@ -97,7 +97,6 @@ if _PRO_PASSWORD:
                 st.rerun()
 else:
     _is_pro = True  # PRO_PASSWORD未設定 = 全機能開放（開発時・移行期）
-
 # Proのみのメニュー項目
 _PRO_ACTIONS = [
     "📅 今週末の全レース予想",
@@ -105,7 +104,7 @@ _PRO_ACTIONS = [
     "📝 1日の振り返り (答え合わせ)",
     "🧪 性能試験 (バックテスト)",
     "📈 長期成績分析",
-    "📊 モデル検証 (ウォークフォワード)",
+    "📊 AIチューニング & バックテスト",
     "🏇 騎手・調教師フォーム分析",
     "📝 馬券メモ管理",
     "🐴 愛馬の成長記録",
@@ -183,7 +182,7 @@ if _is_pro and _hub_available:
     if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
         st.cache_resource.clear()
         with st.spinner("再学習中... (数分かかります)"):
-            (model, model_win, features, cat_features, num_features, cat_categories_dict,
+            (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
              latest_horse_data, horse_course_dict, ped_dict,
              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
              auc_win, auc_place) = prepare_model_and_data(force_retrain=True)
