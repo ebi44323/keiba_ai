@@ -283,9 +283,11 @@ def scrape_one_race(rid, date_str):
 def compute_features(df):
     df = df.copy()
 
-    # 数値変換
-    for c in ['着順','単勝','人気','斤量','距離','上り','枠番','馬番','当日馬体重','馬体重増減']:
-        df[c] = pd.to_numeric(df[c], errors='coerce')
+    # 数値変換（全列を明示的に変換 — df_existingがstr読み込みの場合も安全に処理）
+    for c in ['着順','単勝','人気','斤量','距離','上り','枠番','馬番',
+              '当日馬体重','馬体重増減','前半3F','後半3F','前半ペース値','後半ペース値']:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
     df['日付'] = pd.to_datetime(df['日付'], format='mixed', errors='coerce')
 
     def t2s(t):
@@ -301,12 +303,37 @@ def compute_features(df):
     df['rank_label']    = (df['着順']<=3).astype(int)
 
     # コース統計・スピード指数
-    cs = (df.groupby(['競馬場','芝/ダート','距離'])['走破タイム秒']
-          .agg(['mean','std']).reset_index()
-          .rename(columns={'mean':'コース平均','std':'コース標準偏差'}))
-    df = pd.merge(df, cs, on=['競馬場','芝/ダート','距離'], how='left')
-    df['スピード指数'] = np.where(df['コース標準偏差']>0,
-        50 - ((df['走破タイム秒']-df['コース平均'])/df['コース標準偏差'])*10, 50)
+    # ★修正: マージキーの型を統一してからマージ（型不一致で列が欠落するバグを防ぐ）
+    for _c in ['競馬場', '芝/ダート', '距離']:
+        df[_c] = df[_c].astype(str).str.strip()
+    df['距離'] = pd.to_numeric(df['距離'], errors='coerce')  # 数値に戻す（後続処理用）
+    # マージキー用に文字列版を作成
+    df['_距離str'] = df['距離'].astype(str)
+
+    cs = (df.groupby(['競馬場', '芝/ダート', '_距離str'])['走破タイム秒']
+          .agg(['mean', 'std']).reset_index()
+          .rename(columns={'mean': 'コース平均', 'std': 'コース標準偏差'}))
+    # 既存列があれば先に除去（二重マージ防止）
+    for _c in ['コース平均', 'コース標準偏差']:
+        if _c in df.columns:
+            df = df.drop(columns=[_c])
+    df = pd.merge(df, cs, on=['競馬場', '芝/ダート', '_距離str'], how='left')
+    df = df.drop(columns=['_距離str'])
+
+    # ★修正: マージ後に列が存在しない場合の安全フォールバック
+    if 'コース標準偏差' not in df.columns:
+        df['コース平均'] = df['走破タイム秒'].mean()
+        df['コース標準偏差'] = df['走破タイム秒'].std()
+    # std が NaN（グループ1件のみ）の場合は全体平均stdで補完
+    overall_std = df['走破タイム秒'].std()
+    df['コース標準偏差'] = df['コース標準偏差'].fillna(overall_std)
+    df['コース平均'] = df['コース平均'].fillna(df['走破タイム秒'].mean())
+
+    df['スピード指数'] = np.where(
+        df['コース標準偏差'] > 0,
+        50 - ((df['走破タイム秒'] - df['コース平均']) / df['コース標準偏差']) * 10,
+        50
+    )
 
     # タイム関連
     first_t = df[df['着順']==1].groupby('レースID')['走破タイム秒'].min().to_dict()
@@ -488,6 +515,19 @@ def main():
         df_combined = df_combined.drop_duplicates(subset=['レースID','馬ID'], keep='last')
     else:
         df_combined = df_new_raw.astype(str)
+
+    # ★修正: compute_features に渡す前に数値列を正しく変換する
+    # （df_existing が dtype=str で読まれているため全列が文字列になっている）
+    for _num_col in ['着順','単勝','人気','斤量','距離','上り','枠番','馬番',
+                     '当日馬体重','馬体重増減','前半3F','後半3F','前半ペース値','後半ペース値']:
+        if _num_col in df_combined.columns:
+            df_combined[_num_col] = pd.to_numeric(df_combined[_num_col], errors='coerce')
+    # 指数表記バグ修正（レースID/馬IDが "1.23e+11" 形式になるケース）
+    df_combined['レースID'] = df_combined['レースID'].apply(
+        lambda x: str(int(float(x))).zfill(12)
+        if re.match(r'[\d.]+[Ee][+\-]?\d+', str(x)) else str(x)
+    )
+    df_combined['馬ID'] = df_combined['馬ID'].astype(str).str.replace(r'\.0$','',regex=True).str.zfill(10)
 
     print("\n⚙️  特徴量計算中...")
     df_final = compute_features(df_combined)
