@@ -146,7 +146,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
             horse_a = tr.find('a', href=re.compile(r'/horse/'))
             if not horse_a: continue
             horse_name = horse_a.text.strip()
-            horse_id = re.search(r'\d+', horse_a['href']).group(0)
+            horse_id = re.search(r'\d+', horse_a['href']).group(0).zfill(10)
             jockey_name  = resolve_name(tds[jockey_idx].text.strip() if jockey_idx!=-1 and len(tds)>jockey_idx else "不明", known_jockeys)
             trainer_name = resolve_name(tds[trainer_idx].text.strip() if trainer_idx!=-1 and len(tds)>trainer_idx else "不明", known_trainers)
             km = re.search(r'\d+(\.\d+)?', tds[kinryo_idx].text if kinryo_idx!=-1 and len(tds)>kinryo_idx else "55.0")
