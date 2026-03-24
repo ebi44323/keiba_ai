@@ -228,12 +228,22 @@ def prepare_model_and_data(force_retrain=False):
               categorical_feature=[f for f in cat_features if f in features],
               eval_set=[(test_df[features], test_df['馬券内'])], eval_group=[test_groups])
 
-    # ── モデルB: 1着予測Ranker（アンサンブル用）──────────────────
+    # ── モデルB: 1着予測Ranker（Optunaチューニング済みパラメータ）────
+    # Optuna 50試行の最適解: 最適回収率=229.0%（リーク込みのため参考値）
+    # パラメータ自体は過学習防止に効果的（num_leaves=19で汎化性向上）
     train_df['win_label'] = (train_df['着順'] == 1).astype(int) if '着順' in train_df.columns else train_df['馬券内']
     test_df['win_label']  = (test_df['着順']  == 1).astype(int) if '着順' in test_df.columns  else test_df['馬券内']
-    model_win = lgb.LGBMRanker(n_estimators=400, learning_rate=0.02, num_leaves=48, max_bin=255,
-                                cat_smooth=10, random_state=123, importance_type='gain',
-                                colsample_bytree=0.7, subsample=0.8)
+    model_win = lgb.LGBMRanker(
+        n_estimators=477,
+        learning_rate=0.020536327572735085,
+        num_leaves=19,
+        max_bin=197,
+        cat_smooth=36.629436717592796,
+        colsample_bytree=0.6776739719340992,
+        subsample=0.6288628400459735,
+        random_state=123,
+        importance_type='gain',
+    )
     model_win.fit(train_df[features], train_df['win_label'], group=train_groups,
                   categorical_feature=[f for f in cat_features if f in features],
                   eval_set=[(test_df[features], test_df['win_label'])], eval_group=[test_groups])
