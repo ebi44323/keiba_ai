@@ -18,6 +18,14 @@ def run_timeseries_backtest(df, features, cat_features, te_cols, n_splits=3, tes
         df['馬券内'] = (df['着順'] <= 3).astype(int)
     if 'win_label' not in df.columns:
         df['win_label'] = (df['着順'] == 1).astype(int)
+
+    for col in cat_features:
+        if col not in df.columns: df[col] = '不明'
+        df[col] = df[col].astype(str).fillna('不明').astype('category')
+        
+    for f in features:
+        if f not in cat_features and f in df.columns:
+            df[f] = pd.to_numeric(df[f], errors='coerce')
         
     df = df.sort_values('日付').reset_index(drop=True)
     max_date = df['日付'].max()
