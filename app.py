@@ -51,7 +51,7 @@ _hub_label = "HF Hub" if _hub_available else "ローカル学習"
 
 with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)'):
     bundle = prepare_model_and_data()
-    (model, model_win, features, cat_features, num_features, cat_categories_dict,
+    (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
      known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
      auc_win, auc_place) = bundle
