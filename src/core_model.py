@@ -374,21 +374,28 @@ def prepare_model_and_data(force_retrain=False):
                   categorical_feature=[f for f in cat_features if f in features],
                   eval_set=[(test_df[features], test_df['win_label'])], eval_group=[test_groups])
 
+
+    # ── モデルC: 着順パーセント予測Regressor（アンサンブル用）────────────────
+    model_reg = lgb.LGBMRegressor(n_estimators=300, learning_rate=0.03, num_leaves=31, max_bin=255,
+                                  random_state=777,
+                                  colsample_bytree=0.7, subsample=0.8)
+    model_reg.fit(train_df[features], train_df['着順パーセント'].fillna(0.5),
+                  categorical_feature=[f for f in cat_features if f in features])
+
     # ── アンサンブルスコア ────────────────────────────────────────
     score_a = model.predict(test_df[features])
     score_b = model_win.predict(test_df[features])
+    score_c = 1.0 - model_reg.predict(test_df[features])  # 低い方が上位なので反転
+
     def _norm_scores(s):
         mn, mx = s.min(), s.max()
         return (s - mn) / (mx - mn + 1e-9)
     _sa_norm = _norm_scores(score_a)
     _sb_norm = _norm_scores(score_b)
+    _sc_norm = _norm_scores(score_c)
 
-    # ⚠️ 重み自動最適化は無効化（理由: コース統計がfull dataで計算されておりリーク込みの回収率になるため）
-    # 実績（3/21: 本命単勝86%, 3/22: 穴馬EV単勝180%）から1着モデル寄りが有効と判断し
-    # 複勝0.4 / 1着0.6 の固定値を使用する。Optuna導入時に正しく再最適化予定。
-    best_weight = 0.4  # 複勝モデルの重み（0.4=複勝寄り, 0.6=1着モデル寄り）
-    logger.info(f'アンサンブル重み: 複勝={best_weight:.1f} / 1着={1-best_weight:.1f} (固定値・リーク修正後に再最適化予定)')
-    test_df['予測スコア'] = _sa_norm * best_weight + _sb_norm * (1 - best_weight)
+    # 複勝0.35, 1着0.5, 着順回帰0.15
+    test_df['予測スコア'] = _sa_norm * 0.35 + _sb_norm * 0.50 + _sc_norm * 0.15
     test_df['exp_score'] = np.exp(test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max'))
     test_df['AI勝率'] = test_df['exp_score']/test_df.groupby('レースID')['exp_score'].transform('sum')
     top_preds = test_df.sort_values(['レースID','AI勝率'],ascending=[True,False]).groupby('レースID').head(1)
@@ -417,7 +424,7 @@ def prepare_model_and_data(force_retrain=False):
         logger.warning(f'pedigree_master_all.csv 読み込み失敗: {_e}')
         ped_dict = {}
 
-    bundle = (model, model_win, features, cat_features, num_features, cat_categories_dict,
+    bundle = (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
               auc_win, auc_place)

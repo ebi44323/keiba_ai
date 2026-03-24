@@ -28,7 +28,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
     skip_live_scrape=True: バックテスト時に使用。
       fetch_horse_last_race()を呼ばない（速度維持＆日付ズレ防止）
     """
-    (model, model_win, features, cat_features, num_features, cat_categories_dict,
+    (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
      known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
      auc_win, auc_place) = bundle
@@ -393,16 +393,20 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
         elif nige_count==0: pace_text=f"🐌 【スローペース濃厚】 確たる逃げ馬が不在。先行馬({senko_count}頭)の押し切り、前残りに注意。"
         else: pace_text=f"🐎 【ミドルペース】 逃げ馬{nige_count}頭、先行馬{senko_count}頭。平均的なペースで実力が反映されやすい展開。"
 
-        # アンサンブル: 最適化済み重みを使用
+        # アンサンブル: 3モデルの予測を結合
         _sa = model.predict(df_test[features]).astype(float)
         _sa = (_sa - _sa.min()) / (_sa.max() - _sa.min() + 1e-9)
         try:
             _sb = model_win.predict(df_test[features]).astype(float)
             _sb = (_sb - _sb.min()) / (_sb.max() - _sb.min() + 1e-9)
-            raw_scores = _sa * ensemble_weight + _sb * (1 - ensemble_weight)
+            
+            _sc = 1.0 - model_reg.predict(df_test[features]).astype(float)
+            _sc = (_sc - _sc.min()) / (_sc.max() - _sc.min() + 1e-9)
+            
+            raw_scores = _sa * 0.35 + _sb * 0.50 + _sc * 0.15
         except Exception as _e:
-            logger.warning(f'model_win予測失敗、model_aのみ使用: {_e}')
-            raw_scores = _sa  # model_win失敗時はmodel_aのみ
+            logger.warning(f'model_win/reg予測失敗、model_aのみ使用: {_e}')
+            raw_scores = _sa  # フォールバック
         exp_scores = np.exp(raw_scores-np.max(raw_scores))
         win_probs  = exp_scores/np.sum(exp_scores)
         df_test['勝率(AI予測)']   = win_probs

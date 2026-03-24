@@ -1358,130 +1358,63 @@ elif action == "🧪 性能試験 (バックテスト)":
 # 🌟 新機能: 一口馬主・推し馬向け 成長記録グラフ
 
 # ==========================================
-# ② ウォークフォワード検証 (モデル精度の安定性確認)
+# ② 新・モデル検証＆AIチューニング (Phase 3実装)
 # ==========================================
 elif action == "📊 モデル検証 (ウォークフォワード)":
-    st.subheader("📊 モデル検証 - ウォークフォワード分析")
-    st.info("学習データを時系列に3分割し、各期間でのAI精度を検証します。精度が安定していれば過学習していない証拠です。")
+    st.subheader("📊 AIチューニング & バックテスト (時系列分割)")
+    st.info("過去のデータを時系列に分割し、未来の情報が一切混入しない（リーク防止）厳密なバックテストを行います。\\nまた、Optunaを用いたAIのハイパーパラメータ自動最適化も実行可能です。")
 
-    if st.button("🔬 ウォークフォワード検証を実行", type="primary"):
-        with st.spinner("3期間分の検証を実行中... (数分かかります)"):
-            try:
-                df_wf = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
-                df_wf['日付'] = pd.to_datetime(df_wf['日付'], format='mixed', errors='coerce')
-                df_wf = df_wf.dropna(subset=['日付'])
-                for col in ['着順', '単勝', '人気', '斤量', '距離', '上り', '枠番', '馬番']:
-                    df_wf[col] = pd.to_numeric(df_wf[col], errors='coerce')
-                df_wf['馬券内'] = (df_wf['着順'] <= 3).astype(int)
-                df_wf = df_wf.dropna(subset=['着順', '単勝']).sort_values('日付').reset_index(drop=True)
+    tab_bt, tab_op = st.tabs(["🧪 厳密バックテスト", "🔧 Optuna自動チューニング"])
 
-                min_date = df_wf['日付'].min()
-                max_date = df_wf['日付'].max()
-                total_days = (max_date - min_date).days
-                fold_days = total_days // 3
+    with tab_bt:
+        st.markdown("#### リーク防止版 Time-Series Split バックテスト")
+        bt_splits = st.slider("検証を遡る回数 (n_splits)", 1, 5, 3)
+        bt_days = st.slider("1回あたりの検証日数", 7, 60, 30)
 
-                wf_results = []
-                import altair as alt
+        if st.button("🚀 バックテスト実行", type="primary"):
+            with st.spinner(f"過去 {bt_splits} 期間分のモデル学習と推論を行っています... (数分かかります)"):
+                try:
+                    df_bt = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+                    df_bt['日付'] = pd.to_datetime(df_bt['日付'], format='mixed', errors='coerce')
+                    df_bt = df_bt.dropna(subset=['日付', '着順', '単勝'])
+                    for col in ['着順', '単勝', '人気']: df_bt[col] = pd.to_numeric(df_bt[col], errors='coerce')
 
-                for fold in range(3):
-                    fold_start = min_date + pd.Timedelta(days=fold * fold_days)
-                    fold_mid   = fold_start + pd.Timedelta(days=int(fold_days * 0.7))
-                    fold_end   = fold_start + pd.Timedelta(days=fold_days) if fold < 2 else max_date
+                    from src.backtest import run_timeseries_backtest
+                    ret_rate, res_df = run_timeseries_backtest(df_bt, features, cat_features, te_cols, n_splits=bt_splits, test_days=bt_days)
 
-                    tr = df_wf[(df_wf['日付'] >= fold_start) & (df_wf['日付'] < fold_mid)].copy()
-                    te = df_wf[(df_wf['日付'] >= fold_mid) & (df_wf['日付'] < fold_end)].copy()
+                    st.success(f"✅ 全期間テスト完了！ 総合単勝回収率: **{ret_rate:.1f}%**")
+                    if not res_df.empty:
+                        st.dataframe(res_df.groupby('fold').apply(lambda x: x.sort_values('AI勝率', ascending=False).groupby('レースID').head(1)).reset_index(drop=True)[['日付','レースID','馬券内','着順','単勝','AI勝率']])
+                except Exception as e:
+                    import traceback
+                    st.error(f"バックテストエラー: {e}")
+                    st.code(traceback.format_exc())
 
-                    if len(tr) < 100 or len(te) < 10:
-                        continue
+    with tab_op:
+        st.markdown("#### Optuna 超パラメータ自動最適化")
+        st.caption("AIの予測精度を最大限に引き出すためのパラメータ探索を行います。実行には時間がかかります。")
+        n_trials = st.number_input("探索回数 (Trials)", min_value=10, max_value=200, value=30, step=10)
 
-                    # TE計算
-                    gm = tr['馬券内'].mean()
-                    for col in ['騎手', '調教師', '父']:
-                        if col in tr.columns:
-                            ted = tr.groupby(col)['馬券内'].mean().to_dict()
-                            tr[f'{col}_TE'] = tr[col].map(ted).fillna(gm)
-                            te[f'{col}_TE'] = te[col].map(ted).fillna(gm)
+        if st.button("🔧 チューニング開始", type="primary"):
+            with st.spinner(f"Optunaによる探索中 ({n_trials} trials)..."):
+                try:
+                    df_op = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+                    df_op['日付'] = pd.to_datetime(df_op['日付'], format='mixed', errors='coerce')
+                    df_op = df_op.dropna(subset=['日付', '着順', '単勝'])
 
-                    use_cols = [c for c in ['枠番', '馬番', '距離', '斤量', '人気',
-                                            '騎手_TE', '調教師_TE', '父_TE'] if c in tr.columns]
-                    if not use_cols: continue
+                    from src.optuna_tuner import run_optuna_tuning
+                    best_p, msg = run_optuna_tuning(df_op, features, cat_features, te_cols, n_trials=n_trials)
 
-                    for col in use_cols:
-                        tr[col] = pd.to_numeric(tr[col], errors='coerce')
-                        te[col] = pd.to_numeric(te[col], errors='coerce')
+                    st.success(msg)
+                    st.json(best_p)
+                    st.warning("⚠️ 新しいパラメータをシステムに適用するには、`src/core_model.py` の `lgb.LGBMRanker` の引数を書き換えてください。")
+                except Exception as e:
+                    import traceback
+                    st.error(f"Optunaチューニングエラー: {e}")
+                    st.code(traceback.format_exc())
 
-                    tr = tr.dropna(subset=use_cols)
-                    te = te.dropna(subset=use_cols)
-
-                    tr_groups = tr.groupby('レースID', sort=False).size().values if 'レースID' in tr.columns else np.ones(len(tr), dtype=int)
-                    te_groups = te.groupby('レースID', sort=False).size().values if 'レースID' in te.columns else np.ones(len(te), dtype=int)
-
-                    m_wf = lgb.LGBMRanker(n_estimators=200, learning_rate=0.05,
-                                          num_leaves=31, random_state=42)
-                    m_wf.fit(tr[use_cols], tr['馬券内'], group=tr_groups)
-
-                    te['score'] = m_wf.predict(te[use_cols])
-                    te['exp_s'] = np.exp(te['score'] - te.groupby('レースID')['score'].transform('max')) if 'レースID' in te.columns else np.exp(te['score'])
-                    te['ai_win'] = te['exp_s'] / te.groupby('レースID')['exp_s'].transform('sum') if 'レースID' in te.columns else te['exp_s']
-
-                    top1 = te.sort_values(['レースID', 'ai_win'], ascending=[True, False]).groupby('レースID').head(1) if 'レースID' in te.columns else te.sort_values('ai_win', ascending=False).head(len(te)//10)
-                    hits = top1[pd.to_numeric(top1['着順'], errors='coerce') == 1]
-                    invest = len(top1) * 100
-                    ret = (pd.to_numeric(hits['単勝'], errors='coerce') * 100).sum()
-                    rr = (ret / invest * 100) if invest > 0 else 0
-                    hit_rate = len(hits) / len(top1) * 100 if len(top1) > 0 else 0
-
-                    wf_results.append({
-                        '期間': f"Fold {fold+1}",
-                        '学習期間': f"{fold_start.strftime('%Y/%m')} 〜 {fold_mid.strftime('%Y/%m')}",
-                        '検証期間': f"{fold_mid.strftime('%Y/%m')} 〜 {fold_end.strftime('%Y/%m')}",
-                        '検証レース数': len(top1),
-                        '本命的中率(%)': round(hit_rate, 1),
-                        '単勝回収率(%)': round(rr, 1),
-                    })
-
-                if wf_results:
-                    df_wfr = pd.DataFrame(wf_results)
-                    st.markdown("#### 検証結果")
-
-                    c1, c2, c3 = st.columns(3)
-                    for i, row in df_wfr.iterrows():
-                        col = [c1, c2, c3][i]
-                        color = "🟢" if row['単勝回収率(%)'] >= 100 else "🔴"
-                        col.metric(f"{color} {row['期間']}", f"回収率 {row['単勝回収率(%)']}%",
-                                   f"的中率 {row['本命的中率(%)']}%")
-
-                    st.dataframe(df_wfr, use_container_width=True, hide_index=True)
-
-                    chart_data = df_wfr[['期間', '単勝回収率(%)', '本命的中率(%)']].melt('期間', var_name='指標', value_name='値')
-                    rule = alt.Chart(pd.DataFrame({'y': [100]})).mark_rule(color='red', strokeDash=[5,5]).encode(y='y:Q')
-                    bars = alt.Chart(chart_data).mark_bar(opacity=0.8).encode(
-                        x=alt.X('期間:N'),
-                        y=alt.Y('値:Q'),
-                        color='指標:N',
-                        tooltip=['期間', '指標', '値']
-                    )
-                    st.altair_chart((bars + rule).properties(height=300), use_container_width=True)
-
-                    avg_rr = df_wfr['単勝回収率(%)'].mean()
-                    std_rr = df_wfr['単勝回収率(%)'].std()
-                    if std_rr < 20:
-                        st.success(f"✅ 安定性: 良好 (3期間の回収率標準偏差 = {std_rr:.1f}%)")
-                    else:
-                        st.warning(f"⚠️ 安定性: やや不安定 (標準偏差 = {std_rr:.1f}%、特定期間に偏りあり)")
-                    st.metric("3期間平均 単勝回収率", f"{avg_rr:.1f}%")
-                else:
-                    st.error("検証データが不足しています。")
-
-            except Exception as e:
-                st.error(f"ウォークフォワード検証エラー: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-
-# ==========================================
-# ⑤ 騎手・調教師フォーム分析
-# ==========================================
 elif action == "🏇 騎手・調教師フォーム分析":
+
     st.subheader("🏇 騎手・調教師 近況フォーム分析")
     st.info("学習データから直近の騎手・調教師の好調/不調を分析します。")
 
