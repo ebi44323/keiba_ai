@@ -31,7 +31,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
     (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
      known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
-     auc_win, auc_place) = bundle
+     auc_win, auc_place, *_extra) = bundle
+    calibrator = _extra[0] if _extra else None
     
     error_log = []
     odds_dict = {}
@@ -220,9 +221,13 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
         df_test['2走前_スピード指数'] = _safe_col(df_test, '前走_スピード指数')
         df_test['前走_スピード指数']  = _safe_col(df_test, '最新_スピード指数')
         df_test['過去3走平均スピード指数']  = df_test[['前走_スピード指数','2走前_スピード指数','3走前_スピード指数']].mean(axis=1)
-        df_test['近5走_中央値スピード指数'] = df_test[['前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数']].median(axis=1)
-        df_test['近5走_最高スピード指数']   = df_test[['前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数']].max(axis=1)
+        _s5_infer = ['前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数']
+        df_test['近5走_中央値スピード指数'] = df_test[_s5_infer].median(axis=1)
+        df_test['近5走_最高スピード指数']   = df_test[_s5_infer].max(axis=1)
         df_test['上昇度_スピード指数'] = df_test['前走_スピード指数']-df_test['近5走_中央値スピード指数']
+        df_test['ベスト3走_中央値スピード指数'] = df_test[_s5_infer].apply(
+            lambda r: r.dropna().nlargest(3).median() if r.dropna().shape[0] >= 1 else np.nan, axis=1)
+        df_test['近5走_スピード指数安定性'] = df_test[_s5_infer].std(axis=1)
 
         df_test['前走_通過'] = _safe_col(df_test, '最新_通過', '')
         def parse_corner(x):
@@ -298,6 +303,26 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
             df_test['休養日数'] = kyuyo_raw.where(kyuyo_raw > 0, other=np.nan)
         else:
             df_test['休養日数'] = np.nan
+
+        # 長期休養フラグ（休養日数から計算）
+        df_test['長期休養フラグ'] = (df_test['休養日数'] >= 180).astype(float)
+
+        # レース格上挑戦フラグ（前走_レースクラスコード が latest_horse_data に含まれる場合）
+        if 'レースクラスコード' in df_test.columns and '前走_レースクラスコード' in df_test.columns:
+            df_test['レース格上挑戦フラグ'] = (
+                pd.to_numeric(df_test['レースクラスコード'], errors='coerce') >
+                pd.to_numeric(df_test['前走_レースクラスコード'], errors='coerce')
+            ).astype(float).fillna(0.0)
+        else:
+            df_test['レース格上挑戦フラグ'] = 0.0
+
+        # コース初挑戦フラグ（horse_course_dictにキーがない = 初出走）
+        if '競馬場' in df_test.columns and '芝/ダート' in df_test.columns:
+            df_test['コース初挑戦フラグ'] = df_test.apply(
+                lambda r: 0.0 if (r['馬ID'], r.get('競馬場',''), r.get('芝/ダート','')) in horse_course_dict
+                else 1.0, axis=1)
+        else:
+            df_test['コース初挑戦フラグ'] = 0.0
 
         # 乗り替わりフラグ: 正規化名で比較
         if '最新_騎手' in df_test.columns:
@@ -407,8 +432,17 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
         except Exception as _e:
             logger.warning(f'model_win/reg予測失敗、model_aのみ使用: {_e}')
             raw_scores = _sa  # フォールバック
-        exp_scores = np.exp(raw_scores-np.max(raw_scores))
-        win_probs  = exp_scores/np.sum(exp_scores)
+        # Isotonic Calibration: AI勝率(softmax後)→実勝率補正→再正規化
+        exp_scores    = np.exp(raw_scores - np.max(raw_scores))
+        softmax_probs = exp_scores / np.sum(exp_scores)
+        if calibrator is not None:
+            try:
+                calibrated = np.clip(calibrator.predict(softmax_probs), 1e-6, 1.0)
+                win_probs  = calibrated / calibrated.sum()
+            except Exception:
+                win_probs = softmax_probs
+        else:
+            win_probs = softmax_probs
         df_test['勝率(AI予測)']   = win_probs
         df_test['複勝率(AI予測)'] = np.clip(win_probs*2.8, 0, 0.99)
         df_test['期待値'] = df_test['勝率(AI予測)']*df_test['単勝オッズ']

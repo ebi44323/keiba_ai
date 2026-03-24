@@ -161,7 +161,8 @@ def prepare_model_and_data(force_retrain=False):
           '前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数',
           '過去3走平均スピード指数','近5走_中央値スピード指数','近5走_最高スピード指数','上昇度_スピード指数',
           '前走_通過','2走前_通過','前走_最終コーナー','2走前_最終コーナー',
-          'キャリア数','前走_上り順位率']  # 上り順位率は除外（現レースリーク）
+          'キャリア数','前走_上り順位率',
+          '前走_レースクラスコード']  # レース格上挑戦フラグ計算用
     ck = [c for c in ck if c in df_latest.columns]
     latest_horse_data = df_latest[ck].copy()
     horse_course_dict = df.groupby(['馬ID','競馬場','芝/ダート'])['着順パーセント'].mean().to_dict()
@@ -217,17 +218,17 @@ def prepare_model_and_data(force_retrain=False):
     # ── モデルB: 1着予測Ranker（アンサンブル用）──────────────────
     train_df['win_label'] = (train_df['着順'] == 1).astype(int) if '着順' in train_df.columns else train_df['馬券内']
     test_df['win_label']  = (test_df['着順']  == 1).astype(int) if '着順' in test_df.columns  else test_df['馬券内']
-    # ── モデルBパラメータ: Optunaチューニング済み（ウォークフォワードCV版）──
-    # 前回の229%はリーク込みのため参考程度。再チューニング後に置き換え推奨。
+    # ── モデルBパラメータ: Optunaチューニング済み（3fold ウォークフォワードCV）──
+    # CV AUC: 0.7596 (市場勝率除外, 50試行) @ 2026-03-24
     model_win = lgb.LGBMRanker(
-        n_estimators=477,
-        learning_rate=0.020536,
-        num_leaves=19,
-        max_bin=197,
-        cat_smooth=36.63,
-        colsample_bytree=0.6777,
-        subsample=0.6289,
-        min_child_samples=20,
+        n_estimators=188,
+        learning_rate=0.009866,
+        num_leaves=77,
+        max_bin=179,
+        cat_smooth=46.92,
+        colsample_bytree=0.5748,
+        subsample=0.6397,
+        min_child_samples=96,
         random_state=123,
         importance_type='gain',
     )
@@ -277,6 +278,19 @@ def prepare_model_and_data(force_retrain=False):
     except Exception as _e:
         logger.warning(f'AUC計算失敗: {_e}')
 
+    # ── Isotonic Calibration（AI勝率→実際の勝率へ補正）────────────────────
+    # テストセットのAI勝率(softmax後)と実勝率を対応させてキャリブレーション
+    # 推論時: softmax→calibrator.predict→再正規化 の順で適用
+    calibrator = None
+    try:
+        from sklearn.isotonic import IsotonicRegression
+        if 'win_true' in test_df.columns and len(test_df) > 50:
+            calibrator = IsotonicRegression(out_of_bounds='clip')
+            calibrator.fit(test_df['AI勝率'].values, test_df['win_true'].values)
+            logger.info('Isotonic calibration 完了')
+    except Exception as _e:
+        logger.warning(f'Calibration失敗（スキップ）: {_e}')
+
     try:
         ped_df = pd.read_csv('pedigree_master_all.csv', dtype=str)
         ped_df['馬ID'] = ped_df['馬ID'].astype(str).str.zfill(10)
@@ -289,7 +303,7 @@ def prepare_model_and_data(force_retrain=False):
     bundle = (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
-              auc_win, auc_place)
+              auc_win, auc_place, calibrator)  # calibratorを末尾に追加（後方互換: *extraで受ける）
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)

@@ -54,7 +54,7 @@ with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)
     (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
      known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
-     auc_win, auc_place) = bundle
+     auc_win, auc_place, *_extra) = bundle
 
 # ==========================================
 # 4. メインUI構成
