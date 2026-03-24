@@ -1379,7 +1379,8 @@ elif action == "📊 AIチューニング & バックテスト":
                     for col in ['着順', '単勝', '人気']: df_bt[col] = pd.to_numeric(df_bt[col], errors='coerce')
 
                     from src.backtest import run_timeseries_backtest
-                    ret_rate, res_df = run_timeseries_backtest(df_bt, features, cat_features, te_cols, n_splits=bt_splits, test_days=bt_days)
+                    from src.features_engine import TE_COLS
+                    ret_rate, res_df = run_timeseries_backtest(df_bt, features, cat_features, list(TE_COLS), n_splits=bt_splits, test_days=bt_days)
 
                     st.success(f"✅ 全期間テスト完了！ 総合単勝回収率: **{ret_rate:.1f}%**")
                     if not res_df.empty:
@@ -1402,7 +1403,8 @@ elif action == "📊 AIチューニング & バックテスト":
                     df_op = df_op.dropna(subset=['日付', '着順', '単勝'])
 
                     from src.optuna_tuner import run_optuna_tuning
-                    best_p, msg = run_optuna_tuning(df_op, features, cat_features, te_cols, n_trials=n_trials)
+                    from src.features_engine import TE_COLS
+                    best_p, msg = run_optuna_tuning(df_op, features, cat_features, list(TE_COLS), n_trials=n_trials)
 
                     st.success(msg)
                     st.json(best_p)
