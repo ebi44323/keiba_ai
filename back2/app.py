@@ -85,6 +85,13 @@ _HF_REPO_ID = os.environ.get("HF_REPO_ID", "")   # 例: "username/keiba-ebye"
 _MODEL_FILE = "keiba_model.pkl"                    # Hub上のファイル名
 _META_FILE  = "keiba_model_meta.json"             # 学習日時などのメタデータ
 
+# ── Discord Webhook設定 ──────────────────────────────────────────
+# HuggingFace Secrets に以下の2つを設定してください
+# DISCORD_WEBHOOK_URL        → 直前予想投稿チャンネル
+# DISCORD_REVIEW_WEBHOOK_URL → 振り返り結果投稿チャンネル（省略時は予想チャンネルと同じ）
+_DISCORD_WEBHOOK_URL        = os.environ.get("DISCORD_WEBHOOK_URL", "")
+_DISCORD_REVIEW_WEBHOOK_URL = os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "") or _DISCORD_WEBHOOK_URL
+
 def _get_zip_mtime():
     """学習データZIPの最終更新日時(文字列)を返す"""
     for p in ['learning_data_perfect_tier.zip', 'learning_data_perfect_tier.csv']:
@@ -449,15 +456,25 @@ def prepare_model_and_data(force_retrain=False):
     _sb_norm = _norm_scores(score_b)
 
     # バリデーションセット上で最適なアンサンブル重みを探索
+    # ⚠️ 注意: スピード指数の基準値がfull dataで計算されているため
+    #          test_df全体はリーク込み。直近2週間だけに絞ることで
+    #          リークの影響が最も小さいデータで重みを決定する
     best_weight = 0.5  # デフォルト（複勝モデルの重み）
     best_rr = -1.0
     _test_tmp = test_df.copy()
+    _test_tmp['_sa'] = _sa_norm
+    _test_tmp['_sb'] = _sb_norm
+    # 直近2週間だけを使って重みを探索（リーク影響が最も薄い期間）
+    _two_weeks_ago = test_df['日付'].max() - pd.Timedelta(days=14)
+    _val_df = _test_tmp[_test_tmp['日付'] >= _two_weeks_ago].copy()
+    _use_df = _val_df if len(_val_df) >= 50 else _test_tmp  # データ少なすぎたらfull使用
     for _w in [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]:
-        _tmp_score = _sa_norm * _w + _sb_norm * (1 - _w)
-        _test_tmp['__s__'] = _tmp_score
-        _exp = np.exp(_tmp_score - _test_tmp.groupby('レースID')['__s__'].transform('max'))
-        _test_tmp['__wp__'] = _exp / _test_tmp.groupby('レースID')['__s__'].transform('sum')
-        _top1 = _test_tmp.sort_values(['レースID','__wp__'], ascending=[True,False]).groupby('レースID').head(1)
+        _tmp_score = _use_df['_sa'] * _w + _use_df['_sb'] * (1 - _w)
+        _use_df = _use_df.copy()
+        _use_df['__s__'] = _tmp_score
+        _exp = np.exp(_tmp_score - _use_df.groupby('レースID')['__s__'].transform('max'))
+        _use_df['__wp__'] = _exp / _use_df.groupby('レースID')['__s__'].transform('sum')
+        _top1 = _use_df.sort_values(['レースID','__wp__'], ascending=[True,False]).groupby('レースID').head(1)
         _hits = _top1[pd.to_numeric(_top1['着順'], errors='coerce') == 1]
         _invest = len(_top1) * 100
         _ret = (pd.to_numeric(_hits['単勝'], errors='coerce') * 100).sum()
@@ -465,7 +482,8 @@ def prepare_model_and_data(force_retrain=False):
         if _rr > best_rr:
             best_rr = _rr
             best_weight = _w
-    logger.info(f'アンサンブル重み最適化: 複勝モデル={best_weight:.1f} / 1着モデル={1-best_weight:.1f} (検証回収率={best_rr:.1f}%)')
+    _val_label = f"直近{len(_val_df)}行" if len(_val_df) >= 50 else f"全{len(_test_tmp)}行(データ不足)"
+    logger.info(f'アンサンブル重み最適化({_val_label}): 複勝={best_weight:.1f} / 1着={1-best_weight:.1f} (検証回収率={best_rr:.1f}%)')
     test_df['予測スコア'] = _sa_norm * best_weight + _sb_norm * (1 - best_weight)
     test_df['exp_score'] = np.exp(test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max'))
     test_df['AI勝率'] = test_df['exp_score']/test_df.groupby('レースID')['exp_score'].transform('sum')
@@ -474,6 +492,18 @@ def prepare_model_and_data(force_retrain=False):
     invest_amount = len(top_preds)*100
     win_return = (pd.to_numeric(win_hits['単勝'],errors='coerce')*100).sum()
     recent_return_rate = (win_return/invest_amount*100) if invest_amount>0 else 0
+
+    # ── AUC計算（1着予測 & 複勝予測）──────────────────────────────────
+    auc_win = auc_place = 0.0
+    try:
+        from sklearn.metrics import roc_auc_score
+        test_df['win_true']   = (pd.to_numeric(test_df['着順'], errors='coerce') == 1).astype(int)
+        test_df['place_true'] = (pd.to_numeric(test_df['着順'], errors='coerce') <= 3).astype(int)
+        auc_win   = roc_auc_score(test_df['win_true'],   _sb_norm)
+        auc_place = roc_auc_score(test_df['place_true'], _sa_norm)
+        logger.info(f'モデルAUC: 1着={auc_win:.4f} / 複勝={auc_place:.4f}')
+    except Exception as _e:
+        logger.warning(f'AUC計算失敗: {_e}')
 
     try:
         ped_df = pd.read_csv('pedigree_master_all.csv', dtype=str)
@@ -485,7 +515,8 @@ def prepare_model_and_data(force_retrain=False):
 
     bundle = (model, model_win, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
-              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight)
+              known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
+              auc_win, auc_place)
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)
@@ -498,7 +529,8 @@ _hub_label = "HF Hub" if _hub_available else "ローカル学習"
 with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)'):
     (model, model_win, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
-     known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight) = prepare_model_and_data()
+     known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
+     auc_win, auc_place) = prepare_model_and_data()
 
 # ==========================================
 # 2. スクレイピング ＆ アナリティクス関数群 (省略せず記載)
@@ -944,6 +976,221 @@ def generate_txt_report(results_list, ev_threshold=1.5):
     out.append("=" * 44)
     out.append("keiba-ebye / 予想はAI参考情報です。馬券は自己責任でお願いします。")
     return "\n".join(out)
+
+
+# ==========================================
+# Discord 連携
+# ==========================================
+# ──────────────────────────────────────────────────────────────
+# Discord送信共通ユーティリティ
+# HF SpacesはDiscordへの直接通信が制限されているため、
+# HF Datasetに「送信キュー」を書き込む方式を採用。
+# GitHub Actionsのdiscord_notify.ymlが5分おきにキューを読んで
+# Discordに送信し、sentフラグを立てる。
+# ──────────────────────────────────────────────────────────────
+_DISCORD_QUEUE_FILE = "discord_queue.json"
+
+def _push_discord_queue(content: str, channel: str = "prediction",
+                        username: str = "keiba-ebye 🐴",
+                        dedup_key: str = "") -> bool:
+    """
+    Discord送信キューにメッセージを追加し、HF Datasetに保存する。
+    channel: "prediction"（直前予想）or "review"（振り返り）
+    GitHub Actionsのdiscord_notify.ymlが読み取って送信する。
+    dedup_key: 重複防止キー（同一キーが未送信で存在する場合はスキップ）
+               予想: race_id  振り返り: 日付文字列
+    """
+    if not _HF_TOKEN or not _HF_REPO_ID:
+        logger.warning("HF_TOKEN/HF_REPO_IDが未設定のためDiscordキューに書き込めません")
+        return False
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+        api = HfApi(token=_HF_TOKEN)
+
+        # 既存キューを取得
+        queue = []
+        try:
+            qpath = hf_hub_download(
+                repo_id=_HF_REPO_ID, filename=_DISCORD_QUEUE_FILE,
+                repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache",
+                force_download=True
+            )
+            with open(qpath, "r", encoding="utf-8") as f:
+                queue = json.load(f)
+        except Exception:
+            queue = []  # ファイルがなければ新規作成
+
+        # ── 重複防止チェック ───────────────────────────────────────────
+        # dedup_keyが同じ未送信エントリが既にあればスキップ（再起動・複数タブ対策）
+        if dedup_key:
+            already = any(
+                q.get("dedup_key") == dedup_key and not q.get("sent", False)
+                for q in queue
+            )
+            if already:
+                logger.info(f"Discord重複スキップ: {dedup_key}")
+                return True  # 既にキューにある → 成功扱い
+
+        # 新規エントリを追加
+        entry = {
+            "id": f"{channel}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+            "dedup_key": dedup_key or "",
+            "channel": channel,
+            "content": content[:1990],
+            "username": username,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "sent": False,
+        }
+        queue.append(entry)
+
+        # 送信済みの古いエントリを削除（最新50件だけ保持）
+        queue = [q for q in queue if not q.get("sent", False)][-50:] + \
+                [q for q in queue if q.get("sent", False)][-20:]
+
+        # HF Datasetに保存
+        import io
+        buf = io.BytesIO(json.dumps(queue, ensure_ascii=False, indent=2).encode("utf-8"))
+        api.upload_file(
+            path_or_fileobj=buf,
+            path_in_repo=_DISCORD_QUEUE_FILE,
+            repo_id=_HF_REPO_ID,
+            repo_type="dataset",
+            commit_message=f"Discord queue: {channel} {entry['id']}",
+            token=_HF_TOKEN,
+        )
+        logger.info(f"Discord送信キューに追加: {entry['id']}")
+        return True
+    except Exception as _e:
+        logger.warning(f"Discord送信キュー書き込み失敗: {_e}")
+        return False
+
+
+def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
+                             race_info: dict, webhook_url: str = "") -> bool:
+    """
+    予想結果をDiscordキューに積む（GitHub Actionsが送信）
+    race_info: {'place': '東京', 'num': 5, 'title': '...', 'mins_left': 4}
+    """
+    if not _HF_TOKEN or not _HF_REPO_ID:
+        return False
+    try:
+        place = race_info.get('place', '')
+        num   = race_info.get('num', '')
+        title = race_info.get('title', '')
+        mins  = race_info.get('mins_left', 0)
+
+        lines = [
+            f"🐴 **keiba-ebye 予想** | {place} {num}R「{title}」",
+            f"⏰ 発走まであと **{mins}分**",
+            "",
+        ]
+        if conf_text:
+            lines.append(f"> {conf_text}")
+        if pace_text:
+            lines.append(f"> {pace_text}")
+        lines.append("")
+
+        lines.append("```")
+        lines.append(f"{'印':<3} {'馬番':>3} {'馬名':<12} {'オッズ':>6} {'勝率':>6} {'EV':>5}")
+        lines.append("-" * 42)
+        for rank, row in res_df.head(7).iterrows():
+            try:
+                imp  = str(row.get('印', '') or '').ljust(2)
+                num_ = int(float(row.get('馬番', 0)))
+                name = str(row.get('馬名', ''))[:10]
+                odds = float(row.get('単勝オッズ', 0))
+                wp   = float(row.get('勝率(AI予測)', 0)) * 100
+                ev   = float(row.get('期待値', 0) or 0)
+                ev_mark = " ★" if ev >= 1.5 else ""
+                lines.append(f"{imp:<3} {num_:>3} {name:<12} {odds:>5.1f}倍 {wp:>5.1f}% {ev:>4.2f}{ev_mark}")
+            except Exception:
+                continue
+        lines.append("```")
+        lines.append("★ = 期待値1.5以上の注目馬")
+        lines.append("")
+
+        if topics:
+            lines.append("**📝 注目トピック**")
+            for t in topics[:3]:
+                lines.append(f"• {t.replace('**', '')}")
+            lines.append("")
+
+        if reco:
+            lines.append(f"**🎯 推奨** {reco[:200]}{'…' if len(reco)>200 else ''}")
+
+        lines.append("")
+        lines.append("-# keiba-ebye AI予想 / 馬券は自己責任でお願いします")
+
+        content = "\n".join(lines)
+        return _push_discord_queue(content, channel="prediction", username="keiba-ebye 🐴",
+                                   dedup_key=race_info.get('race_id', ''))
+    except Exception as _e:
+        logger.warning(f"send_discord_prediction エラー: {_e}")
+        return False
+
+
+def send_discord_review(stats: dict, rates: dict, target_date_str: str,
+                        webhook_url: str = "") -> bool:
+    """振り返り結果をDiscordキューに積む（GitHub Actionsが送信）"""
+    if not _HF_TOKEN or not _HF_REPO_ID:
+        return False
+    try:
+        tan_rate     = rates.get('tan_rate', 0)
+        fuku_rate    = rates.get('fuku_rate', 0)
+        ev_tan_rate  = rates.get('ev_tan_rate', 0)
+        ev_fuku_rate = rates.get('ev_fuku_rate', 0)
+        uma_rate     = rates.get('uma_rate', 0)
+        shiba_rate   = rates.get('shiba_rate', 0)
+        dart_rate    = rates.get('dart_rate', 0)
+        races        = stats.get('honmei_races', 0)
+
+        def _emoji(v):
+            if v >= 150: return "🔥"
+            if v >= 100: return "✅"
+            if v >= 70:  return "🟡"
+            return "❌"
+
+        lines = [
+            f"📊 **keiba-ebye 振り返りレポート** | {target_date_str}",
+            f"対象 {races}レース",
+            "",
+            "**【本命(◎) 成績】**",
+            "```",
+            f"単勝  {_emoji(tan_rate)} {tan_rate:6.1f}%   的中 {stats.get('honmei_tan_hits',0)}/{races}R",
+            f"複勝  {_emoji(fuku_rate)} {fuku_rate:6.1f}%   的中 {stats.get('honmei_fuku_hits',0)}/{races}R",
+            "```",
+            "",
+            "**【期待値馬(EV1.5+) ベタ買い】**",
+            "```",
+            f"単勝  {_emoji(ev_tan_rate)} {ev_tan_rate:6.1f}%   的中 {stats.get('ev_tan_hits',0)}/{int(stats.get('ev_invest',0)//100)}頭",
+            f"複勝  {_emoji(ev_fuku_rate)} {ev_fuku_rate:6.1f}%   的中 {stats.get('ev_fuku_hits',0)}/{int(stats.get('ev_invest',0)//100)}頭",
+            "```",
+            "",
+            f"🌱 芝: {shiba_rate:.1f}%  🏜️ ダート: {dart_rate:.1f}%  🔗 馬連: {uma_rate:.1f}%",
+            "",
+            "-# keiba-ebye / 結果は参考情報です",
+        ]
+        content = "\n".join(lines)
+        return _push_discord_queue(content, channel="review", username="keiba-ebye 📊",
+                                   dedup_key=f"review_{target_date_str}")
+    except Exception as _e:
+        logger.warning(f"send_discord_review エラー: {_e}")
+        return False
+
+
+def _test_discord_webhook(webhook_url: str, label: str = "テスト") -> tuple[bool, str]:
+    """テストメッセージをDiscordキューに積む"""
+    if not _HF_TOKEN or not _HF_REPO_ID:
+        return False, "HF_TOKEN / HF_REPO_ID が未設定です"
+    channel = "review" if label == "振り返り" else "prediction"
+    ok = _push_discord_queue(
+        f"🔌 **keiba-ebye** 接続テスト！ ({label}チャンネル) — GitHub Actionsが送信します",
+        channel=channel,
+        username="keiba-ebye 🔌"
+    )
+    if ok:
+        return True, f"✅ キューに追加しました！GitHub Actionsが数分以内に{label}chへ送信します"
+    return False, "❌ HF Datasetへの書き込み失敗（HF_TOKEN/HF_REPO_IDを確認）"
 
 
 # ==========================================
@@ -1614,6 +1861,42 @@ if action in _PRO_ACTIONS and not _is_pro:
     st.warning("この機能はProメンバー限定です。サイドバーにアクセスコードを入力してください。")
     st.stop()
 
+# ── Discord 設定 ─────────────────────────────────────────────
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 💬 Discord 連携")
+
+if not _DISCORD_WEBHOOK_URL:
+    _discord_enabled = False
+    st.sidebar.caption("💡 HuggingFace Secrets に以下を設定してください")
+    st.sidebar.code("DISCORD_WEBHOOK_URL        # 直前予想チャンネル\nDISCORD_REVIEW_WEBHOOK_URL # 振り返りチャンネル")
+else:
+    # チャンネル設定状況表示
+    _pred_ok   = bool(_DISCORD_WEBHOOK_URL)
+    _review_ok = bool(_DISCORD_REVIEW_WEBHOOK_URL and
+                      _DISCORD_REVIEW_WEBHOOK_URL != _DISCORD_WEBHOOK_URL)
+    st.sidebar.caption(f"📢 直前予想: {'✅ 専用ch' if _pred_ok else '❌ 未設定'}")
+    st.sidebar.caption(f"📊 振り返り: {'✅ 専用ch' if _review_ok else '⚠️ 予想chと共用'}")
+
+    # 自動投稿 ON/OFF
+    _discord_enabled = st.sidebar.checkbox(
+        "📤 直前予想 自動投稿",
+        value=True,
+        help="発走15分前にDiscord通知（GitHub Actions経由）、5分前に画面を最新オッズで更新します"
+    )
+
+    # 接続テストボタン
+    _test_col1, _test_col2 = st.sidebar.columns(2)
+    with _test_col1:
+        if st.button("🔌 予想ch テスト", key="discord_test_pred", use_container_width=True):
+            _ok, _msg = _test_discord_webhook(_DISCORD_WEBHOOK_URL, "直前予想")
+            if _ok: st.sidebar.success(_msg)
+            else:   st.sidebar.error(_msg)
+    with _test_col2:
+        if st.button("🔌 振返ch テスト", key="discord_test_review", use_container_width=True):
+            _ok, _msg = _test_discord_webhook(_DISCORD_REVIEW_WEBHOOK_URL, "振り返り")
+            if _ok: st.sidebar.success(_msg)
+            else:   st.sidebar.error(_msg)
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 💰 軍資金シミュレーター")
 sim_budget     = st.sidebar.number_input("軍資金 (円)", 1000, 500000, 30000, 1000,
@@ -1630,12 +1913,18 @@ if _is_pro and _hub_available:
     st.sidebar.markdown("---")
     st.sidebar.markdown("### ⚙️ モデル管理")
     st.sidebar.caption(f"HF Hub: `{_HF_REPO_ID}`")
+    st.sidebar.caption(f"🎚 アンサンブル重み: 複勝={ensemble_weight:.1f} / 1着={1-ensemble_weight:.1f}")
+    # AUC: 特徴量計算にリークが含まれるため表示は参考値扱い
+    if auc_win > 0:
+        st.sidebar.caption(f"⚠️ AUC(参考): 1着={auc_win:.4f} / 複勝={auc_place:.4f}")
+        st.sidebar.caption("　└ 特徴量リークにより過大評価の可能性あり")
     if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
         st.cache_resource.clear()
         with st.spinner("再学習中... (数分かかります)"):
             (model, model_win, features, cat_features, num_features, cat_categories_dict,
              latest_horse_data, horse_course_dict, ped_dict,
-             known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight) = prepare_model_and_data(force_retrain=True)
+             known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
+             auc_win, auc_place) = prepare_model_and_data(force_retrain=True)
         st.sidebar.success("✅ 再学習完了・Hubにアップロードしました")
         st.rerun()
 
@@ -1986,11 +2275,12 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                 st.info(f"👉 **{next_race['place']} {next_race['num']}R** 「{next_race['title']}」 (あと **{mins_left}** 分)")
 
                 # ── オッズ自動再取得 ─────────────────────────────────
-                # 発走5分前になったら自動で予想を更新するオプション
+                # Discord通知: 発走15分前（GitHub Actionsの遅延を考慮して余裕を持たせる）
+                # 画面更新:    発走5分前（最新オッズで予想を更新）
                 auto_refresh = st.checkbox(
-                    "🔄 発走5分前になったら自動でオッズを再取得して予想を更新する",
+                    "🔄 発走前に自動でオッズ再取得・Discord通知する",
                     value=False,
-                    help="チェックを入れると発走5分前に自動で予想を再実行します"
+                    help="15分前にDiscord通知 → 5分前に画面の予想を最新オッズで更新します"
                 )
                 col_btn1, col_btn2 = st.columns([2, 1])
                 with col_btn1:
@@ -1998,29 +2288,89 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                 with col_btn2:
                     force_refresh = st.button("🔄 オッズ再取得して更新", help="最新オッズで予想を再実行します")
 
-                # 自動更新ロジック: 10分前になったら自動実行
+                # 自動トリガー判定
+                # discord_triggered: 15分前に一度だけ → Discordに通知
+                # auto_triggered:     5分前に一度だけ → 画面の予想を更新
+                discord_triggered = False
                 auto_triggered = False
-                if auto_refresh and 0 <= mins_left <= 5:
-                    last_auto = st.session_state.get(f'last_auto_{next_race["id"]}', 0)
-                    if time.time() - last_auto > 300:  # 5分以上経過したら再実行
-                        auto_triggered = True
-                        st.session_state[f'last_auto_{next_race["id"]}'] = time.time()
-                        st.warning(f"⚡ 発走{mins_left}分前！最新オッズで予想を更新します...")
 
-                if manual_run or force_refresh or auto_triggered:
+                if auto_refresh:
+                    _last_discord_key = f'last_discord_{next_race["id"]}'
+                    _last_refresh_key = f'last_auto_{next_race["id"]}'
+
+                    # Discord通知: 発走10〜20分前の間に一度だけ発火
+                    # （GitHub Actionsの最大5分遅延を加味して15分前を狙う）
+                    if 10 <= mins_left <= 20:
+                        if not st.session_state.get(_last_discord_key, False):
+                            discord_triggered = True
+                            st.session_state[_last_discord_key] = True
+                            st.info(f"📤 発走{mins_left}分前！Discord通知をキューに追加します...")
+
+                    # 画面更新: 発走0〜6分前に一度だけ発火（最新オッズ取得）
+                    if 0 <= mins_left <= 6:
+                        last_auto = st.session_state.get(_last_refresh_key, 0)
+                        if time.time() - last_auto > 300:
+                            auto_triggered = True
+                            st.session_state[_last_refresh_key] = time.time()
+                            st.warning(f"⚡ 発走{mins_left}分前！最新オッズで予想を更新します...")
+
+                if manual_run or force_refresh or auto_triggered or discord_triggered:
                     with st.spinner('AIが推論中（最新オッズ取得含む）...'):
                         res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'))
                         if res_df is not None:
                             display_result(res_df, topics, reco, pace_text, conf_text)
                             if force_refresh or auto_triggered:
                                 st.success("✅ オッズを再取得して予想を更新しました")
+
+                            # ── Discord自動投稿（discord_triggered: 15分前）──────
+                            if discord_triggered and _discord_enabled and _DISCORD_WEBHOOK_URL:
+                                _race_info = {
+                                    'place':   next_race['place'],
+                                    'num':     next_race['num'],
+                                    'title':   next_race['title'],
+                                    'mins_left': mins_left,
+                                    'race_id': next_race['id'],   # 重複防止キー
+                                }
+                                _sent_key = f'discord_sent_{next_race["id"]}'
+                                if not st.session_state.get(_sent_key, False):
+                                    _ok = send_discord_prediction(
+                                        res_df, topics, reco, pace_text, conf_text,
+                                        _race_info, _DISCORD_WEBHOOK_URL
+                                    )
+                                    if _ok:
+                                        st.session_state[_sent_key] = True
+                                        st.success("📤 Discordに予想を投稿しました！")
+                                    else:
+                                        st.warning("⚠️ Discord投稿に失敗しました（ログを確認してください）")
+
+                            # ── 手動Discord投稿ボタン ─────────────────────────
+                            if _DISCORD_WEBHOOK_URL:
+                                _discord_btn_key = f'discord_btn_{next_race["id"]}'
+                                if st.button("📤 Discordに投稿", key=_discord_btn_key,
+                                             help="この予想をDiscordに手動で投稿します"):
+                                    _race_info = {
+                                        'place':   next_race['place'],
+                                        'num':     next_race['num'],
+                                        'title':   next_race['title'],
+                                        'mins_left': mins_left,
+                                        'race_id': f"manual_{next_race['id']}",  # 手動は別キー
+                                    }
+                                    _ok = send_discord_prediction(
+                                        res_df, topics, reco, pace_text, conf_text,
+                                        _race_info, _DISCORD_WEBHOOK_URL
+                                    )
+                                    if _ok:
+                                        st.success("📤 Discordに投稿しました！")
+                                    else:
+                                        st.error("❌ Discord投稿失敗（Webhook URLを確認してください）")
                         else: display_error_log(err_log)
 
                 # 自動更新チェック用ページ再読み込み
-                if auto_refresh and mins_left > 5:
-                    st.caption(f"次の自動確認まで... 発走{mins_left}分前（5分前になると自動更新）")
-                    # 1分ごとに再確認
-                    time.sleep(0)  # Streamlitの再実行をトリガーしない（ボタン待ち）
+                if auto_refresh and mins_left > 6:
+                    if mins_left > 20:
+                        st.caption(f"発走{mins_left}分前 — 15〜20分前になるとDiscord通知、5分前に予想を更新します")
+                    elif mins_left > 6:
+                        st.caption(f"発走{mins_left}分前 — Discord通知済み。5分前に最新オッズで予想を更新します")
             else:
                 st.success("🏁 本日の全レースは終了しました。")
             
@@ -2031,7 +2381,23 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
             if st.button("🚀 予想開始", type="primary"):
                 with st.spinner('推論中...'):
                     res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'))
-                    if res_df is not None: display_result(res_df, topics, reco, pace_text, conf_text)
+                    if res_df is not None:
+                        display_result(res_df, topics, reco, pace_text, conf_text)
+                        # 手動Discord投稿ボタン
+                        if _DISCORD_WEBHOOK_URL:
+                            if st.button("📤 Discordに投稿", key=f"discord_spec_{target_race['id']}"):
+                                _race_info = {
+                                    'place':   target_race['place'],
+                                    'num':     target_race['num'],
+                                    'title':   target_race['title'],
+                                    'mins_left': 0,
+                                    'race_id': f"manual_{target_race['id']}",
+                                }
+                                _ok = send_discord_prediction(
+                                    res_df, topics, reco, pace_text, conf_text,
+                                    _race_info, _DISCORD_WEBHOOK_URL
+                                )
+                                st.success("📤 投稿しました！") if _ok else st.error("❌ 投稿失敗")
                     else: display_error_log(err_log)
 
 elif action == "📅 今週末の全レース予想":
@@ -2296,6 +2662,47 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     st.write(f"- 該当数: {int(stats['ev_invest']/100)} 頭")
                     st.write(f"- **単勝 回収率**: **{ev_tan_rate:.1f}%** (的中 {stats['ev_tan_hits']}頭)")
                     st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
+
+                # ── Discord 振り返り投稿エリア ─────────────────────────────
+                if _DISCORD_REVIEW_WEBHOOK_URL:
+                    st.markdown("---")
+                    _review_rates = {
+                        'tan_rate': tan_rate, 'fuku_rate': fuku_rate,
+                        'ev_tan_rate': ev_tan_rate, 'ev_fuku_rate': ev_fuku_rate,
+                        'uma_rate': uma_rate, 'shiba_rate': shiba_rate, 'dart_rate': dart_rate,
+                    }
+                    _review_date_str = target_date.strftime('%Y/%m/%d')
+
+                    # 自動送信チェック: 当日のレース開催日 & 17時以降 & 未送信
+                    _today_jst = datetime.datetime.now(pytz.timezone('Asia/Tokyo'))
+                    _is_race_day = target_date == _today_jst.date()
+                    _after_17h   = _today_jst.hour >= 17
+                    _auto_sent_key = f'review_auto_sent_{target_date}'
+                    _already_sent  = st.session_state.get(_auto_sent_key, False)
+
+                    if _is_race_day and _after_17h and not _already_sent:
+                        _ok = send_discord_review(stats, _review_rates,
+                                                  _review_date_str, _DISCORD_REVIEW_WEBHOOK_URL)
+                        if _ok:
+                            st.session_state[_auto_sent_key] = True
+                            st.success("📤 振り返り結果をDiscordに自動投稿しました！（17時以降の初回実行）")
+                        else:
+                            st.warning("⚠️ Discord自動投稿に失敗しました")
+
+                    # 手動送信ボタン
+                    _dc1, _dc2 = st.columns([3, 1])
+                    with _dc1:
+                        st.caption("📊 振り返り結果をDiscordに投稿できます"
+                                   "（当日17時以降は振り返り実行時に自動送信）")
+                    with _dc2:
+                        if st.button("📤 Discordに投稿", key=f"review_discord_{target_date}",
+                                     type="primary"):
+                            _ok = send_discord_review(stats, _review_rates,
+                                                      _review_date_str, _DISCORD_REVIEW_WEBHOOK_URL)
+                            if _ok:
+                                st.success("📤 振り返り結果をDiscordに投稿しました！")
+                            else:
+                                st.error("❌ 投稿失敗（Webhook URLを確認してください）")
 
 elif action == "📈 長期成績分析":
     st.subheader("📈 長期成績分析 & 回収率ダッシュボード")

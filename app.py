@@ -446,7 +446,7 @@ def prepare_model_and_data(force_retrain=False):
                   categorical_feature=[f for f in cat_features if f in features],
                   eval_set=[(test_df[features], test_df['win_label'])], eval_group=[test_groups])
 
-    # ── アンサンブルスコア（重み最適化版）──────────────────────────
+    # ── アンサンブルスコア ────────────────────────────────────────
     score_a = model.predict(test_df[features])
     score_b = model_win.predict(test_df[features])
     def _norm_scores(s):
@@ -455,35 +455,11 @@ def prepare_model_and_data(force_retrain=False):
     _sa_norm = _norm_scores(score_a)
     _sb_norm = _norm_scores(score_b)
 
-    # バリデーションセット上で最適なアンサンブル重みを探索
-    # ⚠️ 注意: スピード指数の基準値がfull dataで計算されているため
-    #          test_df全体はリーク込み。直近2週間だけに絞ることで
-    #          リークの影響が最も小さいデータで重みを決定する
-    best_weight = 0.5  # デフォルト（複勝モデルの重み）
-    best_rr = -1.0
-    _test_tmp = test_df.copy()
-    _test_tmp['_sa'] = _sa_norm
-    _test_tmp['_sb'] = _sb_norm
-    # 直近2週間だけを使って重みを探索（リーク影響が最も薄い期間）
-    _two_weeks_ago = test_df['日付'].max() - pd.Timedelta(days=14)
-    _val_df = _test_tmp[_test_tmp['日付'] >= _two_weeks_ago].copy()
-    _use_df = _val_df if len(_val_df) >= 50 else _test_tmp  # データ少なすぎたらfull使用
-    for _w in [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]:
-        _tmp_score = _use_df['_sa'] * _w + _use_df['_sb'] * (1 - _w)
-        _use_df = _use_df.copy()
-        _use_df['__s__'] = _tmp_score
-        _exp = np.exp(_tmp_score - _use_df.groupby('レースID')['__s__'].transform('max'))
-        _use_df['__wp__'] = _exp / _use_df.groupby('レースID')['__s__'].transform('sum')
-        _top1 = _use_df.sort_values(['レースID','__wp__'], ascending=[True,False]).groupby('レースID').head(1)
-        _hits = _top1[pd.to_numeric(_top1['着順'], errors='coerce') == 1]
-        _invest = len(_top1) * 100
-        _ret = (pd.to_numeric(_hits['単勝'], errors='coerce') * 100).sum()
-        _rr = (_ret / _invest * 100) if _invest > 0 else 0
-        if _rr > best_rr:
-            best_rr = _rr
-            best_weight = _w
-    _val_label = f"直近{len(_val_df)}行" if len(_val_df) >= 50 else f"全{len(_test_tmp)}行(データ不足)"
-    logger.info(f'アンサンブル重み最適化({_val_label}): 複勝={best_weight:.1f} / 1着={1-best_weight:.1f} (検証回収率={best_rr:.1f}%)')
+    # ⚠️ 重み自動最適化は無効化（理由: コース統計がfull dataで計算されておりリーク込みの回収率になるため）
+    # 実績（3/21: 本命単勝86%, 3/22: 穴馬EV単勝180%）から1着モデル寄りが有効と判断し
+    # 複勝0.4 / 1着0.6 の固定値を使用する。Optuna導入時に正しく再最適化予定。
+    best_weight = 0.4  # 複勝モデルの重み（0.4=複勝寄り, 0.6=1着モデル寄り）
+    logger.info(f'アンサンブル重み: 複勝={best_weight:.1f} / 1着={1-best_weight:.1f} (固定値・リーク修正後に再最適化予定)')
     test_df['予測スコア'] = _sa_norm * best_weight + _sb_norm * (1 - best_weight)
     test_df['exp_score'] = np.exp(test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max'))
     test_df['AI勝率'] = test_df['exp_score']/test_df.groupby('レースID')['exp_score'].transform('sum')
@@ -2298,13 +2274,15 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                     _last_discord_key = f'last_discord_{next_race["id"]}'
                     _last_refresh_key = f'last_auto_{next_race["id"]}'
 
-                    # Discord通知: 発走10〜20分前の間に一度だけ発火
-                    # （GitHub Actionsの最大5分遅延を加味して15分前を狙う）
-                    if 10 <= mins_left <= 20:
+                    # Discord通知: 発走25〜40分前の間に一度だけ発火
+                    # GitHub Actionsのcronは最大30分遅れることがある。
+                    # 締め切り2分前（発走2〜3分前）に届くには40分前にキューに入れる必要がある。
+                    # 25〜40分前の窓で発火させることで「遅くとも発走10分前には届く」を保証する。
+                    if 25 <= mins_left <= 40:
                         if not st.session_state.get(_last_discord_key, False):
                             discord_triggered = True
                             st.session_state[_last_discord_key] = True
-                            st.info(f"📤 発走{mins_left}分前！Discord通知をキューに追加します...")
+                            st.info(f"📤 発走{mins_left}分前！Discord通知をキューに追加します（GitHub Actions経由で数分〜30分以内に届きます）")
 
                     # 画面更新: 発走0〜6分前に一度だけ発火（最新オッズ取得）
                     if 0 <= mins_left <= 6:
