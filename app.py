@@ -1394,10 +1394,28 @@ elif action == "📊 AIチューニング & バックテスト":
     with tab_op:
         st.markdown("#### Optuna 超パラメータ自動最適化")
         st.caption("AIの予測精度を最大限に引き出すためのパラメータ探索を行います。実行には時間がかかります。")
-        n_trials = st.number_input("探索回数 (Trials)", min_value=10, max_value=200, value=30, step=10)
+
+        col_op1, col_op2 = st.columns([1, 1])
+        with col_op1:
+            n_trials = st.number_input("探索回数 (Trials)", min_value=10, max_value=500, value=50, step=10)
+        with col_op2:
+            n_folds = st.number_input("CV分割数 (Folds)", min_value=2, max_value=6, value=3, step=1)
+
+        exclude_market = st.checkbox(
+            "🎯 市場勝率を除外してチューニング（推奨）",
+            value=True,
+            help="単勝オッズ由来の特徴量を除外し、AIの真の予測力でチューニングします。\n"
+                 "check_market_rate_auc.py の検証結果: 真のモデル力 AUC ≈ 0.76"
+        )
+        exclude_list = ['市場勝率'] if exclude_market else []
+
+        if exclude_market:
+            st.info("ℹ️ 市場勝率を除外: 目標AUC 0.74〜0.78（真の予測力基準）")
+        else:
+            st.warning("⚠️ 市場勝率を含む: オッズ依存のため AUC が過大評価されます（参考値）")
 
         if st.button("🔧 チューニング開始", type="primary"):
-            with st.spinner(f"Optunaによる探索中 ({n_trials} trials)..."):
+            with st.spinner(f"Optunaによる探索中 ({n_trials} trials × {n_folds} folds)..."):
                 try:
                     df_op = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
                     df_op['日付'] = pd.to_datetime(df_op['日付'], format='mixed', errors='coerce')
@@ -1407,22 +1425,39 @@ elif action == "📊 AIチューニング & バックテスト":
                     from src.optuna_tuner import run_optuna_tuning
                     from src.features_engine import TE_COLS, create_features
                     df_op, _ = create_features(df_op, te_dicts)
-                    # 戻り値は (best_params, summary_str, cv_results_df) の3つ
                     best_p, msg, cv_df = run_optuna_tuning(
-                        df_op, features, cat_features, list(TE_COLS), n_trials=n_trials
+                        df_op, features, cat_features, list(TE_COLS),
+                        n_trials=int(n_trials), n_folds=int(n_folds),
+                        exclude_features=exclude_list if exclude_list else None,
                     )
 
                     st.success(msg)
                     if best_p:
-                        st.subheader("最適パラメータ")
+                        st.subheader("✅ 最適パラメータ")
                         st.json(best_p)
+                        st.code(
+                            f"# src/core_model.py の model_win に貼り付けてください\n"
+                            f"model_win = lgb.LGBMRanker(\n"
+                            f"    n_estimators={best_p.get('n_estimators')},\n"
+                            f"    learning_rate={best_p.get('learning_rate'):.6f},\n"
+                            f"    num_leaves={best_p.get('num_leaves')},\n"
+                            f"    max_bin={best_p.get('max_bin')},\n"
+                            f"    cat_smooth={best_p.get('cat_smooth'):.4f},\n"
+                            f"    colsample_bytree={best_p.get('colsample_bytree'):.4f},\n"
+                            f"    subsample={best_p.get('subsample'):.4f},\n"
+                            f"    min_child_samples={best_p.get('min_child_samples')},\n"
+                            f"    random_state=123,\n"
+                            f"    importance_type='gain',\n"
+                            f")",
+                            language="python"
+                        )
                     if cv_df is not None and not cv_df.empty:
                         st.subheader("試行結果 (上位10件)")
                         st.dataframe(cv_df.head(10), use_container_width=True)
                     st.info(
-                        "✅ **適用方法**: 上記パラメータを `src/core_model.py` の "
-                        "`model_win = lgb.LGBMRanker(...)` に設定して再学習してください。\n\n"
-                        "※ CV回収率が100〜130%程度なら信頼できる最適化結果です。"
+                        "✅ **適用方法**: 上のコードを `src/core_model.py` の "
+                        "`model_win = lgb.LGBMRanker(...)` と置き換えて再学習してください。\n\n"
+                        "目標: AUC 0.74〜0.78（市場勝率なし）が信頼できる最適化結果の範囲です。"
                     )
                 except Exception as e:
                     import traceback

@@ -5,7 +5,7 @@ check_market_rate_auc.py - 市場勝率の AUC 寄与検証スクリプト
 AUC を比較することで、オッズ情報への依存度を確認します。
 
 【使い方】
-  cd C:\Users\t-tsuchiya\Documents\keiba_ai
+  cd C:/Users/t-tsuchiya/Documents/keiba_ai
   python check_market_rate_auc.py
 
 【所要時間目安】

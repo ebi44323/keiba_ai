@@ -42,7 +42,8 @@ def _calc_auc(test_df, pred_col='optuna_pred'):
 
 
 def run_optuna_tuning(df, features, cat_features, te_cols,
-                     n_trials=50, n_folds=3, fold_days=60):
+                     n_trials=50, n_folds=3, fold_days=60,
+                     exclude_features=None):
     """
     ウォークフォワードCV + リーク防止版 Optunaチューニング。
 
@@ -61,6 +62,11 @@ def run_optuna_tuning(df, features, cat_features, te_cols,
         optuna.logging.set_verbosity(optuna.logging.WARNING)
     except ImportError:
         return None, "Optunaがインストールされていません (`pip install optuna`)", None
+
+    # exclude_features: チューニングから除外する特徴量リスト
+    # 例: ['市場勝率'] → オッズ依存を排除した真の予測力でチューニング
+    if exclude_features:
+        features = [f for f in features if f not in exclude_features]
 
     df = df.copy()
     if '馬券内' not in df.columns:
@@ -174,9 +180,11 @@ def run_optuna_tuning(df, features, cat_features, te_cols,
         for t in study.trials if t.value is not None
     ]).sort_values('cv_score', ascending=False).reset_index(drop=True)
 
+    excluded_str = f"  除外特徴量: {exclude_features}\n" if exclude_features else ""
     summary = (
         f"チューニング完了 ({len(folds)}fold ウォークフォワードCV)\n"
         f"  最適CV AUC: {best_score:.4f}  (試行数: {n_trials})\n"
+        f"{excluded_str}"
         f"  n_estimators:      {best_params.get('n_estimators')}\n"
         f"  learning_rate:     {best_params.get('learning_rate'):.6f}\n"
         f"  num_leaves:        {best_params.get('num_leaves')}\n"
