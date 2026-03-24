@@ -33,14 +33,15 @@ st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高めら�
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
-from src.core_model import prepare_model_and_data, _hub_label, _HF_TOKEN, _HF_REPO_ID
+from src.core_model import prepare_model_and_data, _HF_TOKEN, _HF_REPO_ID
 from src.scraper import get_todays_races, get_weekend_dates, get_payouts, get_all_payouts, get_odds_from_soup, fetch_horse_last_race
 from src.reports import generate_pdf_report, generate_txt_report
-from src.discord_utils import _push_discord_queue, send_discord_prediction, send_discord_review, _test_discord_webhook, _DISCORD_WEBHOOK_URL
+from src.discord_utils import _push_discord_queue, send_discord_prediction, send_discord_review, _test_discord_webhook, _DISCORD_WEBHOOK_URL, _DISCORD_REVIEW_WEBHOOK_URL
 from src.inference import run_real_prediction
 
 
 _hub_available = bool(_HF_TOKEN and _HF_REPO_ID)
+_hub_label = "HF Hub" if _hub_available else "ローカル学習"
 
 with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)'):
     bundle = prepare_model_and_data()
