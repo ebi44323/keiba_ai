@@ -422,7 +422,10 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
         top1_umaban = df_test.loc[0,'馬番']
         himo_umabans = df_test.loc[1:4,'馬番'].astype(str).tolist() if len(df_test)>=5 else df_test.loc[1:,'馬番'].astype(str).tolist()
         himo_str = "・".join(himo_umabans)
-        has_unraced = ('新馬' in race_text) or ('未出走' in race_text) or df_test['前走_着順'].isna().any()
+        # 未出走馬混在の判定: レーステキストのみで判断する。
+        # 注意: df_test['前走_着順'].isna() はリーク防止コードで NaN 上書きされるため使用不可
+        #       → skip_live_scrape=True（振り返り）時にほぼ全レースが誤判定される
+        has_unraced = ('新馬' in race_text) or ('未出走' in race_text)
         ana_horse_nums = []; topics_list = []
         for rank, row in df_test.iterrows():
             if not has_unraced and rank>=4 and row['期待値']>=1.5:

@@ -808,7 +808,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     # =========================================================
                     if res_df is not None and payouts['tansho']:
                         honmei = res_df.iloc[0]['馬番']
-                        has_unraced = ('新馬' in r['title']) or ('未出走' in r['title']) or (res_df['前走_着順'].isna().any() if '前走_着順' in res_df.columns else False)
+                        has_unraced = ('新馬' in r['title']) or ('未出走' in r['title'])
 
                         stats['honmei_races'] += 1
                         if track_type == "芝": stats['shiba_races'] += 1
