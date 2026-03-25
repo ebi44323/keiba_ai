@@ -14,6 +14,7 @@ features_engine.py         src/features_engine.py の re-export のみ（実体�
 update_data.py             週次データ更新スクリプト（python update_data.py で実行）
 backfill_race_name.py      レース名補完スクリプト
 check_market_rate_auc.py   市場勝率のAUC寄与検証スクリプト
+train_and_push.py          ローカル再学習→HF Hub保存スクリプト（手動実行用）
 
 src/
   __init__.py              パッケージ宣言（HuggingFace Linux環境に必須）
@@ -24,7 +25,7 @@ src/
   optuna_tuner.py          Optunaチューニング（ウォークフォワードCV・AUC目的関数）
   backtest.py              時系列バックテスト
   scraper.py               netkeiba/Yahoo競馬スクレイピング
-  discord_utils.py         Discord通知（HFキュー経由・現在動作不安定）
+  discord_utils.py         Discord通知（Webhook直接送信）
   reports.py               PDF/テキストレポート生成
   utils.py                 resolve_name/classify_race_class（定数はconfig.pyから再エクスポート）
 
@@ -119,6 +120,8 @@ src/
   - `src/utils.py` はconfigから再エクスポートするだけ
   - `update_data.py`, `backfill_race_name.py` も同様
 - 血統取得は `_get_pedigree_cached()` を使う（sqlite キャッシュ: ped_cache.db）
+- **.gitignoreに必ず含めること**: `*.png`, `*.jpg`, `*.jpeg`, `learning_data_perfect_tier.csv`
+  - PNG等のバイナリをコミットするとHuggingFace Spacesへのpushが拒否される
 
 ---
 
@@ -132,6 +135,40 @@ git push origin main
     → git add . && git push --force hf main
       → HuggingFace Space 自動再ビルド（2〜3分）
 ```
+
+### ⚠️ デプロイ時の注意
+- **PNGなどの画像ファイルは絶対にコミットしない**（HF Spacesがバイナリを拒否してビルド失敗になる）
+- **requirements.txtのバージョン制約変更は慎重に**（pip キャッシュ無効化 → ビルドが15〜30分になる）
+- sync.ymlは `git add .` で全ファイルを拾うため、不要ファイルは .gitignore に追加すること
+
+---
+
+## HuggingFace Hub モデル管理
+
+- **モデル保存先**: `ebi44323/keiba-ebye-models`（Dataset リポジトリ）
+  - `keiba_model.pkl` — 学習済みモデルbundle
+  - `keiba_model_meta.json` — データ識別子（`data_mtime: "size:35515667"`形式）
+  - `ai_daily_history.csv` — 振り返り日次成績
+  - `discord_queue.json` — Discord通知キュー
+
+- **data_mtime の仕組み**: ZIPのファイルサイズ (`size:XXXXX`) を使用
+  - DockerのCOPYでOSのmtimeがリセットされるため、サイズで比較するよう変更済み（2026-03-25）
+  - ZIPを更新したら必ず再学習 → HF Hub保存が必要
+
+- **再学習が必要なタイミング**:
+  - `learning_data_perfect_tier.zip` を更新したとき
+  - 特徴量・調教師正規化など学習パイプラインを変更したとき
+
+- **ローカル再学習コマンド**:
+  ```powershell
+  $env:HF_TOKEN="hf_xxxxxxxxxxxx"
+  $env:HF_REPO_ID="ebi44323/keiba-ebye-models"
+  python train_and_push.py
+  ```
+
+- **HF SpaceのSecrets設定（必須）**:
+  - `HF_TOKEN` — HuggingFace APIトークン（read/write権限）
+  - `HF_REPO_ID` — `ebi44323/keiba-ebye-models`
 
 ---
 
@@ -147,12 +184,20 @@ git push origin main
 - Optuna 目的関数: 回収率 → AUC に変更
 - Optuna UI: 市場勝率除外スイッチ追加（デフォルトON）、コピペ用コード表示
 - 振り返り「全レース見送り推奨」バグ修正（has_unraced の誤判定）
-- **Optuna結果をモデルBに適用**（CV AUC 0.7596, 50試行 @ 2026-03-24）
-- **Isotonic Calibration追加**（core_model.py学習時にfitting、inference.py推論時に適用）
-  - bundle要素数: 18→19（calibratorを末尾に追加）
-  - 後方互換: bundle展開を `*_extra` で受ける形に変更（app.py 2箇所・inference.py）
-- **新特徴量5種追加**（計50特徴量）: ベスト3走_中央値スピード指数・長期休養フラグ・
-  レース格上挑戦フラグ・コース初挑戦フラグ・近5走_スピード指数安定性
+- **Optuna結果をモデルBに適用**（CV AUC 0.7615, 50試行 @ 2026-03-25）
+- **Isotonic Calibration追加**（bundle要素数 18→19）
+- **新特徴量5種追加**（計50特徴量）
+- **調教師名の正規化**: `[東]/[西]` プレフィックスを除去（core_model.py・load_jockey_base）
+  - 学習データの `[東] 矢作芳人` → `矢作芳人` に統一（195k行以上に影響）
+  - 再学習済み（2026-03-25 17:01 JST、HF Hub保存済み）
+- **オッズ取得の修正**: 枠順未確定時に馬名→馬番の優先順位で正確にマッピング
+- **スライダー操作で予想が消えるバグ修正**: session_stateキャッシュ方式に変更
+- **穴馬マーク詳細表示**: tab2（買い目展開）に穴馬スコアとヒント表示を追加
+- **EV優先回収率の長期追跡**: ai_daily_history.csvに `EV優先単勝回収率`/`EV優先複勝回収率` 列追加
+- **長期成績分析にEV優先比較**: 標準◎とEV優先の日別/月次比較を表示
+- **騎手データベース追加**: 15タブの詳細分析（脚質・上がり性能・馬体重・相性調教師など）
+- **Discord週次レポートにEV優先比較追加**
+- **HF Space再起動ループ修正**: data_mtimeをファイルサイズ比較に変更、PNG gitignore追加
 
 ### 3月振り返り結果から判明した課題（2026-03-25）
 - 本命単勝回収率: 39〜88%（全日100%未満）→ 本命一辺倒では儲からない
@@ -160,16 +205,34 @@ git push origin main
 - 穴馬複勝回収率: 185.7%・134.4% → 穴馬を複勝圏には入れているが◎にしていない
 - **根本原因**: 現在◎=max(AI勝率)。ランキングモデルは市場合意と相関するため1番人気多発
 
-### 次にやること（優先度順）
+---
+
+## 次にやること（優先度順）
+
+### 高優先度（予測精度・回収率改善）
 1. **◎選択ロジックをEV優先に変更**（最重要・穴馬問題の本質的解決）
    - 現在: ◎ = max(AI勝率)
    - 改善: EV=AI勝率×オッズ が1.0超かつAI勝率>=0.10 の馬がいれば、その馬を◎に
    - 実装箇所: `src/inference.py` の ◎判定ロジック（app.pyにもUI切り替えスイッチを追加）
-2. **穴馬推奨モード（モデルD）の検討**
-   - 目的変数: 着順=1 かつ 人気>=5（穴馬が勝つケース）
-   - 特徴量: 長期休養フラグ・コース初挑戦フラグ・レース格上挑戦フラグ・ベスト3走スピード指数など
-3. git push → HF デプロイ（現在の変更を本番反映）
-4. Discord通知キューの安定化（GitHub Actions 5分ポーリング → Webhook直接化を検討）
+2. **min_child_samples=25 の過学習検証**
+   - 実戦数週間後に回収率を確認し、必要なら保守的な96に戻す
+
+### 中優先度（機能拡張）
+3. **週次データ更新の実施** (`python update_data.py`)
+   - 最新レース結果を学習データに追加 → 再学習でモデル更新
+4. **EV優先データの蓄積と比較検証**
+   - 今後数週間の振り返りでEV優先 vs 標準◎ の実績を比較
+5. **Discord通知の安定化**
+   - 現在Webhook直接送信に切り替え済み。振り返り・予想ともに動作確認を続ける
+
+### 低優先度（将来的な改善）
+6. **騎手データベースの拡充**
+   - 現在15タブだが、さらに項目を追加する余地あり
+7. **モデルD（穴馬専用）の活用強化**
+   - 現在◎への影響なし。穴馬複勝推奨への活用を検討
+8. **Optunaの再チューニング**
+   - 調教師正規化の効果をモデルに反映するため、再度チューニング推奨
+   - 特に「市場勝率なし」モードで50試行以上
 
 ---
 
@@ -190,4 +253,10 @@ python check_market_rate_auc.py
 
 # ローカル動作確認
 streamlit run app.py
+
+# ローカル再学習 → HF Hub保存（ZIPを更新した後や学習パイプライン変更後に実行）
+# PowerShellで:
+#   $env:HF_TOKEN="hf_xxxxxxxxxxxx"
+#   $env:HF_REPO_ID="ebi44323/keiba-ebye-models"
+python train_and_push.py
 ```
