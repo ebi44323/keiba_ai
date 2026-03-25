@@ -1,7 +1,3 @@
-import sys
-sys.stderr.write("=== KEIBA-EBYE APP START (commit: 5bc76dd) ===\n")
-sys.stderr.flush()
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -53,19 +49,13 @@ def get_morning_prediction(race_id, race_date_str, _bundle):
 _hub_available = bool(_HF_TOKEN and _HF_REPO_ID)
 _hub_label = "HF Hub" if _hub_available else "ローカル学習"
 
-print(f"[keiba-ebye] モデルロード開始 hub={_hub_available}", flush=True)
-logger.info(f"app.py: モデルロード開始 (hub={_hub_available})")
-
 try:
-    bundle = prepare_model_and_data()
-    print("[keiba-ebye] モデルロード完了", flush=True)
-    logger.info("app.py: モデルロード完了")
+    with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)'):
+        bundle = prepare_model_and_data()
 except Exception as _load_err:
-    print(f"[keiba-ebye] モデルロード失敗: {_load_err}", flush=True)
-    logger.error(f"app.py: モデルロード失敗: {_load_err}\n{traceback.format_exc()}")
+    logger.error(f"モデルロード失敗: {_load_err}\n{traceback.format_exc()}")
     st.error(f"⚠️ AIエンジンの起動に失敗しました: {_load_err}")
     st.code(traceback.format_exc(), language="python")
-    st.info("ページを再読み込みしてもエラーが続く場合は管理者にご連絡ください。")
     st.stop()
 
 (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
