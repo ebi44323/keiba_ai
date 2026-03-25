@@ -8,8 +8,8 @@ logger = logging.getLogger('keiba_ebye')
 
 _HF_TOKEN   = os.environ.get("HF_TOKEN", "")
 _HF_REPO_ID = os.environ.get("HF_REPO_ID", "")
-_DISCORD_WEBHOOK_URL        = os.environ.get("DISCORD_WEBHOOK_URL", "")
-_DISCORD_REVIEW_WEBHOOK_URL = os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "") or _DISCORD_WEBHOOK_URL
+_DISCORD_WEBHOOK_URL        = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+_DISCORD_REVIEW_WEBHOOK_URL = (os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "").strip()) or _DISCORD_WEBHOOK_URL
 
 _DISCORD_QUEUE_FILE = "discord_queue.json"
 
