@@ -1,3 +1,7 @@
+import sys
+sys.stderr.write("=== KEIBA-EBYE APP START (commit: 5bc76dd) ===\n")
+sys.stderr.flush()
+
 import streamlit as st
 import pandas as pd
 import numpy as np
