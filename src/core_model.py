@@ -38,33 +38,46 @@ def _try_load_model_from_hub():
     """
     if not _HF_TOKEN or not _HF_REPO_ID:
         return None
+
+    # ダウンロードタイムアウト設定（デフォルト60秒）
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
+
     try:
         import joblib
         from huggingface_hub import hf_hub_download
 
         # メタデータを確認: データが更新されていれば再学習
         try:
+            logger.info("HF Hub: メタデータをダウンロード中...")
             meta_path = hf_hub_download(
                 repo_id=_HF_REPO_ID, filename=_META_FILE,
-                repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache"
+                repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache",
+                force_download=True,
             )
             with open(meta_path, 'r') as f:
                 meta = json.load(f)
             hub_data_mtime = meta.get('data_mtime', '')
             local_mtime    = _get_zip_mtime()
-            if local_mtime != hub_data_mtime:
+            logger.info(f"HF Hub data_mtime={hub_data_mtime!r}, local={local_mtime!r}")
+            if local_mtime != 'unknown' and local_mtime != hub_data_mtime:
+                logger.info("データ更新検出: HFモデルではなく再学習へ")
                 return None  # データが更新されているので再学習
         except Exception as _e:
-            logger.info(f'HF Hubメタデータなし（初回）: {_e}')  # 初回 → そのままロードを試みる
+            logger.info(f'HF Hubメタデータなし（初回 or エラー）: {_e}')  # 初回 → そのままロードを試みる
 
         # モデル本体をロード
+        logger.info("HF Hub: モデルをダウンロード中...")
         model_path = hf_hub_download(
             repo_id=_HF_REPO_ID, filename=_MODEL_FILE,
-            repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache"
+            repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache",
+            force_download=True,
         )
+        logger.info("HF Hub: joblib.load 開始...")
         bundle = joblib.load(model_path)
+        logger.info("HF Hub: モデルロード完了")
         return bundle
-    except Exception:
+    except Exception as _e:
+        logger.warning(f"HF Hubロード失敗（学習フォールバック）: {_e}")
         return None  # Hubにモデルなし or エラー → 学習へ
 
 def _save_model_to_hub(bundle):
