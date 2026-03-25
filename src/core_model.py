@@ -291,6 +291,46 @@ def prepare_model_and_data(force_retrain=False):
     except Exception as _e:
         logger.warning(f'Calibration失敗（スキップ）: {_e}')
 
+    # ── モデルD: 穴馬Classifier（人気5番手以下の1着を予測）──────────────────
+    # 目的: AI予想の◎変更には使わず「穴馬マーク」表示専用
+    # 市場勝率（オッズ由来）は除外して純粋な馬の実力・特性から判断
+    model_d = None
+    try:
+        d_features = [f for f in features if f != '市場勝率']
+        d_features = [f for f in d_features if f in train_df.columns]
+
+        if '人気' in train_df.columns:
+            train_df['ana_label'] = ((pd.to_numeric(train_df['着順'], errors='coerce') == 1) &
+                                     (pd.to_numeric(train_df['人気'], errors='coerce') >= 5)).astype(int)
+            test_df['ana_label']  = ((pd.to_numeric(test_df['着順'],  errors='coerce') == 1) &
+                                     (pd.to_numeric(test_df['人気'],  errors='coerce') >= 5)).astype(int)
+            pos_n = train_df['ana_label'].sum()
+            neg_n = len(train_df) - pos_n
+            spw   = max(1.0, neg_n / pos_n) if pos_n > 0 else 50.0
+
+            model_d = lgb.LGBMClassifier(
+                n_estimators=300,
+                learning_rate=0.01,
+                num_leaves=31,
+                max_bin=255,
+                scale_pos_weight=spw,
+                colsample_bytree=0.7,
+                subsample=0.8,
+                random_state=42,
+                importance_type='gain',
+                verbose=-1,
+            )
+            model_d.fit(
+                train_df[d_features], train_df['ana_label'],
+                categorical_feature=[f for f in cat_features if f in d_features],
+            )
+            logger.info(f'モデルD(穴馬) 学習完了 scale_pos_weight={spw:.1f}')
+        else:
+            logger.warning('人気列がないためモデルDをスキップ')
+    except Exception as _e:
+        logger.warning(f'モデルD学習失敗（スキップ）: {_e}')
+        model_d = None
+
     try:
         ped_df = pd.read_csv('pedigree_master_all.csv', dtype=str)
         ped_df['馬ID'] = ped_df['馬ID'].astype(str).str.zfill(10)
@@ -303,7 +343,8 @@ def prepare_model_and_data(force_retrain=False):
     bundle = (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
-              auc_win, auc_place, calibrator)  # calibratorを末尾に追加（後方互換: *extraで受ける）
+              auc_win, auc_place, calibrator, model_d)
+              # _extra[0]=calibrator, _extra[1]=model_d（後方互換: *extraで受ける）
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)

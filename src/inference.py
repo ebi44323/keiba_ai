@@ -33,6 +33,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
      known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
      auc_win, auc_place, *_extra) = bundle
     calibrator = _extra[0] if _extra else None
+    model_d    = _extra[1] if len(_extra) > 1 else None
     
     error_log = []
     odds_dict = {}
@@ -461,6 +462,27 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                     old_best_mark   = df_test.loc[best_ev_idx, '印']
                     df_test.loc[0,            '印'] = old_best_mark if old_best_mark else '〇'
                     df_test.loc[best_ev_idx,  '印'] = old_honmei_mark
+
+        # ── モデルD: 穴馬スコア計算 ──────────────────────────────────
+        df_test['穴馬スコア'] = 0.0
+        df_test['穴馬マーク'] = ''
+        if model_d is not None:
+            try:
+                d_features = [f for f in features if f != '市場勝率' and f in df_test.columns]
+                d_proba = model_d.predict_proba(df_test[d_features])[:, 1]
+                df_test['穴馬スコア'] = d_proba
+                # マーク条件: レース内スコア上位2頭 AND オッズ8倍以上
+                score_threshold = df_test['穴馬スコア'].quantile(0.70)
+                df_test['穴馬マーク'] = df_test.apply(
+                    lambda r: '🎯' if (
+                        r['穴馬スコア'] >= score_threshold and
+                        r['穴馬スコア'] >= 0.05 and
+                        float(r.get('単勝オッズ', 0)) >= 8.0
+                    ) else '',
+                    axis=1
+                )
+            except Exception as _e:
+                logger.warning(f'モデルD推論失敗（スキップ）: {_e}')
 
         p1,p2 = df_test.loc[0,'勝率(AI予測)'],df_test.loc[1,'勝率(AI予測)']
         score_diff = p1-p2

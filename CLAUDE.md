@@ -46,6 +46,7 @@ src/
 | A | LGBMRanker | 馬券内(3着以内) | n_estimators=500 |
 | B | LGBMRanker | 1着 | Optunaチューニング対象 |
 | C | LGBMRegressor | 着順パーセント | n_estimators=300 |
+| D | LGBMClassifier | 穴馬(人気5以下の1着) | scale_pos_weight≈57、予想◎には影響しない・穴馬マーク専用 |
 
 ---
 
@@ -56,15 +57,17 @@ src/
 - Optunaは「市場勝率なし」で回すこと（UIのチェックボックスがデフォルトON）
 - 目標AUC: 0.74〜0.78（市場勝率なしの基準）
 
-## Optunaチューニング結果（2026-03-24 実施）
+## Optunaチューニング結果（最新: 2026-03-25 実施）
 
-- **CV AUC: 0.7596**（3fold ウォークフォワードCV、50試行、市場勝率除外）
+- **CV AUC: 0.7615**（3fold ウォークフォワードCV、50試行、市場勝率除外）
 - 適用済みパラメータ（モデルB）:
   ```json
-  {"n_estimators":188,"learning_rate":0.009866,"num_leaves":77,
-   "max_bin":179,"cat_smooth":46.92,"colsample_bytree":0.5748,
-   "subsample":0.6397,"min_child_samples":96}
+  {"n_estimators":235,"learning_rate":0.023034,"num_leaves":82,
+   "max_bin":171,"cat_smooth":48.53,"colsample_bytree":0.5056,
+   "subsample":0.6815,"min_child_samples":25}
   ```
+- ⚠️ `min_child_samples:25`（前回96から大幅減）→ 過学習リスクあり、実戦回収率で検証推奨
+- 前回結果（2026-03-24）: CV AUC 0.7596、min_child_samples=96（より保守的）
 
 ---
 

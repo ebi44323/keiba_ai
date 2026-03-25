@@ -215,7 +215,7 @@ def display_error_log(err_log):
         for log in err_log:
             st.code(log, language=None)
 
-def display_result(df_res, topics, reco, pace_text, confidence_text, show_change_table=True):
+def display_result(df_res, topics, reco, pace_text, confidence_text, show_change_table=True, _key=""):
     tab1, tab2, tab3, tab4 = st.tabs(["📊 予想一覧", "💡 展開・買い目", "🔍 性能詳細", "🎰 複合馬券EV"])
 
     with tab1:
@@ -259,7 +259,10 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             bets.append(f"¥{bet:,}" if bet > 0 else "見送り")
             if bet > 0: total_bet += bet
 
-        show_df = df_res[['印','枠番','馬番','馬名','脚質カテゴリ','単勝オッズ','勝率(AI予測)','複勝率(AI予測)','期待値']].copy()
+        _base_cols = ['印','枠番','馬番','馬名','脚質カテゴリ','単勝オッズ','勝率(AI予測)','複勝率(AI予測)','期待値']
+        if '穴馬マーク' in df_res.columns:
+            _base_cols = ['印','穴馬マーク','枠番','馬番','馬名','脚質カテゴリ','単勝オッズ','勝率(AI予測)','複勝率(AI予測)','期待値']
+        show_df = df_res[[c for c in _base_cols if c in df_res.columns]].copy()
         show_df = show_df.rename(columns={'勝率(AI予測)':'勝率','複勝率(AI予測)':'複勝率','単勝オッズ':'オッズ','脚質カテゴリ':'脚質'})
         show_df['💰推奨'] = bets
         show_df['勝率']   = (show_df['勝率'] * 100).map('{:.1f}%'.format)
@@ -494,11 +497,11 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
         _ev4col1, _ev4col2 = st.columns([2, 1])
         with _ev4col1:
             ev4_threshold = st.slider("表示するEVの下限", 0.5, 2.0, 0.8, 0.1,
-                                      key="tab4_ev_threshold",
+                                      key=f"tab4_ev_threshold{_key}",
                                       help="この値以上の組み合わせのみ表示します")
         with _ev4col2:
             ev4_top_n = st.number_input("表示件数（上位N件）", 3, 30, 10, 1,
-                                         key="tab4_top_n",
+                                         key=f"tab4_top_n{_key}",
                                          help="EV降順で上位N件を表示します")
 
         probs = df_res['勝率(AI予測)'].values
@@ -793,7 +796,7 @@ elif action == "📅 今週末の全レース予想":
                     _ww = [e for e in (_elog or []) if "枠順未確定" in e]
                     if _ww: st.warning(_ww[0])
                     if _res_df is not None:
-                        display_result(_res_df, _topics, _reco, _pace, _conf)
+                        display_result(_res_df, _topics, _reco, _pace, _conf, _key=f"_{_r['id']}")
                         _max_ev   = float(_res_df['期待値'].max()) if '期待値' in _res_df.columns else 0.0
                         _top_row  = _res_df.iloc[0]
                         _results.append({
@@ -904,7 +907,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
 
                     with st.expander(expander_label, expanded=False):
                         if res_df is not None:
-                            display_result(res_df, topics, reco, pace_text, conf_text, show_change_table=False)
+                            display_result(res_df, topics, reco, pace_text, conf_text, show_change_table=False, _key=f"_{r['id']}")
                             # 払い戻し結果を表示
                             if payouts['tansho']:
                                 st.markdown("##### 📋 払い戻し結果")
@@ -1386,7 +1389,7 @@ elif action == "🧪 性能試験 (バックテスト)":
                         t_dict, f_dict = get_payouts(r['id'])
 
                         if res_df is not None:
-                            display_result(res_df, topics, reco, pace_text, conf_text, show_change_table=False)
+                            display_result(res_df, topics, reco, pace_text, conf_text, show_change_table=False, _key=f"_{r['id']}")
                             results_for_txt.append({'date': test_date.strftime('%Y年%m月%d日'), 'place': place, 'num': r['num'], 'track': track_type, 'dist': dist, 'pace': pace_text, 'confidence': conf_text, 'df': res_df, 'topics': topics, 'reco': reco})
 
                             if not t_dict:
