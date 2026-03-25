@@ -1266,8 +1266,14 @@ elif action == "📈 長期成績分析":
         history_df = pd.read_csv(csv_file)
         for col in ['本命単勝回収率','本命複勝回収率','穴馬単勝回収率','穴馬複勝回収率']:
             if col not in history_df.columns: history_df[col] = 0.0
+        for col in ['EV優先単勝回収率','EV優先複勝回収率']:
+            if col not in history_df.columns: history_df[col] = None
         history_df['日付'] = pd.to_datetime(history_df['日付'], errors='coerce')
         history_df = history_df.dropna(subset=['日付']).sort_values('日付').reset_index(drop=True)
+
+        # EV優先データがある行だけ抽出
+        ev_df = history_df.dropna(subset=['EV優先単勝回収率']).copy()
+        has_ev = len(ev_df) > 0
 
         if len(history_df) == 0:
             st.warning("有効なデータがありません。")
@@ -1291,6 +1297,28 @@ elif action == "📈 長期成績分析":
             k5.metric("✅ 単勝100%超え日", f"{over100_tan}日 / {n}日",
                       f"{over100_tan/n*100:.0f}%")
 
+            # EV優先 KPI（データがある場合のみ）
+            if has_ev:
+                n_ev = len(ev_df)
+                avg_ev_tan  = ev_df['EV優先単勝回収率'].mean()
+                avg_ev_fuku = ev_df['EV優先複勝回収率'].mean()
+                diff_tan  = avg_ev_tan  - ev_df['本命単勝回収率'].mean()
+                diff_fuku = avg_ev_fuku - ev_df['本命複勝回収率'].mean()
+                st.markdown("**🎯 EV優先◎ vs 標準◎ 比較サマリー** "
+                            f"<span style='font-size:0.85em;color:#888'>({n_ev}日分のデータ)</span>",
+                            unsafe_allow_html=True)
+                ek1, ek2, ek3, ek4 = st.columns(4)
+                ek1.metric("標準◎ 単勝(同期間)",
+                           f"{ev_df['本命単勝回収率'].mean():.1f}%")
+                ek2.metric("🎯 EV優先 単勝",
+                           f"{avg_ev_tan:.1f}%",
+                           delta=f"{diff_tan:+.1f}%", delta_color="normal")
+                ek3.metric("標準◎ 複勝(同期間)",
+                           f"{ev_df['本命複勝回収率'].mean():.1f}%")
+                ek4.metric("🎯 EV優先 複勝",
+                           f"{avg_ev_fuku:.1f}%",
+                           delta=f"{diff_fuku:+.1f}%", delta_color="normal")
+
             st.markdown("---")
 
             # ── 移動平均オプション ────────────────────────────
@@ -1301,15 +1329,14 @@ elif action == "📈 長期成績分析":
                 else:
                     st.caption("データが1件のため移動平均は適用されません。")
             else:
-                _ma_max = min(10, n - 1)          # 最大: min(10, n-1)、n>=3なら最低2
-                _ma_def = min(3, _ma_max)          # default: _ma_maxを超えない
+                _ma_max = min(10, n - 1)
+                _ma_def = min(3, _ma_max)
                 ma_window = st.slider("移動平均ウィンドウ (日)", 1, _ma_max, _ma_def, 1)
 
             # ── 折れ線グラフ ─────────────────────────────────
             plot_cols = ['本命単勝回収率','本命複勝回収率','穴馬単勝回収率','穴馬複勝回収率']
             history_df['日付_str'] = history_df['日付'].dt.strftime('%Y/%m/%d')
 
-            # 移動平均を計算
             for col in plot_cols:
                 history_df[f'{col}_MA'] = history_df[col].rolling(ma_window, min_periods=1).mean()
 
@@ -1329,14 +1356,34 @@ elif action == "📈 長期成績分析":
                 y=alt.Y('回収率(%):Q', title='回収率 (%)'),
                 color=alt.Color('指標:N', legend=alt.Legend(orient='bottom')),
                 tooltip=['日付_str','指標','回収率(%)']
-            ).properties(height=320)
-            st.altair_chart(line + rule100, use_container_width=True)
-            st.caption(f"灰色破線 = 損益分岐点 / {ma_window}日移動平均を表示中 / 目標: {target_rate}%")
+            ).properties(height=300)
+
+            # EV優先ラインをオーバーレイ（データある日のみ点線）
+            ev_layers = rule100
+            if has_ev:
+                ev_df['日付_str'] = ev_df['日付'].dt.strftime('%Y/%m/%d')
+                ev_melted = ev_df.melt(
+                    '日付_str',
+                    value_vars=['EV優先単勝回収率','EV優先複勝回収率'],
+                    var_name='指標', value_name='回収率(%)'
+                )
+                ev_line = alt.Chart(ev_melted).mark_line(
+                    point=True, strokeDash=[5, 3], strokeWidth=2
+                ).encode(
+                    x=alt.X('日付_str:N', sort=None),
+                    y=alt.Y('回収率(%):Q'),
+                    color=alt.Color('指標:N', legend=alt.Legend(orient='bottom')),
+                    tooltip=['日付_str','指標','回収率(%)']
+                )
+                ev_layers = rule100 + ev_line
+
+            st.altair_chart(line + ev_layers, use_container_width=True)
+            _ev_note = "　破線 = EV優先◎" if has_ev else ""
+            st.caption(f"灰色破線 = 損益分岐点 / {ma_window}日移動平均を表示中{_ev_note}")
 
             st.markdown("---")
             st.markdown("#### 📋 日別詳細テーブル")
 
-            # 値でセルを色付け
             def color_rate(val):
                 try:
                     v = float(val)
@@ -1346,23 +1393,75 @@ elif action == "📈 長期成績分析":
                 except: pass
                 return ''
 
-            show_table = history_df[['日付_str'] + plot_cols].copy()
+            # EV優先列を含む詳細テーブル
+            _tbl_cols = plot_cols.copy()
+            _ev_tbl_cols = []
+            if has_ev:
+                _ev_tbl_cols = ['EV優先単勝回収率','EV優先複勝回収率']
+                _tbl_cols += _ev_tbl_cols
+            show_table = history_df[['日付_str'] + _tbl_cols].copy()
             show_table = show_table.rename(columns={'日付_str':'日付'}).sort_values('日付', ascending=False)
+            _fmt = {c:'{:.1f}%' for c in _tbl_cols}
             st.dataframe(
-                show_table.style.applymap(color_rate, subset=plot_cols)
-                          .format({c:'{:.1f}%' for c in plot_cols}),
+                show_table.style.applymap(color_rate, subset=_tbl_cols)
+                          .format(_fmt, na_rep='-'),
                 use_container_width=True, hide_index=True
             )
+            if has_ev:
+                st.caption("🎯 EV優先列は「振り返り」でEV優先比較チェックをONにした日のみ記録されます。「-」は未集計。")
+
+            # ── EV優先 vs 標準◎ 日別比較テーブル ──────────────
+            if has_ev:
+                st.markdown("---")
+                st.markdown("#### 🎯 EV優先◎ vs 標準◎ 日別比較")
+                _cmp = ev_df[['日付_str','本命単勝回収率','EV優先単勝回収率',
+                               '本命複勝回収率','EV優先複勝回収率']].copy()
+                _cmp['単勝差'] = _cmp['EV優先単勝回収率'] - _cmp['本命単勝回収率']
+                _cmp['複勝差'] = _cmp['EV優先複勝回収率'] - _cmp['本命複勝回収率']
+                _cmp = _cmp.rename(columns={
+                    '日付_str':'日付',
+                    '本命単勝回収率':'標準◎単勝%', 'EV優先単勝回収率':'EV優先単勝%',
+                    '本命複勝回収率':'標準◎複勝%', 'EV優先複勝回収率':'EV優先複勝%',
+                }).sort_values('日付', ascending=False)
+
+                def color_diff(val):
+                    try:
+                        v = float(val)
+                        if v > 0: return 'color:#c00;font-weight:bold'
+                        if v < 0: return 'color:#4B8BFF'
+                    except: pass
+                    return ''
+
+                _cmp_cols_rate = ['標準◎単勝%','EV優先単勝%','標準◎複勝%','EV優先複勝%']
+                _cmp_cols_diff = ['単勝差','複勝差']
+                st.dataframe(
+                    _cmp.style
+                        .applymap(color_rate, subset=_cmp_cols_rate)
+                        .applymap(color_diff, subset=_cmp_cols_diff)
+                        .format({c:'{:.1f}%' for c in _cmp_cols_rate + _cmp_cols_diff}, na_rep='-'),
+                    use_container_width=True, hide_index=True
+                )
+                # 平均差サマリー
+                avg_diff_tan  = _cmp['単勝差'].mean()
+                avg_diff_fuku = _cmp['複勝差'].mean()
+                _sign_t = "+" if avg_diff_tan  >= 0 else ""
+                _sign_f = "+" if avg_diff_fuku >= 0 else ""
+                st.caption(
+                    f"平均差: 単勝 {_sign_t}{avg_diff_tan:.1f}pt　複勝 {_sign_f}{avg_diff_fuku:.1f}pt　"
+                    f"(正=EV優先が上回った日が多い / 負=標準◎が上回った日が多い)"
+                )
 
             # ── 月別集計 ─────────────────────────────────────
             if len(history_df) >= 2:
+                st.markdown("---")
                 st.markdown("#### 📅 月別集計")
                 history_df['年月'] = history_df['日付'].dt.to_period('M').astype(str)
-                monthly = history_df.groupby('年月')[plot_cols].mean().round(1)
+                _monthly_cols = plot_cols + (_ev_tbl_cols if has_ev else [])
+                monthly = history_df.groupby('年月')[_monthly_cols].mean().round(1)
                 monthly['対象日数'] = history_df.groupby('年月').size()
                 st.dataframe(
-                    monthly.style.applymap(color_rate, subset=plot_cols)
-                           .format({c:'{:.1f}%' for c in plot_cols}),
+                    monthly.style.applymap(color_rate, subset=_monthly_cols)
+                           .format({c:'{:.1f}%' for c in _monthly_cols}, na_rep='-'),
                     use_container_width=True
                 )
 

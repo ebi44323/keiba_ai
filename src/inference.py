@@ -36,7 +36,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     model_d    = _extra[1] if len(_extra) > 1 else None
     
     error_log = []
-    odds_dict = {}
+    odds_dict = {}      # 馬番(int) → オッズ(float)
+    name_odds_dict = {} # 馬名(str) → オッズ(float)  ★try外で初期化（API失敗時も参照可能）
     html_text = ""
 
     try:
@@ -45,22 +46,20 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         r_api = requests.get(odds_api_url, headers=api_headers, timeout=5)
         api_data = json.loads(r_api.text)
         if 'data' in api_data and 'odds' in api_data['data'] and '1' in api_data['data']['odds']:
-            # APIレスポンスには馬名も含まれる場合がある → 馬名でマッチング
             odds_raw = api_data['data']['odds']['1']
-            # 馬名がAPIに含まれていれば馬名→オッズのdictも作る
-            name_odds_dict = {}
             if 'horses' in api_data.get('data', {}):
+                # horses リストがある → 馬名と馬番の両方を確実にマッピング
                 for h in api_data['data']['horses']:
                     hname = h.get('name', '').strip()
                     hnum  = h.get('num', '')
                     if hname and hnum and str(hnum) in odds_raw:
                         name_odds_dict[hname] = float(odds_raw[str(hnum)][0])
-                        odds_dict[int(hnum)] = float(odds_raw[str(hnum)][0])
-            if not name_odds_dict:
-                # 旧形式: キーが馬番か人気順か不明 → とりあえず馬番として格納
-                for uma_num, odds_list in odds_raw.items():
-                    if str(uma_num).isdigit():
-                        odds_dict[int(uma_num)] = float(odds_list[0])
+                        odds_dict[int(hnum)]  = float(odds_raw[str(hnum)][0])
+            # horses なし or 一部未取得の場合は odds_raw のキー（馬番）で補完
+            # ★ odds_raw のキーは常に馬番。人気順ではない。
+            for uma_num, odds_list in odds_raw.items():
+                if str(uma_num).isdigit() and int(uma_num) not in odds_dict:
+                    odds_dict[int(uma_num)] = float(odds_list[0])
     except Exception as e:
         logger.warning(f'netkeiba APIオッズ取得失敗: {e}')
         error_log.append(f"netkeiba APIオッズ取得失敗: {e}")
@@ -156,25 +155,21 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             wm = re.search(r'^(\d{3})', (tds[weight_idx].text if weight_idx!=-1 and len(tds)>weight_idx else "").strip())
             weight_val = float(wm.group(1)) if wm else np.nan
 
-            # ── オッズ取得 ─────────────────────────────────────────────
-            # 枠番確定後 → APIキー=馬番  → umaban で引く
-            # 枠番未確定 → APIキー=テーブル行順 → row_pos で引く
-            if pre_waku_confirmed:
-                odds_val = odds_dict.get(umaban, 0.0)
-            else:
-                odds_val = odds_dict.get(row_pos, 0.0)  # 行順マッピング
+            # ── オッズ取得（優先順: 1.馬名 → 2.馬番 → 3.HTMLテーブル → 4.デフォルト10倍）──
+            # ★ APIキーは枠番確定前後ともに「馬番」。row_posは使わない。
+            # 1. 馬名マッチ（最確実。枠番確定前でも馬名は変わらない）
+            odds_val = name_odds_dict.get(horse_name, 0.0)
 
-            # name_odds_dict(馬名キー)があれば補完
+            # 2. 馬番マッチ
             if odds_val == 0.0:
-                try: odds_val = name_odds_dict.get(horse_name, 0.0)
-                except Exception as _e: logger.debug(f'name_odds_dict参照失敗: {_e}')
+                odds_val = odds_dict.get(umaban, 0.0)
 
-            # ページ内オッズ列
+            # 3. ページ内オッズ列
             if odds_val == 0.0 and odds_idx != -1 and len(tds) > odds_idx:
                 om = re.search(r'\d{1,4}\.\d+', tds[odds_idx].text)
                 if om: odds_val = float(om.group(0))
 
-            # クラス属性
+            # 4. クラス属性
             if odds_val == 0.0:
                 for td in tds:
                     if any(c in ['Odds','Popular','txt_c'] for c in td.get('class',[])):
