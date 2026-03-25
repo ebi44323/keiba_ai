@@ -23,7 +23,7 @@ def _safe_col(df, col, default=np.nan):
     return pd.Series([val] * len(df), index=df.index)
 
 # ==========================================
-def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
+def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.0, min_win_prob=0.10):
     """
     skip_live_scrape=True: バックテスト時に使用。
       fetch_horse_last_race()を呼ばない（速度維持＆日付ズレ防止）
@@ -450,6 +450,17 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False):
         df_test = df_test.sort_values('勝率(AI予測)', ascending=False).reset_index(drop=True)
         marks = ['◎','〇','▲','△','☆']+['']*(len(df_test)-5)
         df_test['印'] = marks[:len(df_test)]
+        # EV優先モード: EV>=閾値 かつ AI勝率>=min_win_prob の馬を◎に昇格
+        if ev_first:
+            ev_cands = df_test[(df_test['期待値'] >= ev_threshold) & (df_test['勝率(AI予測)'] >= min_win_prob)]
+            if not ev_cands.empty:
+                # EVが最大の候補を◎に
+                best_ev_idx = ev_cands['期待値'].idxmax()
+                if best_ev_idx != 0:  # 元の◎と異なる場合のみ入れ替え
+                    old_honmei_mark = df_test.loc[0, '印']  # '◎'
+                    old_best_mark   = df_test.loc[best_ev_idx, '印']
+                    df_test.loc[0,            '印'] = old_best_mark if old_best_mark else '〇'
+                    df_test.loc[best_ev_idx,  '印'] = old_honmei_mark
 
         p1,p2 = df_test.loc[0,'勝率(AI予測)'],df_test.loc[1,'勝率(AI予測)']
         score_diff = p1-p2

@@ -169,6 +169,21 @@ sim_kelly_frac = st.sidebar.slider("ケリー係数", 0.1, 1.0, 0.25, 0.05,
 sim_max_per_race = st.sidebar.slider("1レース最大投資額 (軍資金の%)", 5, 40, 20, 5,
                    help="1レースに軍資金の何%まで使うか上限を設定します。") / 100
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🎯 ◎選択モード")
+ev_first_mode = st.sidebar.checkbox(
+    "EV優先モード",
+    value=False,
+    help="ONにすると「AI勝率×オッズ(期待値)」が最大の馬を◎に選びます。穴馬が◎になりやすくなります。"
+)
+ev_first_threshold = 1.0
+ev_first_min_prob  = 0.10
+if ev_first_mode:
+    ev_first_threshold = st.sidebar.slider("◎昇格の最低期待値", 1.0, 3.0, 1.0, 0.1,
+                           help="この期待値以上の馬の中からEV最大を◎にします。")
+    ev_first_min_prob  = st.sidebar.slider("◎昇格の最低AI勝率", 0.05, 0.30, 0.10, 0.01,
+                           help="AI勝率がこれ未満の馬はEV優先でも◎になりません。")
+
 # ── モデル管理 (Pro + HF Hubが設定済みの場合のみ表示) ─────
 if _is_pro and _hub_available:
     st.sidebar.markdown("---")
@@ -253,12 +268,28 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
         if total_bet > 0:
             st.caption(f"💰 推奨投資合計: **¥{total_bet:,}** / 軍資金¥{sim_budget:,}の {total_bet/sim_budget*100:.1f}%")
 
-        # メモあり馬のメッセージ
+        # メモあり馬のメッセージ（クリックで全件展開）
         for _, row in df_res.iterrows():
             hname = row['馬名']
             if hname in all_memos:
-                latest = sorted(all_memos[hname], key=lambda x: x["日付"], reverse=True)[0]
-                st.info(f"📝 **{hname}** ({row['印']}) にメモあり: {latest['タグ']} {latest['日付']} — {latest['メモ'] or '(内容なし)'}")
+                horse_memos = sorted(all_memos[hname], key=lambda x: x["日付"], reverse=True)
+                latest = horse_memos[0]
+                label = f"📝 **{hname}** ({row['印']}) にメモあり ({len(horse_memos)}件): {latest['タグ']} {latest['日付']}"
+                with st.expander(label, expanded=False):
+                    for m in horse_memos:
+                        tag_color = {
+                            "🔴": "rgba(255,75,75,0.1)", "🟠": "rgba(255,165,0,0.1)",
+                            "🟡": "rgba(255,230,0,0.1)", "🟢": "rgba(75,200,75,0.1)",
+                            "🔵": "rgba(75,75,255,0.1)", "⚫": "rgba(100,100,100,0.1)",
+                        }.get(m["タグ"][0], "rgba(200,200,200,0.05)")
+                        writer_str = f' <span style="color:#888;font-size:0.85em">by {m["記入者"]}</span>' if m.get("記入者") else ""
+                        st.markdown(
+                            f'<div style="padding:8px;margin:4px 0;border-radius:6px;'
+                            f'background:{tag_color};border-left:3px solid #ccc;">'
+                            f'<b>{m["日付"]}</b> {m["タグ"]}{writer_str}<br>'
+                            f'{m["メモ"] or "(メモなし)"}</div>',
+                            unsafe_allow_html=True
+                        )
 
         def highlight_row(row):
             horse_name = row.get('馬名', '')
@@ -581,7 +612,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                 live_update = st.button("🔄 直前オッズ・馬体重で最新情報を取得し再予測", use_container_width=True)
                 if manual_run or force_refresh or auto_triggered or discord_triggered or live_update:
                     with st.spinner('AIが推論中（最新オッズ取得含む）...'):
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
                 else:
                     res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle)
 
@@ -651,7 +682,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
             if st.button("🚀 朝版 予想開始", type="primary") or live_update:
                 with st.spinner('推論中...'):
                     if live_update:
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
                     else:
                         res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle)
 
@@ -1613,6 +1644,7 @@ elif action == "📝 馬券メモ管理":
     with col_r:
         st.markdown("#### ✏️ メモを追加・編集")
         memo_horse = st.text_input("馬名", placeholder="例: ドウデュース")
+        memo_writer = st.text_input("記入者", placeholder="例: たろう", help="メモを書いた人の名前（省略可）")
         memo_tag = st.selectbox("タグ", [
             "🔴 出遅れ", "🟠 不利あり", "🟡 内有利で損",
             "🟢 好走の手応え", "🔵 距離が長かった", "⚫ 馬場が合わなかった",
@@ -1628,6 +1660,7 @@ elif action == "📝 馬券メモ管理":
                 "日付": memo_date.strftime("%Y/%m/%d"),
                 "タグ": memo_tag,
                 "メモ": memo_text.strip(),
+                "記入者": memo_writer.strip(),
             })
             save_memos(memos)
             st.success(f"✅ {memo_horse} のメモを保存しました！")
@@ -1657,10 +1690,11 @@ elif action == "📝 馬券メモ管理":
                                 "🔵": "rgba(75,75,255,0.1)",
                                 "⚫": "rgba(100,100,100,0.1)",
                             }.get(memo["タグ"][0], "rgba(200,200,200,0.05)")
+                            writer_str = f' <span style="color:#888;font-size:0.85em">by {memo["記入者"]}</span>' if memo.get("記入者") else ""
                             st.markdown(
                                 f'<div style="padding:8px;margin:4px 0;border-radius:6px;'
                                 f'background:{tag_color};border-left:3px solid #ccc;">'
-                                f'<b>{memo["日付"]}</b> {memo["タグ"]}<br>'
+                                f'<b>{memo["日付"]}</b> {memo["タグ"]}{writer_str}<br>'
                                 f'{memo["メモ"] or "(メモなし)"}</div>',
                                 unsafe_allow_html=True
                             )
