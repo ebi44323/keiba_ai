@@ -1968,551 +1968,550 @@ elif action == "🏇 騎手・調教師フォーム分析":
 
         jdf = df_all[df_all['騎手'] == sel_jockey].copy()
         if len(jdf) < detail_min_races:
-            st.warning(f"{sel_jockey} のデータが {len(jdf)} 件のみです。")
-            st.stop()
+            st.warning(f"{sel_jockey} のデータが {len(jdf)} 件のみです。最低出走数フィルタを下げるか別の騎手を選んでください。")
+        else:
+            # ── KPIカード ──────────────────────────────────────────────────
+            total_r    = len(jdf)
+            total_w    = jdf['勝ち'].sum()
+            total_f    = jdf['複勝'].sum()
+            win_r      = total_w / total_r * 100
+            fuku_r     = total_f / total_r * 100
+            tan_return = (jdf[jdf['勝ち']==1]['単勝'].sum() * 100) / (total_r * 100) * 100
+            date_range = f"{jdf['日付'].min().strftime('%Y/%m/%d')} 〜 {jdf['日付'].max().strftime('%Y/%m/%d')}"
+            recent_90  = jdf[jdf['日付'] >= max_dt - pd.Timedelta(days=90)]
+            r90_w      = recent_90['勝ち'].mean() * 100 if len(recent_90) > 0 else 0.0
 
-        # ── KPIカード ──────────────────────────────────────────────────
-        total_r    = len(jdf)
-        total_w    = jdf['勝ち'].sum()
-        total_f    = jdf['複勝'].sum()
-        win_r      = total_w / total_r * 100
-        fuku_r     = total_f / total_r * 100
-        tan_return = (jdf[jdf['勝ち']==1]['単勝'].sum() * 100) / (total_r * 100) * 100
-        date_range = f"{jdf['日付'].min().strftime('%Y/%m/%d')} 〜 {jdf['日付'].max().strftime('%Y/%m/%d')}"
-        recent_90  = jdf[jdf['日付'] >= max_dt - pd.Timedelta(days=90)]
-        r90_w      = recent_90['勝ち'].mean() * 100 if len(recent_90) > 0 else 0.0
+            st.markdown(f"#### 🏅 {sel_jockey}　<span style='font-size:0.8em;color:#888'>{date_range} / 通算{total_r}戦</span>", unsafe_allow_html=True)
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("通算勝率",     f"{win_r:.1f}%",  f"{total_w}勝")
+            k2.metric("通算複勝率",   f"{fuku_r:.1f}%", f"{total_f}回3着内")
+            k3.metric("単勝回収率",   f"{tan_return:.1f}%")
+            k4.metric("直近90日 勝率", f"{r90_w:.1f}%",  f"{len(recent_90)}戦")
+            k5.metric("騎乗レース数",  f"{total_r}戦")
 
-        st.markdown(f"#### 🏅 {sel_jockey}　<span style='font-size:0.8em;color:#888'>{date_range} / 通算{total_r}戦</span>", unsafe_allow_html=True)
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("通算勝率",     f"{win_r:.1f}%",  f"{total_w}勝")
-        k2.metric("通算複勝率",   f"{fuku_r:.1f}%", f"{total_f}回3着内")
-        k3.metric("単勝回収率",   f"{tan_return:.1f}%")
-        k4.metric("直近90日 勝率", f"{r90_w:.1f}%",  f"{len(recent_90)}戦")
-        k5.metric("騎乗レース数",  f"{total_r}戦")
-
-        st.markdown("---")
-
-        # ── タブ構成 ──────────────────────────────────────────────────
-        (t_monthly, t_quarter, t_venue, t_gate,
-         t_dist, t_surface, t_cond,
-         t_style, t_agari, t_popular, t_weight,
-         t_trainer, t_rotation, t_roto, t_recent) = st.tabs([
-            "📅 月次成績", "📈 四半期推移", "🏟️ 競馬場別",
-            "🔢 枠番別", "📏 距離別", "🌱 芝ダート別", "☁️ 馬場状態別",
-            "🏃 脚質・戦法", "⚡ 上がり性能", "🎯 人気別",
-            "🐴 馬体重・性別", "🤝 相性調教師", "🔄 回り・地形",
-            "⏰ ローテ・乗替", "📋 近走履歴"
-        ])
-
-        def _mk_bar(df, x_col, y_col, color_col=None, title="", height=280):
-            """シンプルな縦棒グラフ"""
-            enc = dict(
-                x=alt.X(f'{x_col}:N', sort=None, title=x_col,
-                         axis=alt.Axis(labelAngle=-30, labelFontSize=11)),
-                y=alt.Y(f'{y_col}:Q', title=y_col),
-                tooltip=list(df.columns)
-            )
-            if color_col:
-                enc['color'] = alt.Color(f'{color_col}:Q',
-                    scale=alt.Scale(scheme='redyellowgreen', domain=[0, 30, 50]),
-                    legend=None)
-            return (alt.Chart(df).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
-                    .encode(**enc).properties(height=height, title=title))
-
-        def _stat_table(df, grp_col, min_r=5):
-            g = df.groupby(grp_col).agg(
-                出走数=('着順','count'), 勝利数=('勝ち','sum'), 複勝数=('複勝','sum'),
-                払戻合計=('単勝', lambda x: df.loc[x.index[df.loc[x.index,'勝ち']==1],'単勝'].sum() * 100)
-            ).reset_index()
-            g = g[g['出走数'] >= min_r]
-            g['勝率(%)']       = (g['勝利数'] / g['出走数'] * 100).round(1)
-            g['複勝率(%)']     = (g['複勝数'] / g['出走数'] * 100).round(1)
-            g['単勝回収率(%)'] = (g['払戻合計'] / (g['出走数'] * 100) * 100).round(1)
-            return g.drop(columns=['払戻合計'])
-
-        # ── 月次成績 ──────────────────────────────────────────────────
-        with t_monthly:
-            cutoff_3m = max_dt - pd.Timedelta(days=90)
-            jdf_3m = jdf[jdf['日付'] >= cutoff_3m]
-            st.caption(f"直近3ヶ月 ({cutoff_3m.strftime('%Y/%m/%d')}〜) : {len(jdf_3m)}戦")
-            if len(jdf_3m) > 0:
-                m3 = _stat_table(jdf_3m, '年月', min_r=1).sort_values('年月')
-                mc1, mc2 = st.columns(2)
-                with mc1:
-                    st.altair_chart(
-                        _mk_bar(m3, '年月', '勝率(%)', '勝率(%)', "月別 勝率"),
-                        use_container_width=True)
-                with mc2:
-                    st.altair_chart(
-                        _mk_bar(m3, '年月', '単勝回収率(%)', '単勝回収率(%)', "月別 単勝回収率"),
-                        use_container_width=True)
-                st.dataframe(
-                    m3.sort_values('年月', ascending=False).style.format({
-                        '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                    }), use_container_width=True, hide_index=True
-                )
-            else:
-                st.info("直近3ヶ月のデータがありません")
-
-        # ── 四半期推移 ─────────────────────────────────────────────────
-        with t_quarter:
-            qdf = _stat_table(jdf, '四半期', min_r=1).sort_values('四半期')
-            if len(qdf) > 0:
-                qc1, qc2 = st.columns(2)
-                rule100 = alt.Chart(pd.DataFrame({'y':[100]})).mark_rule(
-                    color='gray', strokeDash=[4,4], opacity=0.5).encode(y='y:Q')
-                win_line = (alt.Chart(qdf).mark_line(point=True, color='#4B8BFF', strokeWidth=2)
-                    .encode(x=alt.X('四半期:N', sort=None, axis=alt.Axis(labelAngle=-45)),
-                            y=alt.Y('勝率(%):Q', title='勝率 (%)'),
-                            tooltip=list(qdf.columns))
-                    .properties(height=240, title="四半期別 勝率推移"))
-                ret_line = (alt.Chart(qdf).mark_line(point=True, color='#FF4B4B', strokeWidth=2)
-                    .encode(x=alt.X('四半期:N', sort=None, axis=alt.Axis(labelAngle=-45)),
-                            y=alt.Y('単勝回収率(%):Q', title='回収率 (%)'),
-                            tooltip=list(qdf.columns))
-                    .properties(height=240, title="四半期別 単勝回収率推移"))
-                with qc1:
-                    st.altair_chart(win_line, use_container_width=True)
-                with qc2:
-                    st.altair_chart(ret_line + rule100, use_container_width=True)
-                st.dataframe(
-                    qdf.sort_values('四半期', ascending=False).style.format({
-                        '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                    }), use_container_width=True, hide_index=True
-                )
-
-        # ── 競馬場別 ───────────────────────────────────────────────────
-        with t_venue:
-            vdf = _stat_table(jdf, '競馬場', min_r=5).sort_values('勝率(%)', ascending=False)
-            if len(vdf) > 0:
-                vc1, vc2 = st.columns(2)
-                with vc1:
-                    st.altair_chart(_mk_bar(vdf, '競馬場', '勝率(%)', '勝率(%)', "競馬場別 勝率"),
-                                    use_container_width=True)
-                with vc2:
-                    st.altair_chart(_mk_bar(vdf, '競馬場', '単勝回収率(%)', '単勝回収率(%)', "競馬場別 単勝回収率"),
-                                    use_container_width=True)
-                st.dataframe(vdf.style.format({
-                    '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                }), use_container_width=True, hide_index=True)
-            else:
-                st.info("競馬場別データが不足しています（5戦以上の競馬場のみ表示）")
-
-        # ── 枠番別 ─────────────────────────────────────────────────────
-        with t_gate:
-            gdf_g = jdf.dropna(subset=['枠番']).copy()
-            gdf_g['枠番'] = gdf_g['枠番'].astype(int).astype(str) + '枠'
-            sort_order = [f'{i}枠' for i in range(1,9)]
-            gg = _stat_table(gdf_g, '枠番', min_r=3).copy()
-            gg['_sort'] = gg['枠番'].map({v:i for i,v in enumerate(sort_order)})
-            gg = gg.sort_values('_sort').drop(columns=['_sort'])
-            if len(gg) > 0:
-                gc1, gc2 = st.columns(2)
-                with gc1:
-                    st.altair_chart(_mk_bar(gg, '枠番', '勝率(%)', '勝率(%)', "枠番別 勝率"),
-                                    use_container_width=True)
-                with gc2:
-                    st.altair_chart(_mk_bar(gg, '枠番', '複勝率(%)', '複勝率(%)', "枠番別 複勝率"),
-                                    use_container_width=True)
-                st.dataframe(gg.style.format({
-                    '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                }), use_container_width=True, hide_index=True)
-
-        # ── 距離帯別 ───────────────────────────────────────────────────
-        with t_dist:
-            dist_order = ['〜1200m','1201〜1400m','1401〜1600m','1601〜1800m',
-                          '1801〜2000m','2001〜2200m','2201m〜']
-            ddf = jdf.dropna(subset=['距離帯']).copy()
-            ddf['距離帯'] = ddf['距離帯'].astype(str)
-            dg = _stat_table(ddf, '距離帯', min_r=5)
-            dg['_sort'] = dg['距離帯'].map({v:i for i,v in enumerate(dist_order)})
-            dg = dg.sort_values('_sort').drop(columns=['_sort'])
-            if len(dg) > 0:
-                dc1, dc2 = st.columns(2)
-                with dc1:
-                    st.altair_chart(_mk_bar(dg, '距離帯', '勝率(%)', '勝率(%)', "距離帯別 勝率"),
-                                    use_container_width=True)
-                with dc2:
-                    st.altair_chart(_mk_bar(dg, '距離帯', '単勝回収率(%)', '単勝回収率(%)', "距離帯別 単勝回収率"),
-                                    use_container_width=True)
-                st.dataframe(dg.style.format({
-                    '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                }), use_container_width=True, hide_index=True)
-
-        # ── 芝/ダート別 ────────────────────────────────────────────────
-        with t_surface:
-            sdf = _stat_table(jdf.dropna(subset=['芝/ダート']), '芝/ダート', min_r=5)
-            if len(sdf) > 0:
-                sc1, sc2 = st.columns(2)
-                with sc1:
-                    st.altair_chart(_mk_bar(sdf, '芝/ダート', '勝率(%)', '勝率(%)', "芝/ダート別 勝率", height=200),
-                                    use_container_width=True)
-                with sc2:
-                    st.altair_chart(_mk_bar(sdf, '芝/ダート', '単勝回収率(%)', '単勝回収率(%)', "芝/ダート別 単勝回収率", height=200),
-                                    use_container_width=True)
-                st.dataframe(sdf.style.format({
-                    '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                }), use_container_width=True, hide_index=True)
-
-        # ── 馬場状態別 ─────────────────────────────────────────────────
-        with t_cond:
-            baba_order = ['良','稍重','重','不良']
-            cdf = jdf.dropna(subset=['馬場']).copy()
-            cg = _stat_table(cdf, '馬場', min_r=3)
-            cg['_sort'] = cg['馬場'].map({v:i for i,v in enumerate(baba_order)})
-            cg = cg.sort_values('_sort').drop(columns=['_sort'])
-            if len(cg) > 0:
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    st.altair_chart(_mk_bar(cg, '馬場', '勝率(%)', '勝率(%)', "馬場状態別 勝率", height=200),
-                                    use_container_width=True)
-                with cc2:
-                    st.altair_chart(_mk_bar(cg, '馬場', '複勝率(%)', '複勝率(%)', "馬場状態別 複勝率", height=200),
-                                    use_container_width=True)
-                st.dataframe(cg.style.format({
-                    '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                }), use_container_width=True, hide_index=True)
-                # 不良・重馬場の特徴コメント
-                for baba in ['重','不良']:
-                    row = cg[cg['馬場'] == baba]
-                    if len(row) > 0:
-                        bwr = row.iloc[0]['勝率(%)']
-                        diff = bwr - win_r
-                        if abs(diff) >= 3:
-                            sign = "得意" if diff > 0 else "苦手"
-                            st.caption(f"💡 {baba}馬場: 通算勝率より {diff:+.1f}pt → {sign}な馬場状態")
-
-        # ── 脚質・戦法 ────────────────────────────────────────────────
-        with t_style:
-            if '脚質' not in jdf.columns or jdf['脚質'].isna().all():
-                st.info("コーナー順位データが不足しています")
-            else:
-                style_order = ['逃げ','先行','差し','追い込み']
-                sty = jdf.dropna(subset=['脚質']).copy()
-                sty['脚質'] = sty['脚質'].astype(str)
-                sg = _stat_table(sty, '脚質', min_r=3)
-                sg['_s'] = sg['脚質'].map({v:i for i,v in enumerate(style_order)})
-                sg = sg.sort_values('_s').drop(columns=['_s'])
-
-                # 逃げた時の特性コメント
-                nigiru = sg[sg['脚質']=='逃げ']
-                if len(nigiru) > 0:
-                    nw = nigiru.iloc[0]['勝率(%)']
-                    diff = nw - win_r
-                    label = "逃げが強み！" if diff > 3 else ("逃げると粘れない" if diff < -3 else "逃げは平均的")
-                    st.info(f"🏃 逃げ時の勝率: **{nw:.1f}%** (通算比 {diff:+.1f}pt) → {label}")
-
-                sc1, sc2 = st.columns(2)
-                with sc1:
-                    st.altair_chart(_mk_bar(sg, '脚質', '勝率(%)', '勝率(%)', "脚質別 勝率"), use_container_width=True)
-                with sc2:
-                    st.altair_chart(_mk_bar(sg, '脚質', '複勝率(%)', '複勝率(%)', "脚質別 複勝率"), use_container_width=True)
-                st.dataframe(sg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                             use_container_width=True, hide_index=True)
-
-                # 失速フラグ分析
-                if '失速フラグ' in jdf.columns:
-                    st.markdown("---")
-                    st.markdown("##### ⚠️ 失速（前半飛ばして垂れる）傾向")
-                    ff = jdf.dropna(subset=['失速フラグ'])
-                    f_rate = ff['失速フラグ'].mean() * 100
-                    f_win  = ff[ff['失速フラグ']==1]['勝ち'].mean() * 100 if ff['失速フラグ'].sum() > 0 else 0
-                    nf_win = ff[ff['失速フラグ']==0]['勝ち'].mean() * 100 if (ff['失速フラグ']==0).sum() > 0 else 0
-                    fc1, fc2, fc3 = st.columns(3)
-                    fc1.metric("失速率", f"{f_rate:.1f}%", help="前半飛ばして後半垂れたレースの割合")
-                    fc2.metric("失速時 勝率", f"{f_win:.1f}%")
-                    fc3.metric("非失速時 勝率", f"{nf_win:.1f}%", delta=f"{nf_win-f_win:+.1f}pt")
-
-        # ── 上がり性能 ────────────────────────────────────────────────
-        with t_agari:
-            if '上がり最速' not in jdf.columns:
-                st.info("上り偏差データが不足しています")
-            else:
-                agari_df = jdf.dropna(subset=['上がり最速'])
-                total_a  = len(agari_df)
-                fastest_rate = agari_df['上がり最速'].mean() * 100
-                top_rate     = agari_df['上がり上位'].mean() * 100 if '上がり上位' in agari_df.columns else 0
-
-                # 上がり最速時の勝率
-                fastest_win  = agari_df[agari_df['上がり最速']==1]['勝ち'].mean() * 100 if agari_df['上がり最速'].sum() > 0 else 0
-                # 上がり最速なのに負けた割合
-                fastest_loss = agari_df[(agari_df['上がり最速']==1) & (agari_df['着順']>1)]['着順'].count()
-                fastest_n    = int(agari_df['上がり最速'].sum())
-
-                ag1, ag2, ag3, ag4 = st.columns(4)
-                ag1.metric("上がり最速率", f"{fastest_rate:.1f}%", f"{fastest_n}回/{total_a}戦")
-                ag2.metric("上がり上位率", f"{top_rate:.1f}%", help="レース内上位0.3秒以内")
-                ag3.metric("最速時 勝率",  f"{fastest_win:.1f}%")
-                ag4.metric("最速も負け",   f"{fastest_loss}回", help="上がり最速なのに1着以外だった回数")
-
-                # 脚質×上がり最速のクロス分析
-                if '脚質' in jdf.columns:
-                    st.markdown("---")
-                    st.markdown("##### 脚質別 上がり最速率")
-                    cross = agari_df.dropna(subset=['脚質']).copy()
-                    cross['脚質'] = cross['脚質'].astype(str)
-                    cg = cross.groupby('脚質').agg(
-                        出走数=('着順','count'),
-                        上がり最速回=('上がり最速','sum')
-                    ).reset_index()
-                    cg['上がり最速率(%)'] = (cg['上がり最速回'] / cg['出走数'] * 100).round(1)
-                    style_order = ['逃げ','先行','差し','追い込み']
-                    cg['_s'] = cg['脚質'].map({v:i for i,v in enumerate(style_order)})
-                    cg = cg.sort_values('_s').drop(columns=['_s'])
-                    st.altair_chart(_mk_bar(cg, '脚質', '上がり最速率(%)', '上がり最速率(%)',
-                                           "脚質別 上がり最速率", height=220), use_container_width=True)
-                    st.dataframe(cg[['脚質','出走数','上がり最速回','上がり最速率(%)']].style.format(
-                        {'上がり最速率(%)':'{:.1f}%'}), use_container_width=True, hide_index=True)
-
-        # ── 人気別成績 ────────────────────────────────────────────────
-        with t_popular:
-            pop_order = ['1番人気','2〜3番人気','4〜6番人気','7番人気以下']
-            pdf = jdf.dropna(subset=['人気帯']).copy()
-            pdf['人気帯'] = pdf['人気帯'].astype(str)
-            pg = _stat_table(pdf, '人気帯', min_r=3)
-            pg['_s'] = pg['人気帯'].map({v:i for i,v in enumerate(pop_order)})
-            pg = pg.sort_values('_s').drop(columns=['_s'])
-            if len(pg) > 0:
-                # 1番人気時の連対率（勝負強さ）
-                pop1 = pg[pg['人気帯']=='1番人気']
-                if len(pop1) > 0:
-                    p1w = pop1.iloc[0]['勝率(%)']
-                    p1f = pop1.iloc[0]['複勝率(%)']
-                    if p1w >= 40: label = "1番人気で非常に安定"
-                    elif p1w >= 30: label = "1番人気での信頼度は標準"
-                    else: label = "1番人気でも取りこぼし注意"
-                    st.info(f"🎯 1番人気時: 勝率 **{p1w:.1f}%** / 複勝率 **{p1f:.1f}%** → {label}")
-
-                # 穴馬激走率
-                ana = pg[pg['人気帯']=='7番人気以下']
-                if len(ana) > 0:
-                    aw = ana.iloc[0]['勝率(%)']
-                    af = ana.iloc[0]['複勝率(%)']
-                    ar = ana.iloc[0]['単勝回収率(%)']
-                    st.info(f"🎲 穴馬時（7番人気以下）: 勝率 {aw:.1f}% / 複勝率 {af:.1f}% / 回収率 **{ar:.1f}%**")
-
-                pc1, pc2 = st.columns(2)
-                with pc1:
-                    st.altair_chart(_mk_bar(pg, '人気帯', '勝率(%)', '勝率(%)', "人気帯別 勝率"), use_container_width=True)
-                with pc2:
-                    st.altair_chart(_mk_bar(pg, '人気帯', '単勝回収率(%)', '単勝回収率(%)', "人気帯別 単勝回収率"), use_container_width=True)
-                st.dataframe(pg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                             use_container_width=True, hide_index=True)
-
-        # ── 馬体重・性別 ──────────────────────────────────────────────
-        with t_weight:
-            wt_order = ['〜440kg','441〜460kg','461〜480kg','481〜500kg','501〜520kg','521kg〜']
-            wdf = jdf.dropna(subset=['馬体重帯']).copy()
-            wdf['馬体重帯'] = wdf['馬体重帯'].astype(str)
-            wg = _stat_table(wdf, '馬体重帯', min_r=5)
-            wg['_s'] = wg['馬体重帯'].map({v:i for i,v in enumerate(wt_order)})
-            wg = wg.sort_values('_s').drop(columns=['_s'])
-
-            if len(wg) > 0:
-                # 大型馬の得意/苦手コメント
-                big = wg[wg['馬体重帯'].isin(['501〜520kg','521kg〜'])]
-                small = wg[wg['馬体重帯'].isin(['〜440kg','441〜460kg'])]
-                overall_w = win_r
-                if len(big) > 0:
-                    big_w = big['勝率(%)'].mean()
-                    diff = big_w - overall_w
-                    if diff > 3: st.success(f"🐴 大型馬（501kg+）: 通算比 **+{diff:.1f}pt** → 大型馬の扱いが得意")
-                    elif diff < -3: st.warning(f"🐴 大型馬（501kg+）: 通算比 **{diff:.1f}pt** → 大型馬はやや苦手")
-                if len(small) > 0:
-                    small_w = small['勝率(%)'].mean()
-                    diff = small_w - overall_w
-                    if diff > 3: st.success(f"🐎 軽量馬（460kg以下）: 通算比 **+{diff:.1f}pt** → 小柄な馬も得意")
-
-                wc1, wc2 = st.columns(2)
-                with wc1:
-                    st.altair_chart(_mk_bar(wg, '馬体重帯', '勝率(%)', '勝率(%)', "馬体重帯別 勝率"), use_container_width=True)
-                with wc2:
-                    st.altair_chart(_mk_bar(wg, '馬体重帯', '複勝率(%)', '複勝率(%)', "馬体重帯別 複勝率"), use_container_width=True)
-                st.dataframe(wg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                             use_container_width=True, hide_index=True)
-
-            # 性別別
             st.markdown("---")
-            st.markdown("##### 性別（牡馬/牝馬/騸馬）別成績")
-            if '性別' in jdf.columns:
-                sex_g = _stat_table(jdf.dropna(subset=['性別']), '性別', min_r=5)
-                if len(sex_g) > 0:
+
+            # ── タブ構成 ──────────────────────────────────────────────────
+            (t_monthly, t_quarter, t_venue, t_gate,
+             t_dist, t_surface, t_cond,
+             t_style, t_agari, t_popular, t_weight,
+             t_trainer, t_rotation, t_roto, t_recent) = st.tabs([
+                "📅 月次成績", "📈 四半期推移", "🏟️ 競馬場別",
+                "🔢 枠番別", "📏 距離別", "🌱 芝ダート別", "☁️ 馬場状態別",
+                "🏃 脚質・戦法", "⚡ 上がり性能", "🎯 人気別",
+                "🐴 馬体重・性別", "🤝 相性調教師", "🔄 回り・地形",
+                "⏰ ローテ・乗替", "📋 近走履歴"
+            ])
+
+            def _mk_bar(df, x_col, y_col, color_col=None, title="", height=280):
+                """シンプルな縦棒グラフ"""
+                enc = dict(
+                    x=alt.X(f'{x_col}:N', sort=None, title=x_col,
+                             axis=alt.Axis(labelAngle=-30, labelFontSize=11)),
+                    y=alt.Y(f'{y_col}:Q', title=y_col),
+                    tooltip=list(df.columns)
+                )
+                if color_col:
+                    enc['color'] = alt.Color(f'{color_col}:Q',
+                        scale=alt.Scale(scheme='redyellowgreen', domain=[0, 30, 50]),
+                        legend=None)
+                return (alt.Chart(df).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+                        .encode(**enc).properties(height=height, title=title))
+
+            def _stat_table(df, grp_col, min_r=5):
+                g = df.groupby(grp_col).agg(
+                    出走数=('着順','count'), 勝利数=('勝ち','sum'), 複勝数=('複勝','sum'),
+                    払戻合計=('単勝', lambda x: df.loc[x.index[df.loc[x.index,'勝ち']==1],'単勝'].sum() * 100)
+                ).reset_index()
+                g = g[g['出走数'] >= min_r]
+                g['勝率(%)']       = (g['勝利数'] / g['出走数'] * 100).round(1)
+                g['複勝率(%)']     = (g['複勝数'] / g['出走数'] * 100).round(1)
+                g['単勝回収率(%)'] = (g['払戻合計'] / (g['出走数'] * 100) * 100).round(1)
+                return g.drop(columns=['払戻合計'])
+
+            # ── 月次成績 ──────────────────────────────────────────────────
+            with t_monthly:
+                cutoff_3m = max_dt - pd.Timedelta(days=90)
+                jdf_3m = jdf[jdf['日付'] >= cutoff_3m]
+                st.caption(f"直近3ヶ月 ({cutoff_3m.strftime('%Y/%m/%d')}〜) : {len(jdf_3m)}戦")
+                if len(jdf_3m) > 0:
+                    m3 = _stat_table(jdf_3m, '年月', min_r=1).sort_values('年月')
+                    mc1, mc2 = st.columns(2)
+                    with mc1:
+                        st.altair_chart(
+                            _mk_bar(m3, '年月', '勝率(%)', '勝率(%)', "月別 勝率"),
+                            use_container_width=True)
+                    with mc2:
+                        st.altair_chart(
+                            _mk_bar(m3, '年月', '単勝回収率(%)', '単勝回収率(%)', "月別 単勝回収率"),
+                            use_container_width=True)
+                    st.dataframe(
+                        m3.sort_values('年月', ascending=False).style.format({
+                            '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
+                        }), use_container_width=True, hide_index=True
+                    )
+                else:
+                    st.info("直近3ヶ月のデータがありません")
+
+            # ── 四半期推移 ─────────────────────────────────────────────────
+            with t_quarter:
+                qdf = _stat_table(jdf, '四半期', min_r=1).sort_values('四半期')
+                if len(qdf) > 0:
+                    qc1, qc2 = st.columns(2)
+                    rule100 = alt.Chart(pd.DataFrame({'y':[100]})).mark_rule(
+                        color='gray', strokeDash=[4,4], opacity=0.5).encode(y='y:Q')
+                    win_line = (alt.Chart(qdf).mark_line(point=True, color='#4B8BFF', strokeWidth=2)
+                        .encode(x=alt.X('四半期:N', sort=None, axis=alt.Axis(labelAngle=-45)),
+                                y=alt.Y('勝率(%):Q', title='勝率 (%)'),
+                                tooltip=list(qdf.columns))
+                        .properties(height=240, title="四半期別 勝率推移"))
+                    ret_line = (alt.Chart(qdf).mark_line(point=True, color='#FF4B4B', strokeWidth=2)
+                        .encode(x=alt.X('四半期:N', sort=None, axis=alt.Axis(labelAngle=-45)),
+                                y=alt.Y('単勝回収率(%):Q', title='回収率 (%)'),
+                                tooltip=list(qdf.columns))
+                        .properties(height=240, title="四半期別 単勝回収率推移"))
+                    with qc1:
+                        st.altair_chart(win_line, use_container_width=True)
+                    with qc2:
+                        st.altair_chart(ret_line + rule100, use_container_width=True)
+                    st.dataframe(
+                        qdf.sort_values('四半期', ascending=False).style.format({
+                            '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
+                        }), use_container_width=True, hide_index=True
+                    )
+
+            # ── 競馬場別 ───────────────────────────────────────────────────
+            with t_venue:
+                vdf = _stat_table(jdf, '競馬場', min_r=5).sort_values('勝率(%)', ascending=False)
+                if len(vdf) > 0:
+                    vc1, vc2 = st.columns(2)
+                    with vc1:
+                        st.altair_chart(_mk_bar(vdf, '競馬場', '勝率(%)', '勝率(%)', "競馬場別 勝率"),
+                                        use_container_width=True)
+                    with vc2:
+                        st.altair_chart(_mk_bar(vdf, '競馬場', '単勝回収率(%)', '単勝回収率(%)', "競馬場別 単勝回収率"),
+                                        use_container_width=True)
+                    st.dataframe(vdf.style.format({
+                        '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
+                    }), use_container_width=True, hide_index=True)
+                else:
+                    st.info("競馬場別データが不足しています（5戦以上の競馬場のみ表示）")
+
+            # ── 枠番別 ─────────────────────────────────────────────────────
+            with t_gate:
+                gdf_g = jdf.dropna(subset=['枠番']).copy()
+                gdf_g['枠番'] = gdf_g['枠番'].astype(int).astype(str) + '枠'
+                sort_order = [f'{i}枠' for i in range(1,9)]
+                gg = _stat_table(gdf_g, '枠番', min_r=3).copy()
+                gg['_sort'] = gg['枠番'].map({v:i for i,v in enumerate(sort_order)})
+                gg = gg.sort_values('_sort').drop(columns=['_sort'])
+                if len(gg) > 0:
+                    gc1, gc2 = st.columns(2)
+                    with gc1:
+                        st.altair_chart(_mk_bar(gg, '枠番', '勝率(%)', '勝率(%)', "枠番別 勝率"),
+                                        use_container_width=True)
+                    with gc2:
+                        st.altair_chart(_mk_bar(gg, '枠番', '複勝率(%)', '複勝率(%)', "枠番別 複勝率"),
+                                        use_container_width=True)
+                    st.dataframe(gg.style.format({
+                        '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
+                    }), use_container_width=True, hide_index=True)
+
+            # ── 距離帯別 ───────────────────────────────────────────────────
+            with t_dist:
+                dist_order = ['〜1200m','1201〜1400m','1401〜1600m','1601〜1800m',
+                              '1801〜2000m','2001〜2200m','2201m〜']
+                ddf = jdf.dropna(subset=['距離帯']).copy()
+                ddf['距離帯'] = ddf['距離帯'].astype(str)
+                dg = _stat_table(ddf, '距離帯', min_r=5)
+                dg['_sort'] = dg['距離帯'].map({v:i for i,v in enumerate(dist_order)})
+                dg = dg.sort_values('_sort').drop(columns=['_sort'])
+                if len(dg) > 0:
+                    dc1, dc2 = st.columns(2)
+                    with dc1:
+                        st.altair_chart(_mk_bar(dg, '距離帯', '勝率(%)', '勝率(%)', "距離帯別 勝率"),
+                                        use_container_width=True)
+                    with dc2:
+                        st.altair_chart(_mk_bar(dg, '距離帯', '単勝回収率(%)', '単勝回収率(%)', "距離帯別 単勝回収率"),
+                                        use_container_width=True)
+                    st.dataframe(dg.style.format({
+                        '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
+                    }), use_container_width=True, hide_index=True)
+
+            # ── 芝/ダート別 ────────────────────────────────────────────────
+            with t_surface:
+                sdf = _stat_table(jdf.dropna(subset=['芝/ダート']), '芝/ダート', min_r=5)
+                if len(sdf) > 0:
                     sc1, sc2 = st.columns(2)
                     with sc1:
-                        st.altair_chart(_mk_bar(sex_g, '性別', '勝率(%)', '勝率(%)', "性別 勝率", height=220), use_container_width=True)
+                        st.altair_chart(_mk_bar(sdf, '芝/ダート', '勝率(%)', '勝率(%)', "芝/ダート別 勝率", height=200),
+                                        use_container_width=True)
                     with sc2:
-                        st.altair_chart(_mk_bar(sex_g, '性別', '単勝回収率(%)', '単勝回収率(%)', "性別 単勝回収率", height=220), use_container_width=True)
-                    st.dataframe(sex_g.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                        st.altair_chart(_mk_bar(sdf, '芝/ダート', '単勝回収率(%)', '単勝回収率(%)', "芝/ダート別 単勝回収率", height=200),
+                                        use_container_width=True)
+                    st.dataframe(sdf.style.format({
+                        '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
+                    }), use_container_width=True, hide_index=True)
+
+            # ── 馬場状態別 ─────────────────────────────────────────────────
+            with t_cond:
+                baba_order = ['良','稍重','重','不良']
+                cdf = jdf.dropna(subset=['馬場']).copy()
+                cg = _stat_table(cdf, '馬場', min_r=3)
+                cg['_sort'] = cg['馬場'].map({v:i for i,v in enumerate(baba_order)})
+                cg = cg.sort_values('_sort').drop(columns=['_sort'])
+                if len(cg) > 0:
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        st.altair_chart(_mk_bar(cg, '馬場', '勝率(%)', '勝率(%)', "馬場状態別 勝率", height=200),
+                                        use_container_width=True)
+                    with cc2:
+                        st.altair_chart(_mk_bar(cg, '馬場', '複勝率(%)', '複勝率(%)', "馬場状態別 複勝率", height=200),
+                                        use_container_width=True)
+                    st.dataframe(cg.style.format({
+                        '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
+                    }), use_container_width=True, hide_index=True)
+                    # 不良・重馬場の特徴コメント
+                    for baba in ['重','不良']:
+                        row = cg[cg['馬場'] == baba]
+                        if len(row) > 0:
+                            bwr = row.iloc[0]['勝率(%)']
+                            diff = bwr - win_r
+                            if abs(diff) >= 3:
+                                sign = "得意" if diff > 0 else "苦手"
+                                st.caption(f"💡 {baba}馬場: 通算勝率より {diff:+.1f}pt → {sign}な馬場状態")
+
+            # ── 脚質・戦法 ────────────────────────────────────────────────
+            with t_style:
+                if '脚質' not in jdf.columns or jdf['脚質'].isna().all():
+                    st.info("コーナー順位データが不足しています")
+                else:
+                    style_order = ['逃げ','先行','差し','追い込み']
+                    sty = jdf.dropna(subset=['脚質']).copy()
+                    sty['脚質'] = sty['脚質'].astype(str)
+                    sg = _stat_table(sty, '脚質', min_r=3)
+                    sg['_s'] = sg['脚質'].map({v:i for i,v in enumerate(style_order)})
+                    sg = sg.sort_values('_s').drop(columns=['_s'])
+
+                    # 逃げた時の特性コメント
+                    nigiru = sg[sg['脚質']=='逃げ']
+                    if len(nigiru) > 0:
+                        nw = nigiru.iloc[0]['勝率(%)']
+                        diff = nw - win_r
+                        label = "逃げが強み！" if diff > 3 else ("逃げると粘れない" if diff < -3 else "逃げは平均的")
+                        st.info(f"🏃 逃げ時の勝率: **{nw:.1f}%** (通算比 {diff:+.1f}pt) → {label}")
+
+                    sc1, sc2 = st.columns(2)
+                    with sc1:
+                        st.altair_chart(_mk_bar(sg, '脚質', '勝率(%)', '勝率(%)', "脚質別 勝率"), use_container_width=True)
+                    with sc2:
+                        st.altair_chart(_mk_bar(sg, '脚質', '複勝率(%)', '複勝率(%)', "脚質別 複勝率"), use_container_width=True)
+                    st.dataframe(sg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
                                  use_container_width=True, hide_index=True)
 
-        # ── 相性調教師 ────────────────────────────────────────────────
-        with t_trainer:
-            if '調教師' not in jdf.columns:
-                st.info("調教師データが不足しています")
-            else:
-                tr_g = _stat_table(jdf.dropna(subset=['調教師']), '調教師', min_r=5)
-                tr_g = tr_g.sort_values('勝率(%)', ascending=False)
-                top_tr = tr_g.head(15)
-                bot_tr = tr_g.sort_values('勝率(%)').head(10)
+                    # 失速フラグ分析
+                    if '失速フラグ' in jdf.columns:
+                        st.markdown("---")
+                        st.markdown("##### ⚠️ 失速（前半飛ばして垂れる）傾向")
+                        ff = jdf.dropna(subset=['失速フラグ'])
+                        f_rate = ff['失速フラグ'].mean() * 100
+                        f_win  = ff[ff['失速フラグ']==1]['勝ち'].mean() * 100 if ff['失速フラグ'].sum() > 0 else 0
+                        nf_win = ff[ff['失速フラグ']==0]['勝ち'].mean() * 100 if (ff['失速フラグ']==0).sum() > 0 else 0
+                        fc1, fc2, fc3 = st.columns(3)
+                        fc1.metric("失速率", f"{f_rate:.1f}%", help="前半飛ばして後半垂れたレースの割合")
+                        fc2.metric("失速時 勝率", f"{f_win:.1f}%")
+                        fc3.metric("非失速時 勝率", f"{nf_win:.1f}%", delta=f"{nf_win-f_win:+.1f}pt")
 
-                # 最高相性の調教師コメント
-                if len(top_tr) > 0:
-                    best = top_tr.iloc[0]
-                    st.success(f"🤝 最高相性: **{best['調教師']}** — 勝率 {best['勝率(%)']:.1f}% / 複勝率 {best['複勝率(%)']:.1f}% / 回収率 {best['単勝回収率(%)']:.1f}%（{best['出走数']:.0f}戦）")
+            # ── 上がり性能 ────────────────────────────────────────────────
+            with t_agari:
+                if '上がり最速' not in jdf.columns:
+                    st.info("上り偏差データが不足しています")
+                else:
+                    agari_df = jdf.dropna(subset=['上がり最速'])
+                    total_a  = len(agari_df)
+                    fastest_rate = agari_df['上がり最速'].mean() * 100
+                    top_rate     = agari_df['上がり上位'].mean() * 100 if '上がり上位' in agari_df.columns else 0
 
-                tc1, tc2 = st.columns([3, 2])
-                with tc1:
-                    st.markdown("##### 🔝 相性ベスト調教師 TOP15（勝率順）")
+                    # 上がり最速時の勝率
+                    fastest_win  = agari_df[agari_df['上がり最速']==1]['勝ち'].mean() * 100 if agari_df['上がり最速'].sum() > 0 else 0
+                    # 上がり最速なのに負けた割合
+                    fastest_loss = agari_df[(agari_df['上がり最速']==1) & (agari_df['着順']>1)]['着順'].count()
+                    fastest_n    = int(agari_df['上がり最速'].sum())
+
+                    ag1, ag2, ag3, ag4 = st.columns(4)
+                    ag1.metric("上がり最速率", f"{fastest_rate:.1f}%", f"{fastest_n}回/{total_a}戦")
+                    ag2.metric("上がり上位率", f"{top_rate:.1f}%", help="レース内上位0.3秒以内")
+                    ag3.metric("最速時 勝率",  f"{fastest_win:.1f}%")
+                    ag4.metric("最速も負け",   f"{fastest_loss}回", help="上がり最速なのに1着以外だった回数")
+
+                    # 脚質×上がり最速のクロス分析
+                    if '脚質' in jdf.columns:
+                        st.markdown("---")
+                        st.markdown("##### 脚質別 上がり最速率")
+                        cross = agari_df.dropna(subset=['脚質']).copy()
+                        cross['脚質'] = cross['脚質'].astype(str)
+                        cg = cross.groupby('脚質').agg(
+                            出走数=('着順','count'),
+                            上がり最速回=('上がり最速','sum')
+                        ).reset_index()
+                        cg['上がり最速率(%)'] = (cg['上がり最速回'] / cg['出走数'] * 100).round(1)
+                        style_order = ['逃げ','先行','差し','追い込み']
+                        cg['_s'] = cg['脚質'].map({v:i for i,v in enumerate(style_order)})
+                        cg = cg.sort_values('_s').drop(columns=['_s'])
+                        st.altair_chart(_mk_bar(cg, '脚質', '上がり最速率(%)', '上がり最速率(%)',
+                                               "脚質別 上がり最速率", height=220), use_container_width=True)
+                        st.dataframe(cg[['脚質','出走数','上がり最速回','上がり最速率(%)']].style.format(
+                            {'上がり最速率(%)':'{:.1f}%'}), use_container_width=True, hide_index=True)
+
+            # ── 人気別成績 ────────────────────────────────────────────────
+            with t_popular:
+                pop_order = ['1番人気','2〜3番人気','4〜6番人気','7番人気以下']
+                pdf = jdf.dropna(subset=['人気帯']).copy()
+                pdf['人気帯'] = pdf['人気帯'].astype(str)
+                pg = _stat_table(pdf, '人気帯', min_r=3)
+                pg['_s'] = pg['人気帯'].map({v:i for i,v in enumerate(pop_order)})
+                pg = pg.sort_values('_s').drop(columns=['_s'])
+                if len(pg) > 0:
+                    # 1番人気時の連対率（勝負強さ）
+                    pop1 = pg[pg['人気帯']=='1番人気']
+                    if len(pop1) > 0:
+                        p1w = pop1.iloc[0]['勝率(%)']
+                        p1f = pop1.iloc[0]['複勝率(%)']
+                        if p1w >= 40: label = "1番人気で非常に安定"
+                        elif p1w >= 30: label = "1番人気での信頼度は標準"
+                        else: label = "1番人気でも取りこぼし注意"
+                        st.info(f"🎯 1番人気時: 勝率 **{p1w:.1f}%** / 複勝率 **{p1f:.1f}%** → {label}")
+
+                    # 穴馬激走率
+                    ana = pg[pg['人気帯']=='7番人気以下']
+                    if len(ana) > 0:
+                        aw = ana.iloc[0]['勝率(%)']
+                        af = ana.iloc[0]['複勝率(%)']
+                        ar = ana.iloc[0]['単勝回収率(%)']
+                        st.info(f"🎲 穴馬時（7番人気以下）: 勝率 {aw:.1f}% / 複勝率 {af:.1f}% / 回収率 **{ar:.1f}%**")
+
+                    pc1, pc2 = st.columns(2)
+                    with pc1:
+                        st.altair_chart(_mk_bar(pg, '人気帯', '勝率(%)', '勝率(%)', "人気帯別 勝率"), use_container_width=True)
+                    with pc2:
+                        st.altair_chart(_mk_bar(pg, '人気帯', '単勝回収率(%)', '単勝回収率(%)', "人気帯別 単勝回収率"), use_container_width=True)
+                    st.dataframe(pg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                                 use_container_width=True, hide_index=True)
+
+            # ── 馬体重・性別 ──────────────────────────────────────────────
+            with t_weight:
+                wt_order = ['〜440kg','441〜460kg','461〜480kg','481〜500kg','501〜520kg','521kg〜']
+                wdf = jdf.dropna(subset=['馬体重帯']).copy()
+                wdf['馬体重帯'] = wdf['馬体重帯'].astype(str)
+                wg = _stat_table(wdf, '馬体重帯', min_r=5)
+                wg['_s'] = wg['馬体重帯'].map({v:i for i,v in enumerate(wt_order)})
+                wg = wg.sort_values('_s').drop(columns=['_s'])
+
+                if len(wg) > 0:
+                    # 大型馬の得意/苦手コメント
+                    big = wg[wg['馬体重帯'].isin(['501〜520kg','521kg〜'])]
+                    small = wg[wg['馬体重帯'].isin(['〜440kg','441〜460kg'])]
+                    overall_w = win_r
+                    if len(big) > 0:
+                        big_w = big['勝率(%)'].mean()
+                        diff = big_w - overall_w
+                        if diff > 3: st.success(f"🐴 大型馬（501kg+）: 通算比 **+{diff:.1f}pt** → 大型馬の扱いが得意")
+                        elif diff < -3: st.warning(f"🐴 大型馬（501kg+）: 通算比 **{diff:.1f}pt** → 大型馬はやや苦手")
+                    if len(small) > 0:
+                        small_w = small['勝率(%)'].mean()
+                        diff = small_w - overall_w
+                        if diff > 3: st.success(f"🐎 軽量馬（460kg以下）: 通算比 **+{diff:.1f}pt** → 小柄な馬も得意")
+
+                    wc1, wc2 = st.columns(2)
+                    with wc1:
+                        st.altair_chart(_mk_bar(wg, '馬体重帯', '勝率(%)', '勝率(%)', "馬体重帯別 勝率"), use_container_width=True)
+                    with wc2:
+                        st.altair_chart(_mk_bar(wg, '馬体重帯', '複勝率(%)', '複勝率(%)', "馬体重帯別 複勝率"), use_container_width=True)
+                    st.dataframe(wg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                                 use_container_width=True, hide_index=True)
+
+                # 性別別
+                st.markdown("---")
+                st.markdown("##### 性別（牡馬/牝馬/騸馬）別成績")
+                if '性別' in jdf.columns:
+                    sex_g = _stat_table(jdf.dropna(subset=['性別']), '性別', min_r=5)
+                    if len(sex_g) > 0:
+                        sc1, sc2 = st.columns(2)
+                        with sc1:
+                            st.altair_chart(_mk_bar(sex_g, '性別', '勝率(%)', '勝率(%)', "性別 勝率", height=220), use_container_width=True)
+                        with sc2:
+                            st.altair_chart(_mk_bar(sex_g, '性別', '単勝回収率(%)', '単勝回収率(%)', "性別 単勝回収率", height=220), use_container_width=True)
+                        st.dataframe(sex_g.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                                     use_container_width=True, hide_index=True)
+
+            # ── 相性調教師 ────────────────────────────────────────────────
+            with t_trainer:
+                if '調教師' not in jdf.columns:
+                    st.info("調教師データが不足しています")
+                else:
+                    tr_g = _stat_table(jdf.dropna(subset=['調教師']), '調教師', min_r=5)
+                    tr_g = tr_g.sort_values('勝率(%)', ascending=False)
+                    top_tr = tr_g.head(15)
+                    bot_tr = tr_g.sort_values('勝率(%)').head(10)
+
+                    # 最高相性の調教師コメント
+                    if len(top_tr) > 0:
+                        best = top_tr.iloc[0]
+                        st.success(f"🤝 最高相性: **{best['調教師']}** — 勝率 {best['勝率(%)']:.1f}% / 複勝率 {best['複勝率(%)']:.1f}% / 回収率 {best['単勝回収率(%)']:.1f}%（{best['出走数']:.0f}戦）")
+
+                    tc1, tc2 = st.columns([3, 2])
+                    with tc1:
+                        st.markdown("##### 🔝 相性ベスト調教師 TOP15（勝率順）")
+                        st.dataframe(
+                            top_tr.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                            use_container_width=True, hide_index=True, height=420)
+                    with tc2:
+                        st.markdown("##### 📉 相性ワースト調教師 TOP10")
+                        st.dataframe(
+                            bot_tr.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                            use_container_width=True, hide_index=True, height=280)
+
+                    # 単勝回収率トップ（儲かる組み合わせ）
+                    st.markdown("##### 💰 単勝回収率トップ調教師（馬券妙味）")
+                    best_ret = tr_g.sort_values('単勝回収率(%)', ascending=False).head(10)
                     st.dataframe(
-                        top_tr.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                        use_container_width=True, hide_index=True, height=420)
-                with tc2:
-                    st.markdown("##### 📉 相性ワースト調教師 TOP10")
-                    st.dataframe(
-                        bot_tr.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                        use_container_width=True, hide_index=True, height=280)
+                        best_ret.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                        use_container_width=True, hide_index=True)
 
-                # 単勝回収率トップ（儲かる組み合わせ）
-                st.markdown("##### 💰 単勝回収率トップ調教師（馬券妙味）")
-                best_ret = tr_g.sort_values('単勝回収率(%)', ascending=False).head(10)
+            # ── 回り・コース地形 ─────────────────────────────────────────
+            with t_rotation:
+                cols2 = st.columns(2)
+                # 左右回り
+                if '回り' in jdf.columns:
+                    with cols2[0]:
+                        st.markdown("##### 🔄 左回り/右回り")
+                        rg = _stat_table(jdf.dropna(subset=['回り']), '回り', min_r=5)
+                        if len(rg) > 0:
+                            st.altair_chart(_mk_bar(rg, '回り', '勝率(%)', '勝率(%)', "", height=200), use_container_width=True)
+                            st.dataframe(rg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                                         use_container_width=True, hide_index=True)
+                            # 差があれば得意苦手コメント
+                            if len(rg) >= 2:
+                                maxr = rg.loc[rg['勝率(%)'].idxmax(), '回り']
+                                diff_r = rg['勝率(%)'].max() - rg['勝率(%)'].min()
+                                if diff_r >= 3:
+                                    st.caption(f"💡 {maxr}回りが得意（差: {diff_r:.1f}pt）")
+                # コース地形（内回り/外回り等）
+                if 'コース地形' in jdf.columns:
+                    with cols2[1]:
+                        st.markdown("##### 🏟️ コース地形")
+                        cog = _stat_table(jdf.dropna(subset=['コース地形']), 'コース地形', min_r=5)
+                        if len(cog) > 0:
+                            st.altair_chart(_mk_bar(cog, 'コース地形', '勝率(%)', '勝率(%)', "", height=200), use_container_width=True)
+                            st.dataframe(cog.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                                         use_container_width=True, hide_index=True)
+
+                # 頭数帯別（少頭数 vs 多頭数）
+                st.markdown("---")
+                st.markdown("##### 👥 出走頭数別（少頭数 vs 多頭数）")
+                if '出走頭数' in jdf.columns:
+                    hdf = jdf.dropna(subset=['出走頭数']).copy()
+                    hdf['頭数帯'] = pd.cut(hdf['出走頭数'],
+                        bins=[0,8,12,16,99], right=True,
+                        labels=['少頭数(〜8頭)','中頭数(9〜12頭)','多頭数(13〜16頭)','大頭数(17頭〜)'])
+                    hdf['頭数帯'] = hdf['頭数帯'].astype(str)
+                    hg = _stat_table(hdf, '頭数帯', min_r=5)
+                    horder = ['少頭数(〜8頭)','中頭数(9〜12頭)','多頭数(13〜16頭)','大頭数(17頭〜)']
+                    hg['_s'] = hg['頭数帯'].map({v:i for i,v in enumerate(horder)})
+                    hg = hg.sort_values('_s').drop(columns=['_s'])
+                    if len(hg) > 0:
+                        hc1, hc2 = st.columns(2)
+                        with hc1:
+                            st.altair_chart(_mk_bar(hg, '頭数帯', '勝率(%)', '勝率(%)', "頭数帯別 勝率", height=220), use_container_width=True)
+                        with hc2:
+                            st.dataframe(hg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                                         use_container_width=True, hide_index=True)
+
+            # ── ローテーション・乗り替わり ────────────────────────────────
+            with t_roto:
+                rc_cols = st.columns(2)
+                # ローテ別
+                if 'ローテ' in jdf.columns:
+                    with rc_cols[0]:
+                        st.markdown("##### ⏰ 出走間隔（ローテ）別成績")
+                        rote_order = ['中1週以内','中2週','中3〜4週','1ヶ月半以内','長期休養明け']
+                        rdf2 = jdf.dropna(subset=['ローテ']).copy()
+                        rdf2['ローテ'] = rdf2['ローテ'].astype(str)
+                        rg2 = _stat_table(rdf2, 'ローテ', min_r=3)
+                        rg2['_s'] = rg2['ローテ'].map({v:i for i,v in enumerate(rote_order)})
+                        rg2 = rg2.sort_values('_s').drop(columns=['_s'])
+                        if len(rg2) > 0:
+                            st.altair_chart(_mk_bar(rg2, 'ローテ', '勝率(%)', '勝率(%)', "", height=220), use_container_width=True)
+                            st.dataframe(rg2.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                                         use_container_width=True, hide_index=True)
+                            # 長期休養明けの傾向
+                            kyuka = rg2[rg2['ローテ']=='長期休養明け']
+                            if len(kyuka) > 0 and kyuka.iloc[0]['出走数'] >= 3:
+                                kw = kyuka.iloc[0]['勝率(%)']
+                                diff = kw - win_r
+                                if diff >= 3: st.success(f"💡 休養明けの馬でも好走率高め（通算比 +{diff:.1f}pt）")
+                                elif diff <= -3: st.warning(f"💡 休養明け馬は結果が出づらい傾向（通算比 {diff:.1f}pt）")
+
+                # 乗り替わり別
+                if '乗り替わりフラグ' in jdf.columns:
+                    with rc_cols[1]:
+                        st.markdown("##### 🔀 乗り替わり vs 継続騎乗")
+                        mf = jdf.dropna(subset=['乗り替わりフラグ']).copy()
+                        mf['乗替'] = mf['乗り替わりフラグ'].map({1.0:'初騎乗（乗替）', 0.0:'継続騎乗'})
+                        mg = _stat_table(mf.dropna(subset=['乗替']), '乗替', min_r=5)
+                        if len(mg) > 0:
+                            st.altair_chart(_mk_bar(mg, '乗替', '勝率(%)', '勝率(%)', "", height=220), use_container_width=True)
+                            st.dataframe(mg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                                         use_container_width=True, hide_index=True)
+                            cont  = mg[mg['乗替']=='継続騎乗']
+                            first = mg[mg['乗替']=='初騎乗（乗替）']
+                            if len(cont) > 0 and len(first) > 0:
+                                diff = first.iloc[0]['勝率(%)'] - cont.iloc[0]['勝率(%)']
+                                if diff >= 2: st.success(f"💡 初騎乗でも強い！継続より **+{diff:.1f}pt**")
+                                elif diff <= -2: st.warning(f"💡 継続騎乗の方が得意（初乗り比 {diff:.1f}pt）")
+
+                # 斤量別
+                st.markdown("---")
+                st.markdown("##### ⚖️ 斤量別成績")
+                if '斤量' in jdf.columns:
+                    kdf = jdf.dropna(subset=['斤量']).copy()
+                    kdf['斤量帯'] = pd.cut(kdf['斤量'],
+                        bins=[48, 52, 54, 55, 56, 57, 58, 65], right=True,
+                        labels=['〜52kg','53〜54kg','55kg','56kg','57kg','58kg','59kg〜'])
+                    kdf['斤量帯'] = kdf['斤量帯'].astype(str)
+                    kg = _stat_table(kdf, '斤量帯', min_r=3)
+                    if len(kg) > 0:
+                        kc1, kc2 = st.columns(2)
+                        with kc1:
+                            st.altair_chart(_mk_bar(kg, '斤量帯', '勝率(%)', '勝率(%)', "斤量帯別 勝率", height=220), use_container_width=True)
+                        with kc2:
+                            st.dataframe(kg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
+                                         use_container_width=True, hide_index=True)
+
+            # ── 近走履歴 ───────────────────────────────────────────────────
+            with t_recent:
+                recent_n = st.number_input("表示件数", 10, 100, 30, 10, key="jd_recent_n")
+                cols_show = ['日付','競馬場','レース名','芝/ダート','距離','枠番','馬名','人気','着順','単勝','馬場']
+                cols_avail = [c for c in cols_show if c in jdf.columns]
+                recent_df = jdf[cols_avail].sort_values('日付', ascending=False).head(int(recent_n)).copy()
+                recent_df['日付'] = recent_df['日付'].dt.strftime('%Y/%m/%d')
+
+                def _cr_recent(row):
+                    try:
+                        rank = int(float(row['着順']))
+                        if rank == 1:  return ['background:rgba(255,215,0,0.25)'] * len(row)
+                        if rank <= 3:  return ['background:rgba(100,200,100,0.15)'] * len(row)
+                    except: pass
+                    return [''] * len(row)
+
                 st.dataframe(
-                    best_ret.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                    use_container_width=True, hide_index=True)
-
-        # ── 回り・コース地形 ─────────────────────────────────────────
-        with t_rotation:
-            cols2 = st.columns(2)
-            # 左右回り
-            if '回り' in jdf.columns:
-                with cols2[0]:
-                    st.markdown("##### 🔄 左回り/右回り")
-                    rg = _stat_table(jdf.dropna(subset=['回り']), '回り', min_r=5)
-                    if len(rg) > 0:
-                        st.altair_chart(_mk_bar(rg, '回り', '勝率(%)', '勝率(%)', "", height=200), use_container_width=True)
-                        st.dataframe(rg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                     use_container_width=True, hide_index=True)
-                        # 差があれば得意苦手コメント
-                        if len(rg) >= 2:
-                            maxr = rg.loc[rg['勝率(%)'].idxmax(), '回り']
-                            diff_r = rg['勝率(%)'].max() - rg['勝率(%)'].min()
-                            if diff_r >= 3:
-                                st.caption(f"💡 {maxr}回りが得意（差: {diff_r:.1f}pt）")
-            # コース地形（内回り/外回り等）
-            if 'コース地形' in jdf.columns:
-                with cols2[1]:
-                    st.markdown("##### 🏟️ コース地形")
-                    cog = _stat_table(jdf.dropna(subset=['コース地形']), 'コース地形', min_r=5)
-                    if len(cog) > 0:
-                        st.altair_chart(_mk_bar(cog, 'コース地形', '勝率(%)', '勝率(%)', "", height=200), use_container_width=True)
-                        st.dataframe(cog.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                     use_container_width=True, hide_index=True)
-
-            # 頭数帯別（少頭数 vs 多頭数）
-            st.markdown("---")
-            st.markdown("##### 👥 出走頭数別（少頭数 vs 多頭数）")
-            if '出走頭数' in jdf.columns:
-                hdf = jdf.dropna(subset=['出走頭数']).copy()
-                hdf['頭数帯'] = pd.cut(hdf['出走頭数'],
-                    bins=[0,8,12,16,99], right=True,
-                    labels=['少頭数(〜8頭)','中頭数(9〜12頭)','多頭数(13〜16頭)','大頭数(17頭〜)'])
-                hdf['頭数帯'] = hdf['頭数帯'].astype(str)
-                hg = _stat_table(hdf, '頭数帯', min_r=5)
-                horder = ['少頭数(〜8頭)','中頭数(9〜12頭)','多頭数(13〜16頭)','大頭数(17頭〜)']
-                hg['_s'] = hg['頭数帯'].map({v:i for i,v in enumerate(horder)})
-                hg = hg.sort_values('_s').drop(columns=['_s'])
-                if len(hg) > 0:
-                    hc1, hc2 = st.columns(2)
-                    with hc1:
-                        st.altair_chart(_mk_bar(hg, '頭数帯', '勝率(%)', '勝率(%)', "頭数帯別 勝率", height=220), use_container_width=True)
-                    with hc2:
-                        st.dataframe(hg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                     use_container_width=True, hide_index=True)
-
-        # ── ローテーション・乗り替わり ────────────────────────────────
-        with t_roto:
-            rc_cols = st.columns(2)
-            # ローテ別
-            if 'ローテ' in jdf.columns:
-                with rc_cols[0]:
-                    st.markdown("##### ⏰ 出走間隔（ローテ）別成績")
-                    rote_order = ['中1週以内','中2週','中3〜4週','1ヶ月半以内','長期休養明け']
-                    rdf2 = jdf.dropna(subset=['ローテ']).copy()
-                    rdf2['ローテ'] = rdf2['ローテ'].astype(str)
-                    rg2 = _stat_table(rdf2, 'ローテ', min_r=3)
-                    rg2['_s'] = rg2['ローテ'].map({v:i for i,v in enumerate(rote_order)})
-                    rg2 = rg2.sort_values('_s').drop(columns=['_s'])
-                    if len(rg2) > 0:
-                        st.altair_chart(_mk_bar(rg2, 'ローテ', '勝率(%)', '勝率(%)', "", height=220), use_container_width=True)
-                        st.dataframe(rg2.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                     use_container_width=True, hide_index=True)
-                        # 長期休養明けの傾向
-                        kyuka = rg2[rg2['ローテ']=='長期休養明け']
-                        if len(kyuka) > 0 and kyuka.iloc[0]['出走数'] >= 3:
-                            kw = kyuka.iloc[0]['勝率(%)']
-                            diff = kw - win_r
-                            if diff >= 3: st.success(f"💡 休養明けの馬でも好走率高め（通算比 +{diff:.1f}pt）")
-                            elif diff <= -3: st.warning(f"💡 休養明け馬は結果が出づらい傾向（通算比 {diff:.1f}pt）")
-
-            # 乗り替わり別
-            if '乗り替わりフラグ' in jdf.columns:
-                with rc_cols[1]:
-                    st.markdown("##### 🔀 乗り替わり vs 継続騎乗")
-                    mf = jdf.dropna(subset=['乗り替わりフラグ']).copy()
-                    mf['乗替'] = mf['乗り替わりフラグ'].map({1.0:'初騎乗（乗替）', 0.0:'継続騎乗'})
-                    mg = _stat_table(mf.dropna(subset=['乗替']), '乗替', min_r=5)
-                    if len(mg) > 0:
-                        st.altair_chart(_mk_bar(mg, '乗替', '勝率(%)', '勝率(%)', "", height=220), use_container_width=True)
-                        st.dataframe(mg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                     use_container_width=True, hide_index=True)
-                        cont  = mg[mg['乗替']=='継続騎乗']
-                        first = mg[mg['乗替']=='初騎乗（乗替）']
-                        if len(cont) > 0 and len(first) > 0:
-                            diff = first.iloc[0]['勝率(%)'] - cont.iloc[0]['勝率(%)']
-                            if diff >= 2: st.success(f"💡 初騎乗でも強い！継続より **+{diff:.1f}pt**")
-                            elif diff <= -2: st.warning(f"💡 継続騎乗の方が得意（初乗り比 {diff:.1f}pt）")
-
-            # 斤量別
-            st.markdown("---")
-            st.markdown("##### ⚖️ 斤量別成績")
-            if '斤量' in jdf.columns:
-                kdf = jdf.dropna(subset=['斤量']).copy()
-                kdf['斤量帯'] = pd.cut(kdf['斤量'],
-                    bins=[48, 52, 54, 55, 56, 57, 58, 65], right=True,
-                    labels=['〜52kg','53〜54kg','55kg','56kg','57kg','58kg','59kg〜'])
-                kdf['斤量帯'] = kdf['斤量帯'].astype(str)
-                kg = _stat_table(kdf, '斤量帯', min_r=3)
-                if len(kg) > 0:
-                    kc1, kc2 = st.columns(2)
-                    with kc1:
-                        st.altair_chart(_mk_bar(kg, '斤量帯', '勝率(%)', '勝率(%)', "斤量帯別 勝率", height=220), use_container_width=True)
-                    with kc2:
-                        st.dataframe(kg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                     use_container_width=True, hide_index=True)
-
-        # ── 近走履歴 ───────────────────────────────────────────────────
-        with t_recent:
-            recent_n = st.number_input("表示件数", 10, 100, 30, 10, key="jd_recent_n")
-            cols_show = ['日付','競馬場','レース名','芝/ダート','距離','枠番','馬名','人気','着順','単勝','馬場']
-            cols_avail = [c for c in cols_show if c in jdf.columns]
-            recent_df = jdf[cols_avail].sort_values('日付', ascending=False).head(int(recent_n)).copy()
-            recent_df['日付'] = recent_df['日付'].dt.strftime('%Y/%m/%d')
-
-            def _cr_recent(row):
-                try:
-                    rank = int(float(row['着順']))
-                    if rank == 1:  return ['background:rgba(255,215,0,0.25)'] * len(row)
-                    if rank <= 3:  return ['background:rgba(100,200,100,0.15)'] * len(row)
-                except: pass
-                return [''] * len(row)
-
-            st.dataframe(
-                recent_df.style.apply(_cr_recent, axis=1)
-                         .format({'着順': '{:.0f}', '人気': '{:.0f}',
-                                  '単勝': '{:.1f}', '距離': '{:.0f}m',
-                                  '枠番': '{:.0f}'}, na_rep='-'),
-                use_container_width=True, hide_index=True, height=520
-            )
-            st.caption("金=1着 / 緑=3着以内")
+                    recent_df.style.apply(_cr_recent, axis=1)
+                             .format({'着順': '{:.0f}', '人気': '{:.0f}',
+                                      '単勝': '{:.1f}', '距離': '{:.0f}m',
+                                      '枠番': '{:.0f}'}, na_rep='-'),
+                    use_container_width=True, hide_index=True, height=520
+                )
+                st.caption("金=1着 / 緑=3着以内")
 
 
 # ==========================================
