@@ -1,7 +1,7 @@
 streamlit
 pandas
 numpy
-lightgbm==4.6.0
+lightgbm>=4.6.0
 scikit-learn
 requests
 beautifulsoup4
