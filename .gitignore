@@ -3,3 +3,7 @@ __pycache__/
 *$py.class
 .vscode/
 .env
+*.png
+*.jpg
+*.jpeg
+learning_data_perfect_tier.csv
