@@ -2,6 +2,7 @@ import os
 import json
 import datetime
 import logging
+import requests
 
 logger = logging.getLogger('keiba_ebye')
 
@@ -11,6 +12,31 @@ _DISCORD_WEBHOOK_URL        = os.environ.get("DISCORD_WEBHOOK_URL", "")
 _DISCORD_REVIEW_WEBHOOK_URL = os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "") or _DISCORD_WEBHOOK_URL
 
 _DISCORD_QUEUE_FILE = "discord_queue.json"
+
+
+# ==========================================
+# 直接送信（HF SpaceからDiscord Webhookに即時POST）
+# ==========================================
+def _send_discord_direct(webhook_url: str, content: str,
+                          username: str = "keiba-ebye 🐴") -> bool:
+    """Discord Webhook URLに直接POSTして即時送信する。"""
+    if not webhook_url:
+        logger.warning("Discord Webhook URLが未設定")
+        return False
+    try:
+        resp = requests.post(
+            webhook_url,
+            json={"content": content[:2000], "username": username},
+            timeout=10,
+        )
+        if resp.status_code in (200, 204):
+            logger.info("Discord直接送信成功")
+            return True
+        logger.warning(f"Discord直接送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
+        return False
+    except Exception as e:
+        logger.warning(f"Discord直接送信エラー: {e}")
+        return False
 
 def _push_discord_queue(content: str, channel: str = "prediction",
                         username: str = "keiba-ebye 🐴",
@@ -90,11 +116,9 @@ def _push_discord_queue(content: str, channel: str = "prediction",
 def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
                              race_info: dict, webhook_url: str = "") -> bool:
     """
-    予想結果をDiscordキューに積む（GitHub Actionsが送信）
+    予想結果をDiscordに直接送信する。
     race_info: {'place': '東京', 'num': 5, 'title': '...', 'mins_left': 4}
     """
-    if not _HF_TOKEN or not _HF_REPO_ID:
-        return False
     try:
         place = race_info.get('place', '')
         num   = race_info.get('num', '')
@@ -144,8 +168,8 @@ def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
         lines.append("-# keiba-ebye AI予想 / 馬券は自己責任でお願いします")
 
         content = "\n".join(lines)
-        return _push_discord_queue(content, channel="prediction", username="keiba-ebye 🐴",
-                                   dedup_key=race_info.get('race_id', ''))
+        url = webhook_url or _DISCORD_WEBHOOK_URL
+        return _send_discord_direct(url, content, username="keiba-ebye 🐴")
     except Exception as _e:
         logger.warning(f"send_discord_prediction エラー: {_e}")
         return False
@@ -153,9 +177,7 @@ def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
 
 def send_discord_review(stats: dict, rates: dict, target_date_str: str,
                         webhook_url: str = "") -> bool:
-    """振り返り結果をDiscordキューに積む（GitHub Actionsが送信）"""
-    if not _HF_TOKEN or not _HF_REPO_ID:
-        return False
+    """振り返り結果をDiscordに直接送信する"""
     try:
         tan_rate     = rates.get('tan_rate', 0)
         fuku_rate    = rates.get('fuku_rate', 0)
@@ -193,23 +215,23 @@ def send_discord_review(stats: dict, rates: dict, target_date_str: str,
             "-# keiba-ebye / 結果は参考情報です",
         ]
         content = "\n".join(lines)
-        return _push_discord_queue(content, channel="review", username="keiba-ebye 📊",
-                                   dedup_key=f"review_{target_date_str}")
+        url = webhook_url or _DISCORD_REVIEW_WEBHOOK_URL
+        return _send_discord_direct(url, content, username="keiba-ebye 📊")
     except Exception as _e:
         logger.warning(f"send_discord_review エラー: {_e}")
         return False
 
 
 def _test_discord_webhook(webhook_url: str, label: str = "テスト") -> tuple[bool, str]:
-    """テストメッセージをDiscordキューに積む"""
-    if not _HF_TOKEN or not _HF_REPO_ID:
-        return False, "HF_TOKEN / HF_REPO_ID が未設定です"
-    channel = "review" if label == "振り返り" else "prediction"
-    ok = _push_discord_queue(
-        f"🔌 **keiba-ebye** 接続テスト！ ({label}チャンネル) — GitHub Actionsが送信します",
-        channel=channel,
+    """テストメッセージをDiscordに直接送信"""
+    url = webhook_url or (_DISCORD_REVIEW_WEBHOOK_URL if label == "振り返り" else _DISCORD_WEBHOOK_URL)
+    if not url:
+        return False, "Webhook URLが未設定です（HF Secrets: DISCORD_WEBHOOK_URL）"
+    ok = _send_discord_direct(
+        url,
+        f"🔌 **keiba-ebye** 接続テスト成功！ ({label}チャンネル) — 直接送信に切り替え済み ✅",
         username="keiba-ebye 🔌"
     )
     if ok:
-        return True, f"✅ キューに追加しました！GitHub Actionsが数分以内に{label}chへ送信します"
-    return False, "❌ HF Datasetへの書き込み失敗（HF_TOKEN/HF_REPO_IDを確認）"
+        return True, f"✅ 直接送信成功！（遅延なし）"
+    return False, "❌ 送信失敗（Webhook URLを確認してください）"

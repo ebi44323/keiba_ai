@@ -285,6 +285,68 @@ def get_odds_from_soup(s_soup):
         logger.warning(f'get_odds_from_soup 解析エラー: {_e}')
     return o_dict
 
+def fetch_odds_realtime(race_id: str) -> tuple[dict, dict]:
+    """
+    単勝オッズのみを素早く取得する軽量関数。全推論は実行しない。
+    Returns:
+        odds_dict:      {馬番(int): オッズ(float)}
+        name_odds_dict: {馬名(str): オッズ(float)}  ※APIに馬名が含まれる場合のみ
+    """
+    import json as _json
+    odds_dict: dict = {}
+    name_odds_dict: dict = {}
+
+    # ── netkeiba オッズAPI（プライマリ）──────────────────────────
+    try:
+        api_url = (
+            f'https://race.netkeiba.com/api/api_get_jra_odds.html'
+            f'?type=1&action=init&race_id={race_id}'
+        )
+        api_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        r = requests.get(api_url, headers=api_headers, timeout=5)
+        api_data = _json.loads(r.text)
+        if 'data' in api_data and 'odds' in api_data['data'] and '1' in api_data['data']['odds']:
+            odds_raw = api_data['data']['odds']['1']
+            if 'horses' in api_data.get('data', {}):
+                for h in api_data['data']['horses']:
+                    hname = h.get('name', '').strip()
+                    hnum  = h.get('num', '')
+                    if hname and hnum and str(hnum) in odds_raw:
+                        name_odds_dict[hname] = float(odds_raw[str(hnum)][0])
+                        odds_dict[int(hnum)]  = float(odds_raw[str(hnum)][0])
+            if not odds_dict:
+                for uma_num, odds_list in odds_raw.items():
+                    if str(uma_num).isdigit():
+                        odds_dict[int(uma_num)] = float(odds_list[0])
+    except Exception as e:
+        logger.warning(f'fetch_odds_realtime netkeiba失敗: {e}')
+
+    # ── Yahoo競馬（フォールバック）──────────────────────────────
+    if not odds_dict:
+        try:
+            r_y = requests.get(
+                f"https://sports.yahoo.co.jp/keiba/race/odds/tfw/{str(race_id)[2:]}/",
+                headers=get_headers(), timeout=5
+            )
+            soup_y = BeautifulSoup(r_y.text, 'html.parser')
+            for tr in soup_y.find_all('tr'):
+                tds = tr.find_all('td')
+                if len(tds) >= 4:
+                    u_m = re.search(r'^\s*(\d+)\s*$', tds[1].text)
+                    odds_span = tr.find('span', class_='fB')
+                    o_m = re.search(r'\d{1,4}\.\d+', odds_span.text) if odds_span else None
+                    if u_m and o_m:
+                        odds_dict[int(u_m.group(1))] = float(o_m.group(0))
+        except Exception as e:
+            logger.warning(f'fetch_odds_realtime Yahoo失敗: {e}')
+
+    return odds_dict, name_odds_dict
+
+
 # 騎手名の既知の表記ゆれ辞書（出馬表の短縮表記 → 正式名）
 _JOCKEY_ABBR = {
     # 出馬表での短縮表記 → 正式名

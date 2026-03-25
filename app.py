@@ -34,7 +34,7 @@ st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高めら�
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
 from src.core_model import prepare_model_and_data, _HF_TOKEN, _HF_REPO_ID
-from src.scraper import get_todays_races, get_weekend_dates, get_payouts, get_all_payouts, get_odds_from_soup, fetch_horse_last_race
+from src.scraper import get_todays_races, get_weekend_dates, get_payouts, get_all_payouts, get_odds_from_soup, fetch_horse_last_race, fetch_odds_realtime
 from src.reports import generate_pdf_report, generate_txt_report
 from src.discord_utils import _push_discord_queue, send_discord_prediction, send_discord_review, _test_discord_webhook, _DISCORD_WEBHOOK_URL, _DISCORD_REVIEW_WEBHOOK_URL
 from src.inference import run_real_prediction
@@ -491,6 +491,16 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
 
     with tab4:
         st.markdown("AI勝率から計算した複合馬券の理論期待値です。**1.0以上**が購入検討ライン。")
+        _ev4col1, _ev4col2 = st.columns([2, 1])
+        with _ev4col1:
+            ev4_threshold = st.slider("表示するEVの下限", 0.5, 2.0, 0.8, 0.1,
+                                      key="tab4_ev_threshold",
+                                      help="この値以上の組み合わせのみ表示します")
+        with _ev4col2:
+            ev4_top_n = st.number_input("表示件数（上位N件）", 3, 30, 10, 1,
+                                         key="tab4_top_n",
+                                         help="EV降順で上位N件を表示します")
+
         probs = df_res['勝率(AI予測)'].values
         odds_list = df_res['単勝オッズ'].values
         names = df_res['馬名'].values
@@ -499,17 +509,12 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
         # 複勝率（近似）
         fukusho_probs = np.clip(probs * 2.8, 0, 0.99)
 
-        # 馬連・ワイドの期待値（上位5頭の組み合わせ）
+        # 馬連・ワイドの期待値（全馬の組み合わせを計算→フィルタ）
         umaren_rows, wide_rows = [], []
-        for a in range(min(5, len(probs))):
-            for b in range(a+1, min(7, len(probs))):
-                # 馬連: aかbが1着でもう一方が2着
-                p_umaren = probs[a]*fukusho_probs[b] + probs[b]*fukusho_probs[a]
-                p_umaren = min(p_umaren, 0.99)
-                # ワイド: 両馬が3着以内
-                p_wide = fukusho_probs[a] * fukusho_probs[b] * 1.5  # 相関補正
-                p_wide = min(p_wide, 0.99)
-                # 単勝オッズから馬連オッズを推定（簡易モデル: 単勝の積÷0.7）
+        for a in range(len(probs)):
+            for b in range(a+1, len(probs)):
+                p_umaren = min(probs[a]*fukusho_probs[b] + probs[b]*fukusho_probs[a], 0.99)
+                p_wide   = min(fukusho_probs[a] * fukusho_probs[b] * 1.5, 0.99)
                 est_umaren_odds = (odds_list[a] * odds_list[b]) / 8.0
                 est_wide_odds   = (odds_list[a] * odds_list[b]) / 20.0
                 ev_umaren = p_umaren * est_umaren_odds
@@ -521,13 +526,12 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                                   '推定EV': round(ev_wide, 2), '理論的中率': f'{p_wide*100:.1f}%',
                                   '推定オッズ': f'{est_wide_odds:.1f}倍'})
 
-        # 3連複（上位3頭固定）
+        # 3連複（全組み合わせ）
         sanrenpuku_rows = []
-        for a in range(min(4, len(probs))):
-            for b in range(a+1, min(5, len(probs))):
-                for c in range(b+1, min(6, len(probs))):
-                    p3 = fukusho_probs[a] * fukusho_probs[b] * fukusho_probs[c] * 3.0
-                    p3 = min(p3, 0.99)
+        for a in range(len(probs)):
+            for b in range(a+1, len(probs)):
+                for c in range(b+1, len(probs)):
+                    p3 = min(fukusho_probs[a] * fukusho_probs[b] * fukusho_probs[c] * 3.0, 0.99)
                     est_odds3 = (odds_list[a] * odds_list[b] * odds_list[c]) / 20.0
                     ev3 = p3 * est_odds3
                     sanrenpuku_rows.append({'組合せ': f'{nums[a]}-{nums[b]}-{nums[c]}',
@@ -543,14 +547,32 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
         sub1, sub2, sub3 = st.tabs(["馬連", "ワイド", "3連複"])
         with sub1:
             st.caption("※ オッズは単勝オッズから推定した理論値です。実際のオッズとは異なります。")
-            df_uma = pd.DataFrame(umaren_rows).sort_values('推定EV', ascending=False)
-            st.dataframe(df_uma.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
+            df_uma = (pd.DataFrame(umaren_rows)
+                        .sort_values('推定EV', ascending=False)
+                        .query(f'推定EV >= {ev4_threshold}')
+                        .head(int(ev4_top_n)))
+            if df_uma.empty:
+                st.info(f"EV {ev4_threshold:.1f}以上の組み合わせはありません。下限を下げてみてください。")
+            else:
+                st.dataframe(df_uma.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
         with sub2:
-            df_wid = pd.DataFrame(wide_rows).sort_values('推定EV', ascending=False)
-            st.dataframe(df_wid.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
+            df_wid = (pd.DataFrame(wide_rows)
+                        .sort_values('推定EV', ascending=False)
+                        .query(f'推定EV >= {ev4_threshold}')
+                        .head(int(ev4_top_n)))
+            if df_wid.empty:
+                st.info(f"EV {ev4_threshold:.1f}以上の組み合わせはありません。")
+            else:
+                st.dataframe(df_wid.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
         with sub3:
-            df_san = pd.DataFrame(sanrenpuku_rows).sort_values('推定EV', ascending=False).head(10)
-            st.dataframe(df_san.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
+            df_san = (pd.DataFrame(sanrenpuku_rows)
+                        .sort_values('推定EV', ascending=False)
+                        .query(f'推定EV >= {ev4_threshold}')
+                        .head(int(ev4_top_n)))
+            if df_san.empty:
+                st.info(f"EV {ev4_threshold:.1f}以上の組み合わせはありません。")
+            else:
+                st.dataframe(df_san.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
 
 
 if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予想"]:
@@ -581,8 +603,8 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                     force_refresh = st.button("🔄 オッズ再取得して更新", help="最新オッズで予想を再実行します")
 
                 # 自動トリガー判定
-                # discord_triggered: 15分前に一度だけ → Discordに通知
-                # auto_triggered:     5分前に一度だけ → 画面の予想を更新
+                # discord_triggered: 発走4〜7分前に一度だけ → Discordに直接通知（即時）
+                # auto_triggered:    発走0〜6分前に一度だけ → 画面の予想を更新
                 discord_triggered = False
                 auto_triggered = False
 
@@ -590,15 +612,12 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                     _last_discord_key = f'last_discord_{next_race["id"]}'
                     _last_refresh_key = f'last_auto_{next_race["id"]}'
 
-                    # Discord通知: 発走25〜40分前の間に一度だけ発火
-                    # GitHub Actionsのcronは最大30分遅れることがある。
-                    # 締め切り2分前（発走2〜3分前）に届くには40分前にキューに入れる必要がある。
-                    # 25〜40分前の窓で発火させることで「遅くとも発走10分前には届く」を保証する。
-                    if 25 <= mins_left <= 40:
+                    # Discord通知: 発走4〜7分前の間に一度だけ発火（直接Webhook送信で即時到達）
+                    if 4 <= mins_left <= 7:
                         if not st.session_state.get(_last_discord_key, False):
                             discord_triggered = True
                             st.session_state[_last_discord_key] = True
-                            st.info(f"📤 発走{mins_left}分前！Discord通知をキューに追加します（GitHub Actions経由で数分〜30分以内に届きます）")
+                            st.info(f"📤 発走{mins_left}分前！Discordに直接送信します...")
 
                     # 画面更新: 発走0〜6分前に一度だけ発火（最新オッズ取得）
                     if 0 <= mins_left <= 6:
@@ -610,11 +629,54 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
 
 
                 live_update = st.button("🔄 直前オッズ・馬体重で最新情報を取得し再予測", use_container_width=True)
+                # ── オッズのみ軽量更新ボタン ──────────────────────────
+                _odds_only_key = f'odds_only_{next_race["id"]}'
+                if st.button("⚡ オッズのみ更新", key=_odds_only_key,
+                             help="AI推論を再実行せずオッズ・期待値だけ最新に更新します（2〜3秒）"):
+                    _cached_key = f'cached_res_{next_race["id"]}'
+                    if st.session_state.get(_cached_key) is not None:
+                        with st.spinner('オッズ取得中...'):
+                            _new_odds, _new_name_odds = fetch_odds_realtime(next_race['id'])
+                        if _new_odds:
+                            _cached = st.session_state[_cached_key].copy()
+                            _cached['単勝オッズ'] = _cached['馬番'].map(
+                                lambda n: _new_odds.get(int(n), _new_name_odds.get('', 0)) or _cached.loc[_cached['馬番']==n, '単勝オッズ'].values[0]
+                            )
+                            # name_odds_dict で補完
+                            for idx, row in _cached.iterrows():
+                                if row['単勝オッズ'] == 0 and row['馬名'] in _new_name_odds:
+                                    _cached.at[idx, '単勝オッズ'] = _new_name_odds[row['馬名']]
+                                if _new_odds.get(int(row['馬番'])):
+                                    _cached.at[idx, '単勝オッズ'] = _new_odds[int(row['馬番'])]
+                            _cached['期待値'] = (_cached['勝率(AI予測)'] * _cached['単勝オッズ']).clip(upper=50.0)
+                            st.session_state[_cached_key] = _cached
+                            st.success(f"⚡ オッズを更新しました（{len(_new_odds)}頭分）")
+                        else:
+                            st.warning("⚠️ オッズ取得に失敗しました。しばらく待って再試行してください。")
+                    else:
+                        st.info("まず「予想開始」を実行してください。")
+
                 if manual_run or force_refresh or auto_triggered or discord_triggered or live_update:
                     with st.spinner('AIが推論中（最新オッズ取得含む）...'):
                         res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
+                    if res_df is not None:
+                        st.session_state[f'cached_res_{next_race["id"]}'] = res_df.copy()
+                        st.session_state[f'cached_topics_{next_race["id"]}'] = topics
+                        st.session_state[f'cached_reco_{next_race["id"]}']   = reco
+                        st.session_state[f'cached_pace_{next_race["id"]}']   = pace_text
+                        st.session_state[f'cached_conf_{next_race["id"]}']   = conf_text
                 else:
-                    res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle)
+                    _cached_key = f'cached_res_{next_race["id"]}'
+                    if st.session_state.get(_cached_key) is not None:
+                        # オッズのみ更新後のキャッシュを使う
+                        res_df    = st.session_state[_cached_key]
+                        topics    = st.session_state.get(f'cached_topics_{next_race["id"]}')
+                        reco      = st.session_state.get(f'cached_reco_{next_race["id"]}')
+                        pace_text = st.session_state.get(f'cached_pace_{next_race["id"]}')
+                        conf_text = st.session_state.get(f'cached_conf_{next_race["id"]}')
+                        err_log   = []
+                    else:
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle)
 
                 if res_df is not None:
                     display_result(res_df, topics, reco, pace_text, conf_text)
@@ -732,12 +794,18 @@ elif action == "📅 今週末の全レース予想":
                     if _ww: st.warning(_ww[0])
                     if _res_df is not None:
                         display_result(_res_df, _topics, _reco, _pace, _conf)
+                        _max_ev   = float(_res_df['期待値'].max()) if '期待値' in _res_df.columns else 0.0
+                        _top_row  = _res_df.iloc[0]
                         _results.append({
                             "date": f"{_td[:4]}年{_td[4:6]}月{_td[6:]}日",
                             "place": _place or _r["place"], "num": _r["num"],
                             "track": _track, "dist": _dist,
                             "pace": _pace, "confidence": _conf,
                             "df": _res_df, "topics": _topics, "reco": _reco,
+                            "max_ev":      _max_ev,
+                            "honmei_name": str(_top_row.get('馬名', '')),
+                            "honmei_odds": float(_top_row.get('単勝オッズ', 0)),
+                            "honmei_prob": float(_top_row.get('勝率(AI予測)', 0)),
                         })
                     else:
                         display_error_log(_elog)
@@ -751,6 +819,23 @@ elif action == "📅 今週末の全レース予想":
     _td2    = st.session_state.get("weekend_date", "")
     _valid  = [r for r in _cached if r.get("df") is not None]
     if _valid and _td2:
+        # ── 注目レース TOP3 ──────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### 🎯 本日の注目レース（EV最大順）")
+        _scored = sorted(_valid, key=lambda x: x.get('max_ev', 0), reverse=True)[:3]
+        _rank_rows = []
+        for _rank_i, _sr in enumerate(_scored):
+            _rank_rows.append({
+                '順位':     f"{'🥇🥈🥉'[_rank_i]}",
+                '開催':     f"{_sr['place']} {_sr['num']}R",
+                '◎':       _sr.get('honmei_name', ''),
+                'AI勝率':   f"{_sr.get('honmei_prob', 0)*100:.1f}%",
+                'オッズ':   f"{_sr.get('honmei_odds', 0):.1f}倍",
+                '最大EV':   f"{_sr.get('max_ev', 0):.2f}",
+                'コメント': _sr.get('confidence', '')[:30],
+            })
+        if _rank_rows:
+            st.dataframe(pd.DataFrame(_rank_rows), use_container_width=True, hide_index=True)
         st.markdown("---")
         _c1, _c2 = st.columns(2)
         _c1.download_button(
@@ -772,7 +857,12 @@ elif action == "📅 今週末の全レース予想":
 
 elif action == "📝 1日の振り返り (答え合わせ)":
     st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
-    target_date = st.date_input("振り返りたい日付を選択", datetime.date.today() - datetime.timedelta(days=1))
+    _rev_col1, _rev_col2 = st.columns([3, 1])
+    with _rev_col1:
+        target_date = st.date_input("振り返りたい日付を選択", datetime.date.today() - datetime.timedelta(days=1))
+    with _rev_col2:
+        compare_ev_mode = st.checkbox("🎯 EV優先◎と比較", value=False,
+                                       help="標準◎（AI勝率最大）とEV優先◎（期待値最大）の成績を並べて比較します")
 
     if st.button("🚀 振り返り実行！", type="primary"):
         with st.spinner(f'{target_date.strftime("%Y/%m/%d")} のレースデータと結果を取得・集計中...'):
@@ -790,6 +880,11 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     'ev_invest': 0, 'ev_tan_hits': 0, 'ev_tan_return': 0, 'ev_fuku_hits': 0, 'ev_fuku_return': 0,
                     'shiba_races': 0, 'shiba_return': 0, 'dart_races': 0, 'dart_return': 0,
                     'exp_races': 0, 'exp_return': 0, 'new_races': 0, 'new_return': 0,
+                }
+                # EV優先◎比較用stats
+                stats_ev = {
+                    'races': 0, 'tan_hits': 0, 'tan_return': 0,
+                    'fuku_hits': 0, 'fuku_return': 0,
                 }
 
                 for i, r in enumerate(races):
@@ -840,6 +935,19 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     if res_df is not None and payouts['tansho']:
                         honmei = res_df.iloc[0]['馬番']
                         has_unraced = ('新馬' in r['title']) or ('未出走' in r['title'])
+
+                        # ── EV優先◎の計算（compare_ev_modeが有効な場合）──
+                        if compare_ev_mode:
+                            _ev_cands = res_df[(res_df['期待値'] >= 1.0) & (res_df['勝率(AI予測)'] >= 0.10)]
+                            ev_honmei = (_ev_cands.loc[_ev_cands['期待値'].idxmax(), '馬番']
+                                         if not _ev_cands.empty else honmei)
+                            stats_ev['races'] += 1
+                            if ev_honmei in payouts['tansho']:
+                                stats_ev['tan_hits']   += 1
+                                stats_ev['tan_return'] += payouts['tansho'][ev_honmei]
+                            if ev_honmei in payouts['fukusho']:
+                                stats_ev['fuku_hits']   += 1
+                                stats_ev['fuku_return'] += payouts['fukusho'][ev_honmei]
 
                         stats['honmei_races'] += 1
                         if track_type == "芝": stats['shiba_races'] += 1
@@ -905,14 +1013,19 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 exp_rate = (stats['exp_return'] / (stats['exp_races'] * 100) * 100) if stats['exp_races'] > 0 else 0
                 new_rate = (stats['new_return'] / (stats['new_races'] * 100) * 100) if stats['new_races'] > 0 else 0
 
-                # CSVセーブ
+                # CSVセーブ（週次レポート用に詳細列も保存）
                 csv_file = "ai_daily_history.csv"
                 daily_data = pd.DataFrame([{
                     '日付': target_date.strftime('%Y/%m/%d'),
                     '本命単勝回収率': round(tan_rate, 1),
                     '本命複勝回収率': round(fuku_rate, 1),
                     '穴馬単勝回収率': round(ev_tan_rate, 1),
-                    '穴馬複勝回収率': round(ev_fuku_rate, 1)
+                    '穴馬複勝回収率': round(ev_fuku_rate, 1),
+                    '本命レース数': stats['honmei_races'],
+                    '本命単勝的中数': stats['honmei_tan_hits'],
+                    '本命複勝的中数': stats['honmei_fuku_hits'],
+                    'EV馬数': int(stats['ev_invest'] // 100),
+                    'EV単勝的中数': stats['ev_tan_hits'],
                 }])
                 if os.path.exists(csv_file):
                     existing_df = pd.read_csv(csv_file)
@@ -967,6 +1080,39 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     st.write(f"- 該当数: {int(stats['ev_invest']/100)} 頭")
                     st.write(f"- **単勝 回収率**: **{ev_tan_rate:.1f}%** (的中 {stats['ev_tan_hits']}頭)")
                     st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
+
+                # ── EV優先◎ 比較表示 ──────────────────────────────────────
+                if compare_ev_mode and stats_ev['races'] > 0:
+                    st.markdown("---")
+                    st.markdown("### 🎯 EV優先◎ vs 標準◎ 比較")
+                    ev_tan_rate_ev   = (stats_ev['tan_return']  / (stats_ev['races'] * 100) * 100) if stats_ev['races'] > 0 else 0
+                    ev_fuku_rate_ev  = (stats_ev['fuku_return'] / (stats_ev['races'] * 100) * 100) if stats_ev['races'] > 0 else 0
+                    _cmp_data = {
+                        '指標':     ['単勝 的中率', '単勝 回収率', '複勝 的中率', '複勝 回収率'],
+                        '標準◎ (AI勝率最大)': [
+                            f"{stats['honmei_tan_hits'] / stats['honmei_races'] * 100:.1f}%",
+                            f"{tan_rate:.1f}%",
+                            f"{stats['honmei_fuku_hits'] / stats['honmei_races'] * 100:.1f}%",
+                            f"{fuku_rate:.1f}%",
+                        ],
+                        'EV優先◎ (期待値最大)': [
+                            f"{stats_ev['tan_hits'] / stats_ev['races'] * 100:.1f}%",
+                            f"{ev_tan_rate_ev:.1f}%",
+                            f"{stats_ev['fuku_hits'] / stats_ev['races'] * 100:.1f}%",
+                            f"{ev_fuku_rate_ev:.1f}%",
+                        ],
+                    }
+                    def _cmp_color(row):
+                        std_val  = float(row['標準◎ (AI勝率最大)'].replace('%',''))
+                        ev_val   = float(row['EV優先◎ (期待値最大)'].replace('%',''))
+                        color_ev = 'background-color:rgba(75,200,75,0.15)' if ev_val > std_val else ''
+                        color_std = 'background-color:rgba(75,75,255,0.10)' if std_val >= ev_val else ''
+                        return ['', color_std, color_ev]
+                    st.dataframe(
+                        pd.DataFrame(_cmp_data).style.apply(_cmp_color, axis=1),
+                        use_container_width=True, hide_index=True
+                    )
+                    st.caption(f"対象: {stats_ev['races']}レース。EV優先◎が標準◎と同じ馬の場合は同結果になります。")
 
                 # ── Discord 振り返り投稿エリア ─────────────────────────────
                 if _DISCORD_REVIEW_WEBHOOK_URL:
