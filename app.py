@@ -49,12 +49,17 @@ def get_morning_prediction(race_id, race_date_str, _bundle):
 _hub_available = bool(_HF_TOKEN and _HF_REPO_ID)
 _hub_label = "HF Hub" if _hub_available else "ローカル学習"
 
-with st.spinner(f'AIエンジン起動中... ({_hub_label}からロード試行)'):
-    bundle = prepare_model_and_data()
-    (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
-     latest_horse_data, horse_course_dict, ped_dict,
-     known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
-     auc_win, auc_place, *_extra) = bundle
+# モデルロード前にUIを描画してヘルスチェックを通過させる
+_loading_placeholder = st.empty()
+_loading_placeholder.info(f'⏳ AIエンジン起動中... ({_hub_label}からモデルをロード中)')
+
+bundle = prepare_model_and_data()
+_loading_placeholder.empty()
+
+(model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
+ latest_horse_data, horse_course_dict, ped_dict,
+ known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
+ auc_win, auc_place, *_extra) = bundle
 
 # ==========================================
 # 4. メインUI構成
