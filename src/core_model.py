@@ -140,6 +140,12 @@ def prepare_model_and_data(force_retrain=False):
     except FileNotFoundError:
         df = pd.read_csv('learning_data_perfect_tier.csv', dtype=str)
 
+    # ── 調教師名の正規化 ──────────────────────────────────────────────
+    # 学習データは "[東] 矢作芳人" / "[東]矢作芳人" のように厩舎地区プレフィックス付き。
+    # 推論時のスクレイピング値 "矢作芳人" と一致させるためプレフィックスを除去する。
+    if '調教師' in df.columns:
+        df['調教師'] = df['調教師'].str.replace(r'^\[.+?\]\s*', '', regex=True)
+
     from src.features_engine import create_features
     df, _ = create_features(df)
 

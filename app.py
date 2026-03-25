@@ -1828,6 +1828,9 @@ elif action == "🏇 騎手・調教師フォーム分析":
     @st.cache_data(ttl=3600, show_spinner="学習データを読み込み中...")
     def load_jockey_base():
         df = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+        # 調教師名の正規化: "[東] 矢作芳人" → "矢作芳人"
+        if '調教師' in df.columns:
+            df['調教師'] = df['調教師'].str.replace(r'^\[.+?\]\s*', '', regex=True)
         df['日付']  = pd.to_datetime(df['日付'], format='mixed', errors='coerce')
         for col in ['着順','単勝','人気','距離','枠番','斤量','出走頭数',
                     '当日馬体重','上り偏差','最初のコーナー順位',
