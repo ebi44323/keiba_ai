@@ -21,11 +21,12 @@ _MODEL_FILE = "keiba_model.pkl"
 _META_FILE  = "keiba_model_meta.json"             
 
 def _get_zip_mtime():
-    """学習データZIPの最終更新日時(文字列)を返す"""
+    """学習データの識別子を返す（ファイルサイズ＋行数ハッシュ）
+    Docker COPY でmtimeがリセットされるため、サイズを使用。"""
     for p in ['learning_data_perfect_tier.zip', 'learning_data_perfect_tier.csv']:
         if os.path.exists(p):
-            import time as _t
-            return _t.strftime('%Y-%m-%dT%H:%M:%S', _t.gmtime(os.path.getmtime(p)))
+            size = os.path.getsize(p)
+            return f"size:{size}"
     return 'unknown'
 
 def _try_load_model_from_hub():
