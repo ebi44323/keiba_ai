@@ -346,6 +346,46 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             st.error(f"💰 **【期待値レーダー発動】** {', '.join(ev_horses['馬名'].tolist())} に妙味あり！")
         if topics: st.warning("**📝 要注目トピック馬:**\n\n" + "\n".join(topics))
 
+        # ── 穴馬マーク（🎯）の説明 ─────────────────────────────────
+        if '穴馬マーク' in df_res.columns:
+            _ana_horses = df_res[df_res['穴馬マーク'] == '🎯']
+            if not _ana_horses.empty:
+                st.markdown("---")
+                st.markdown("#### 🎯 穴馬マーク付き馬の詳細")
+                st.caption("穴馬スコア（人気薄で勝つパターンへの適合度）が高く、単勝オッズ8倍以上の馬に付与されます。")
+                for _, _ar in _ana_horses.iterrows():
+                    try:
+                        _odds  = float(_ar.get('単勝オッズ', 0))
+                        _prob  = float(_ar.get('勝率(AI予測)', 0)) * 100
+                        _ev    = float(_ar.get('期待値', 0) or 0)
+                        _score = float(_ar.get('穴馬スコア', 0))
+                        _imp   = str(_ar.get('印', ''))
+                        st.markdown(
+                            f"**🎯 {_imp} {_ar['馬名']}**　"
+                            f"オッズ {_odds:.1f}倍 / AI勝率 {_prob:.1f}% / EV {_ev:.2f} / 穴馬スコア {_score:.3f}"
+                        )
+                        # 穴馬スコアが高い根拠（特徴量ベースの簡易コメント）
+                        _hints = []
+                        try:
+                            if float(_ar.get('長期休養フラグ', 0)) > 0:
+                                _hints.append("休養明け")
+                            if float(_ar.get('レース格上挑戦フラグ', 0)) > 0:
+                                _hints.append("格上挑戦")
+                            if float(_ar.get('コース初挑戦フラグ', 0)) > 0:
+                                _hints.append("コース初挑戦")
+                            _best3 = float(_ar.get('ベスト3走_中央値スピード指数', 0) or 0)
+                            _recent = float(_ar.get('近5走_スピード指数安定性', 99) or 99)
+                            if _best3 > 55:
+                                _hints.append(f"ピーク能力高({_best3:.0f})")
+                            if _recent < 5:
+                                _hints.append("近走安定型")
+                        except Exception:
+                            pass
+                        if _hints:
+                            st.caption("　注目ポイント: " + " / ".join(_hints))
+                    except Exception:
+                        pass
+
     with tab3:
         import altair as alt
 
@@ -743,6 +783,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
             selected = st.selectbox("レースを選んでください", options)
             target_race = todays_races[options.index(selected)]
 
+            _spec_key = target_race['id']
             live_update = st.button("🔄 直前オッズ・馬体重で最新情報を取得し再推論", use_container_width=True)
             if st.button("🚀 朝版 予想開始", type="primary") or live_update:
                 with st.spinner('推論中...'):
@@ -752,23 +793,37 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                         res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle)
 
                     if res_df is not None:
-                        display_result(res_df, topics, reco, pace_text, conf_text)
-                        # 手動Discord投稿ボタン
-                        if _DISCORD_WEBHOOK_URL:
-                            if st.button("📤 Discordに投稿", key=f"discord_spec_{target_race['id']}"):
-                                _race_info = {
-                                    'place':   target_race['place'],
-                                    'num':     target_race['num'],
-                                    'title':   target_race['title'],
-                                    'mins_left': 0,
-                                    'race_id': f"manual_{target_race['id']}",
-                                }
-                                _ok = send_discord_prediction(
-                                    res_df, topics, reco, pace_text, conf_text,
-                                    _race_info, _DISCORD_WEBHOOK_URL
-                                )
-                                st.success("📤 投稿しました！") if _ok else st.error("❌ 投稿失敗")
-                    else: display_error_log(err_log)
+                        st.session_state[f'spec_res_{_spec_key}']    = res_df.copy()
+                        st.session_state[f'spec_topics_{_spec_key}'] = topics
+                        st.session_state[f'spec_reco_{_spec_key}']   = reco
+                        st.session_state[f'spec_pace_{_spec_key}']   = pace_text
+                        st.session_state[f'spec_conf_{_spec_key}']   = conf_text
+                    else:
+                        display_error_log(err_log)
+
+            # ── キャッシュから表示（スライダー操作でも消えない）──────────
+            _spec_res = st.session_state.get(f'spec_res_{_spec_key}')
+            if _spec_res is not None:
+                _spec_topics = st.session_state.get(f'spec_topics_{_spec_key}')
+                _spec_reco   = st.session_state.get(f'spec_reco_{_spec_key}')
+                _spec_pace   = st.session_state.get(f'spec_pace_{_spec_key}')
+                _spec_conf   = st.session_state.get(f'spec_conf_{_spec_key}')
+                display_result(_spec_res, _spec_topics, _spec_reco, _spec_pace, _spec_conf, _key=f"_{_spec_key}")
+                # 手動Discord投稿ボタン
+                if _DISCORD_WEBHOOK_URL:
+                    if st.button("📤 Discordに投稿", key=f"discord_spec_{target_race['id']}"):
+                        _race_info = {
+                            'place':   target_race['place'],
+                            'num':     target_race['num'],
+                            'title':   target_race['title'],
+                            'mins_left': 0,
+                            'race_id': f"manual_{target_race['id']}",
+                        }
+                        _ok = send_discord_prediction(
+                            _spec_res, _spec_topics, _spec_reco, _spec_pace, _spec_conf,
+                            _race_info, _DISCORD_WEBHOOK_URL
+                        )
+                        st.success("📤 投稿しました！") if _ok else st.error("❌ 投稿失敗")
 
 elif action == "📅 今週末の全レース予想":
     st.subheader("📅 今週末 (土・日) の先取り予想")
@@ -789,38 +844,54 @@ elif action == "📅 今週末の全レース予想":
             _bar = st.progress(0, text="推論中...")
             _results = []
             for _i, _r in enumerate(_races):
-                # レースごとにリアルタイム表示
-                with st.expander(f"🏁 {_r['place']} {_r['num']}R", expanded=True):
-                    _res_df, _topics, _reco, _pace, _conf, _track, _place, _dist, _elog = run_real_prediction(
-                        _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}", bundle)
-                    _ww = [e for e in (_elog or []) if "枠順未確定" in e]
-                    if _ww: st.warning(_ww[0])
-                    if _res_df is not None:
-                        display_result(_res_df, _topics, _reco, _pace, _conf, _key=f"_{_r['id']}")
-                        _max_ev   = float(_res_df['期待値'].max()) if '期待値' in _res_df.columns else 0.0
-                        _top_row  = _res_df.iloc[0]
-                        _results.append({
-                            "date": f"{_td[:4]}年{_td[4:6]}月{_td[6:]}日",
-                            "place": _place or _r["place"], "num": _r["num"],
-                            "track": _track, "dist": _dist,
-                            "pace": _pace, "confidence": _conf,
-                            "df": _res_df, "topics": _topics, "reco": _reco,
-                            "max_ev":      _max_ev,
-                            "honmei_name": str(_top_row.get('馬名', '')),
-                            "honmei_odds": float(_top_row.get('単勝オッズ', 0)),
-                            "honmei_prob": float(_top_row.get('勝率(AI予測)', 0)),
-                        })
-                    else:
-                        display_error_log(_elog)
+                _bar.progress((_i + 0.5) / len(_races), text=f"推論中... {_r['place']} {_r['num']}R")
+                _res_df, _topics, _reco, _pace, _conf, _track, _place, _dist, _elog = run_real_prediction(
+                    _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}", bundle)
+                if _res_df is not None:
+                    _max_ev   = float(_res_df['期待値'].max()) if '期待値' in _res_df.columns else 0.0
+                    _top_row  = _res_df.iloc[0]
+                    _results.append({
+                        "date": f"{_td[:4]}年{_td[4:6]}月{_td[6:]}日",
+                        "place": _place or _r["place"], "num": _r["num"],
+                        "track": _track, "dist": _dist,
+                        "pace": _pace, "confidence": _conf,
+                        "df": _res_df, "topics": _topics, "reco": _reco,
+                        "max_ev":      _max_ev,
+                        "honmei_name": str(_top_row.get('馬名', '')),
+                        "honmei_odds": float(_top_row.get('単勝オッズ', 0)),
+                        "honmei_prob": float(_top_row.get('勝率(AI予測)', 0)),
+                        "warn": [e for e in (_elog or []) if "枠順未確定" in e],
+                    })
+                else:
+                    _results.append({"df": None, "place": _r["place"], "num": _r["num"], "elog": _elog})
                 time.sleep(1.0)
                 _bar.progress((_i + 1) / len(_races))
             # 完了後にsession_stateへ保存
             st.session_state["weekend_results"] = _results
+            _bar.empty()
 
-    # ダウンロードボタンはsession_stateから（再実行でも消えない）
+    # ── 結果表示（session_stateから再描画・スライダーで消えない）──────
     _cached = st.session_state.get("weekend_results", [])
     _td2    = st.session_state.get("weekend_date", "")
     _valid  = [r for r in _cached if r.get("df") is not None]
+
+    if _cached and _td2:
+        for _cr in _cached:
+            _cr_label = f"🏁 {_cr.get('place','')} {_cr.get('num','')}R"
+            if _cr.get("df") is not None:
+                _cr_top = _cr["df"].iloc[0]
+                _cr_imp = str(_cr_top.get('印', ''))
+                _cr_label = f"🏁 {_cr.get('place','')} {_cr.get('num','')}R  {_cr_imp}{_cr_top.get('馬名','')} (EV{_cr.get('max_ev',0):.2f})"
+                with st.expander(_cr_label, expanded=False):
+                    for _w in _cr.get("warn", []):
+                        st.warning(_w)
+                    display_result(_cr["df"], _cr.get("topics"), _cr.get("reco"),
+                                   _cr.get("pace"), _cr.get("confidence"),
+                                   _key=f"_{_cr.get('place','')}{_cr.get('num','')}")
+            else:
+                with st.expander(_cr_label, expanded=False):
+                    display_error_log(_cr.get("elog"))
+
     if _valid and _td2:
         # ── 注目レース TOP3 ──────────────────────────────────────
         st.markdown("---")
@@ -1018,6 +1089,9 @@ elif action == "📝 1日の振り返り (答え合わせ)":
 
                 # CSVセーブ（週次レポート用に詳細列も保存）
                 csv_file = "ai_daily_history.csv"
+                # EV優先◎の回収率（compare_ev_modeがOFFの日はNaNで保存して区別する）
+                _ev_tan_rate_ev  = round((stats_ev['tan_return']  / (stats_ev['races'] * 100) * 100), 1) if stats_ev['races'] > 0 else None
+                _ev_fuku_rate_ev = round((stats_ev['fuku_return'] / (stats_ev['races'] * 100) * 100), 1) if stats_ev['races'] > 0 else None
                 daily_data = pd.DataFrame([{
                     '日付': target_date.strftime('%Y/%m/%d'),
                     '本命単勝回収率': round(tan_rate, 1),
@@ -1029,11 +1103,14 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     '本命複勝的中数': stats['honmei_fuku_hits'],
                     'EV馬数': int(stats['ev_invest'] // 100),
                     'EV単勝的中数': stats['ev_tan_hits'],
+                    'EV優先単勝回収率': _ev_tan_rate_ev,
+                    'EV優先複勝回収率': _ev_fuku_rate_ev,
                 }])
                 if os.path.exists(csv_file):
                     existing_df = pd.read_csv(csv_file)
-                    for col in ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率']:
-                        if col not in existing_df.columns: existing_df[col] = 0.0
+                    for col in ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率',
+                                'EV優先単勝回収率', 'EV優先複勝回収率']:
+                        if col not in existing_df.columns: existing_df[col] = None
                     existing_df = existing_df[existing_df['日付'] != target_date.strftime('%Y/%m/%d')]
                     updated_df = pd.concat([existing_df, daily_data])
                     updated_df.to_csv(csv_file, index=False)

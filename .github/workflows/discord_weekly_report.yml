@@ -110,6 +110,11 @@ jobs:
           fuku_return    = float(safe_get('本命複勝回収率')) / len(df_week) if len(df_week) > 0 else 0
           ev_tan_return  = float(safe_get('穴馬単勝回収率')) / len(df_week) if len(df_week) > 0 else 0
 
+          # EV優先◎の集計（列が存在しNaNでない行のみ）
+          ev_first_days = df_week.dropna(subset=['EV優先単勝回収率']) if 'EV優先単勝回収率' in df_week.columns else pd.DataFrame()
+          ev_first_tan  = float(ev_first_days['EV優先単勝回収率'].mean()) if len(ev_first_days) > 0 else None
+          ev_first_fuku = float(ev_first_days['EV優先複勝回収率'].mean()) if 'EV優先複勝回収率' in ev_first_days.columns and len(ev_first_days) > 0 else None
+
           def emoji(v):
               if v >= 150: return "🔥"
               if v >= 100: return "✅"
@@ -128,6 +133,17 @@ jobs:
               f"複勝  {emoji(fuku_return)} {fuku_return:6.1f}%   的中 {fuku_hits}/{total_races}R",
               "```",
           ]
+          if ev_first_tan is not None:
+              lines += [
+                  "",
+                  "**【EV優先◎ vs 標準◎ 比較】**",
+                  "```",
+                  f"標準◎単勝   {emoji(tan_return)} {tan_return:6.1f}%",
+                  f"EV優先単勝  {emoji(ev_first_tan)} {ev_first_tan:6.1f}%",
+              ]
+              if ev_first_fuku is not None:
+                  lines.append(f"EV優先複勝  {emoji(ev_first_fuku)} {ev_first_fuku:6.1f}%")
+              lines += ["```", f"-# EV優先データあり: {len(ev_first_days)}日分"]
           if ev_count > 0:
               lines += [
                   "",
