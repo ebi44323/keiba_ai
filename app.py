@@ -197,7 +197,7 @@ _gemini_ok = check_gemini_available()
 if _gemini_ok:
     gemini_mode = st.sidebar.toggle(
         "Gemini 解説を有効化",
-        value=False,
+        value=True,
         help="Google Gemini がML予測数値をもとにレース展望を自然言語で生成します（無料枠使用）"
     )
     gemini_model_name = st.sidebar.selectbox(
@@ -242,8 +242,55 @@ def display_error_log(err_log):
         for log in err_log:
             st.code(log, language=None)
 
+@st.fragment
+def _render_gemini_tab(df_res, pace_text, confidence_text, topics, reco, _key, _mode, _model_name):
+    """tab5 の Gemini アナリスト表示。@st.fragment でページ全体のリフレッシュを防ぐ。"""
+    if not _mode:
+        st.info("🤖 サイドバーの **「AI思考モード」** をONにすると、2人のAIアナリストがレース展望と買い目を生成します。")
+        st.caption("本命党「伊藤ホンメ」と穴党「風穴あけるズ」が正反対の視点で分析します（Google Gemini 無料枠使用）。")
+        return
+
+    _cache_key = f"gemini_{_key}"
+
+    if not st.session_state.get(_cache_key):
+        st.markdown("##### 🤖 2アナリスト AI分析")
+        st.caption("本命党と穴党、2人の視点でレース展望と具体的な買い目を生成します。")
+        if st.button("✨ 2人のアナリストに分析させる", type="primary", key=f"gemini_run{_key}"):
+            with st.spinner("鉄板師と穴師が分析中... (5〜15秒)"):
+                _result = generate_two_analysts(
+                    df_res, pace_text, confidence_text,
+                    topics or [], reco or "",
+                    model_name=_model_name,
+                )
+            if _result:
+                st.session_state[_cache_key] = _result
+            else:
+                st.error("生成に失敗しました。GEMINI_API_KEY を確認してください。")
+
+    _gcached = st.session_state.get(_cache_key)
+    if _gcached and 'honmei' in _gcached:
+        st.caption(f"生成モデル: {_gcached.get('model', '')}  ※AI生成テキストです。参考情報としてお読みください。")
+        _g_col1, _g_col2 = st.columns(2)
+        with _g_col1:
+            st.markdown("#### 🎯 本命党「伊藤ホンメ」")
+            _hc = _gcached.get('honmei', {})
+            if _hc.get('comment'):
+                st.info(_hc['comment'])
+            if _hc.get('bet'):
+                st.success(f"💰 **買い目:** {_hc['bet']}")
+        with _g_col2:
+            st.markdown("#### 💣 穴党「風穴あけるズ」")
+            _ac = _gcached.get('ana', {})
+            if _ac.get('comment'):
+                st.warning(_ac['comment'])
+            if _ac.get('bet'):
+                st.error(f"🎰 **買い目:** {_ac['bet']}")
+        if st.button("🔄 再生成", key=f"gemini_regen{_key}"):
+            del st.session_state[_cache_key]
+
+
 def display_result(df_res, topics, reco, pace_text, confidence_text, show_change_table=True, _key=""):
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 予想一覧", "💡 展開・買い目", "🔍 性能詳細", "🎰 複合馬券EV", "🤖 AI思考"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 予想一覧", "🌪️ 展開 & 穴馬ピック", "🔍 性能詳細", "🎰 複合馬券EV", "🤖 AI思考"])
 
     with tab1:
         if "鉄板" in confidence_text: st.success(confidence_text)
@@ -671,50 +718,8 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                 st.dataframe(df_san.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
 
     with tab5:
-        if not gemini_mode:
-            st.info("🤖 サイドバーの **「AI思考モード」** をONにすると、2人のAIアナリストがレース展望と買い目を生成します。")
-            st.caption("本命党「鉄板師・剛三」と穴党「穴師・乱丸」が正反対の視点で分析します（Google Gemini 無料枠使用）。")
-        else:
-            _cache_key = f"gemini_{_key}"
-
-            # キャッシュがなければボタンを表示→生成してキャッシュに保存
-            if not st.session_state.get(_cache_key):
-                st.markdown("##### 🤖 2アナリスト AI分析")
-                st.caption("本命党と穴党、2人の視点でレース展望と具体的な買い目を生成します。")
-                if st.button("✨ 2人のアナリストに分析させる", type="primary", key=f"gemini_run{_key}"):
-                    with st.spinner("鉄板師と穴師が分析中... (5〜15秒)"):
-                        _result = generate_two_analysts(
-                            df_res, pace_text, confidence_text,
-                            topics or [], reco or "",
-                            model_name=gemini_model_name
-                        )
-                    if _result:
-                        st.session_state[_cache_key] = _result
-                    else:
-                        st.error("生成に失敗しました。GEMINI_API_KEY を確認してください。")
-
-            # キャッシュがあれば表示（生成直後もそのまま描画）
-            _gcached = st.session_state.get(_cache_key)
-            if _gcached and 'honmei' in _gcached:
-                st.caption(f"生成モデル: {_gcached.get('model', '')}  ※AI生成テキストです。参考情報としてお読みください。")
-                _g_col1, _g_col2 = st.columns(2)
-                with _g_col1:
-                    st.markdown("#### 🎯 本命党「鉄板師・剛三」")
-                    _hc = _gcached.get('honmei', {})
-                    if _hc.get('comment'):
-                        st.info(_hc['comment'])
-                    if _hc.get('bet'):
-                        st.success(f"💰 **買い目:** {_hc['bet']}")
-                with _g_col2:
-                    st.markdown("#### 💣 穴党「穴師・乱丸」")
-                    _ac = _gcached.get('ana', {})
-                    if _ac.get('comment'):
-                        st.warning(_ac['comment'])
-                    if _ac.get('bet'):
-                        st.error(f"🎰 **買い目:** {_ac['bet']}")
-                if st.button("🔄 再生成", key=f"gemini_regen{_key}"):
-                    del st.session_state[_cache_key]
-                    st.rerun()
+        _render_gemini_tab(df_res, pace_text, confidence_text, topics, reco,
+                           _key, gemini_mode, gemini_model_name)
 
 
 if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予想"]:
@@ -918,9 +923,11 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                             'mins_left': 0,
                             'race_id': f"manual_{target_race['id']}",
                         }
+                        _gemini_d = st.session_state.get(f"gemini__{_spec_key}")
                         _ok = send_discord_prediction(
                             _spec_res, _spec_topics, _spec_reco, _spec_pace, _spec_conf,
-                            _race_info, _DISCORD_WEBHOOK_URL
+                            _race_info, _DISCORD_WEBHOOK_URL,
+                            gemini_data=_gemini_d,
                         )
                         st.success("📤 投稿しました！") if _ok else st.error("❌ 投稿失敗")
 

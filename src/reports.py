@@ -19,12 +19,12 @@ def _build_gemini_html(r: dict) -> str:
   <div class="gemini-title">🤖 AI思考モード（{model}）</div>
   <div class="gemini-row">
     <div class="gemini-honmei">
-      <div class="gemini-analyst">🎯 本命党「鉄板師・剛三」</div>
+      <div class="gemini-analyst">🎯 本命党「伊藤ホンメ」</div>
       <p>{hc}</p>
       <div class="gemini-bet">💰 買い目: {hb}</div>
     </div>
     <div class="gemini-ana">
-      <div class="gemini-analyst">💣 穴党「穴師・乱丸」</div>
+      <div class="gemini-analyst">💣 穴党「風穴あけるズ」</div>
       <p>{ac}</p>
       <div class="gemini-bet">🎰 買い目: {ab}</div>
     </div>
@@ -182,13 +182,13 @@ def generate_txt_report(results_list, ev_threshold=1.5):
         if _gh or _ga:
             out.append(f"[🤖 AI思考モード ({r.get('gemini_model','')})]")
             if _gh.get('comment'):
-                out.append(f"  🎯 鉄板師・剛三（本命党）:")
+                out.append(f"  🎯 伊藤ホンメ（本命党）:")
                 out.append(f"    {_gh['comment']}")
             if _gh.get('bet'):
                 out.append(f"    💰 買い目: {_gh['bet']}")
             out.append("")
             if _ga.get('comment'):
-                out.append(f"  💣 穴師・乱丸（穴党）:")
+                out.append(f"  💣 風穴あけるズ（穴党）:")
                 out.append(f"    {_ga['comment']}")
             if _ga.get('bet'):
                 out.append(f"    🎰 買い目: {_ga['bet']}")

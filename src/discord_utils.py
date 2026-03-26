@@ -91,7 +91,8 @@ def _push_discord_queue(content: str, channel: str = "prediction",
 
 
 def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
-                             race_info: dict, webhook_url: str = "") -> bool:
+                             race_info: dict, webhook_url: str = "",
+                             gemini_data: dict = None) -> bool:
     """予想結果を Discord キュー経由で送信する（Cloudflare Workers cron が配送）"""
     try:
         place = race_info.get('place', '')
@@ -143,8 +144,38 @@ def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
 
         content = "\n".join(lines)
         race_id = race_info.get('race_id', '')
-        return _push_discord_queue(content, channel="prediction",
-                                   username="keiba-ebye 🐴", dedup_key=race_id)
+        ok = _push_discord_queue(content, channel="prediction",
+                                  username="keiba-ebye 🐴", dedup_key=race_id)
+
+        # AIアナリストコメントがあれば続けて別メッセージで投稿
+        if ok and gemini_data and isinstance(gemini_data, dict):
+            honmei = gemini_data.get('honmei', {})
+            ana    = gemini_data.get('ana', {})
+            model  = gemini_data.get('model', '')
+            if honmei or ana:
+                alines = [
+                    f"🤖 **AIアナリスト解説** ({model}) | {place} {num}R",
+                    "",
+                ]
+                if honmei.get('comment'):
+                    alines.append(f"🎯 **伊藤ホンメ（本命党）**")
+                    alines.append(f"> {honmei['comment'][:200]}")
+                    if honmei.get('bet'):
+                        alines.append(f"> 💰 {honmei['bet'][:80]}")
+                    alines.append("")
+                if ana.get('comment'):
+                    alines.append(f"💣 **風穴あけるズ（穴党）**")
+                    alines.append(f"> {ana['comment'][:200]}")
+                    if ana.get('bet'):
+                        alines.append(f"> 🎰 {ana['bet'][:80]}")
+                alines.append("")
+                alines.append("-# keiba-ebye AI思考モード")
+                _push_discord_queue(
+                    "\n".join(alines), channel="prediction",
+                    username="keiba-ebye 🤖",
+                    dedup_key=f"{race_id}_gemini",
+                )
+        return ok
     except Exception as _e:
         logger.warning(f"send_discord_prediction エラー: {_e}")
         return False
