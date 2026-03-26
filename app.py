@@ -113,8 +113,9 @@ _PRO_ACTIONS = [
     "📈 長期成績分析",
     "🔧 Optuna チューニング",
     "🏇 騎手・調教師フォーム分析",
+    "🐴 愛馬の成長記録",
 ]
-_FREE_ACTIONS = ["⏩ 次のレースを予想", "📝 馬券メモ管理", "🐴 愛馬の成長記録"]
+_FREE_ACTIONS = ["⏩ 次のレースを予想", "📝 馬券メモ管理"]
 _ALL_ACTIONS = _FREE_ACTIONS + _PRO_ACTIONS
 
 action = st.sidebar.radio(
