@@ -10,12 +10,42 @@ _HF_TOKEN   = os.environ.get("HF_TOKEN", "")
 _HF_REPO_ID = os.environ.get("HF_REPO_ID", "")
 _DISCORD_WEBHOOK_URL        = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 _DISCORD_REVIEW_WEBHOOK_URL = (os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "").strip()) or _DISCORD_WEBHOOK_URL
+_DISCORD_RELAY_URL          = os.environ.get("DISCORD_RELAY_URL", "").strip()
+_DISCORD_RELAY_TOKEN        = os.environ.get("DISCORD_RELAY_TOKEN", "").strip()
 
 _DISCORD_QUEUE_FILE = "discord_queue.json"
 
 
 # ==========================================
-# 直接送信（HF SpaceからDiscord Webhookに即時POST）
+# Cloudflare Workers リレー経由送信（推奨）
+# ==========================================
+def _send_via_relay(content: str, username: str = "keiba-ebye 🐴",
+                    channel: str = "prediction") -> bool:
+    """Cloudflare Workers リレー経由で Discord に送信する。
+    HF Spaces から discord.com への直接接続が失敗する場合の解決策。
+    環境変数: DISCORD_RELAY_URL, DISCORD_RELAY_TOKEN
+    """
+    if not _DISCORD_RELAY_URL or not _DISCORD_RELAY_TOKEN:
+        return False
+    try:
+        resp = requests.post(
+            _DISCORD_RELAY_URL,
+            json={"content": content[:2000], "username": username, "channel": channel},
+            headers={"Authorization": f"Bearer {_DISCORD_RELAY_TOKEN}"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            logger.info(f"Discordリレー送信成功 ({channel})")
+            return True
+        logger.warning(f"Discordリレー送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
+        return False
+    except Exception as e:
+        logger.warning(f"Discordリレー送信エラー: {e}")
+        return False
+
+
+# ==========================================
+# 直接送信（フォールバック用）
 # ==========================================
 def _send_discord_direct(webhook_url: str, content: str,
                           username: str = "keiba-ebye 🐴") -> bool:
@@ -168,6 +198,9 @@ def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
         lines.append("-# keiba-ebye AI予想 / 馬券は自己責任でお願いします")
 
         content = "\n".join(lines)
+        # リレー優先、失敗時は直接送信にフォールバック
+        if _send_via_relay(content, username="keiba-ebye 🐴", channel="prediction"):
+            return True
         url = webhook_url or _DISCORD_WEBHOOK_URL
         return _send_discord_direct(url, content, username="keiba-ebye 🐴")
     except Exception as _e:
@@ -215,6 +248,9 @@ def send_discord_review(stats: dict, rates: dict, target_date_str: str,
             "-# keiba-ebye / 結果は参考情報です",
         ]
         content = "\n".join(lines)
+        # リレー優先、失敗時は直接送信にフォールバック
+        if _send_via_relay(content, username="keiba-ebye 📊", channel="review"):
+            return True
         url = webhook_url or _DISCORD_REVIEW_WEBHOOK_URL
         return _send_discord_direct(url, content, username="keiba-ebye 📊")
     except Exception as _e:
@@ -223,15 +259,17 @@ def send_discord_review(stats: dict, rates: dict, target_date_str: str,
 
 
 def _test_discord_webhook(webhook_url: str, label: str = "テスト") -> tuple[bool, str]:
-    """テストメッセージをDiscordに直接送信"""
+    """テストメッセージをDiscordに送信（リレー優先）"""
+    channel = "review" if label == "振り返り" else "prediction"
+    msg = f"🔌 **keiba-ebye** 接続テスト成功！ ({label}チャンネル) ✅"
+    # リレー経由を優先
+    if _send_via_relay(msg, username="keiba-ebye 🔌", channel=channel):
+        return True, "✅ リレー送信成功！（Cloudflare Workers経由）"
+    # フォールバック: 直接送信
     url = webhook_url or (_DISCORD_REVIEW_WEBHOOK_URL if label == "振り返り" else _DISCORD_WEBHOOK_URL)
     if not url:
         return False, "Webhook URLが未設定です（HF Secrets: DISCORD_WEBHOOK_URL）"
-    ok = _send_discord_direct(
-        url,
-        f"🔌 **keiba-ebye** 接続テスト成功！ ({label}チャンネル) — 直接送信に切り替え済み ✅",
-        username="keiba-ebye 🔌"
-    )
+    ok = _send_discord_direct(url, msg, username="keiba-ebye 🔌")
     if ok:
-        return True, f"✅ 直接送信成功！（遅延なし）"
-    return False, "❌ 送信失敗（Webhook URLを確認してください）"
+        return True, "✅ 直接送信成功！（リレー未設定のためフォールバック）"
+    return False, "❌ 送信失敗（リレーURL・Webhook URLを確認してください）"
