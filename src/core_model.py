@@ -29,65 +29,75 @@ def _get_zip_mtime():
             return f"size:{size}"
     return 'unknown'
 
+def _download_model_worker(hf_token, hf_repo_id, meta_file, model_file):
+    """
+    別スレッドで実行されるダウンロードワーカー。
+    xet/hf-transfer を env var で無効化してから hf_hub_download を呼ぶ。
+    """
+    import joblib
+    # xet および hf-transfer を両方無効化
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+    os.environ["HF_HUB_DISABLE_XET_BACKEND"] = "1"
+    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"]    = "60"
+
+    from huggingface_hub import hf_hub_download
+
+    meta_path = hf_hub_download(
+        repo_id=hf_repo_id, filename=meta_file,
+        repo_type="dataset", token=hf_token,
+        cache_dir="/tmp/hf_cache", force_download=True,
+    )
+    with open(meta_path, 'r') as f:
+        import json as _json
+        meta = _json.load(f)
+
+    model_path = hf_hub_download(
+        repo_id=hf_repo_id, filename=model_file,
+        repo_type="dataset", token=hf_token,
+        cache_dir="/tmp/hf_cache", force_download=True,
+    )
+    return joblib.load(model_path), meta
+
+
 def _try_load_model_from_hub():
     """
     HF Hubからモデルをロードする。
-    hf_hub_download は xet/hf-transfer と競合してハングするため、
-    requests による直接 HTTP ダウンロードに切り替えた。
+    xet/hf-transfer によるハングを防ぐため別スレッドで実行し
+    90秒のハードタイムアウトを設ける。
     返値: (model, features, cat_features, ...) タプル or None
     """
     if not _HF_TOKEN or not _HF_REPO_ID:
+        logger.info("HF_TOKEN/HF_REPO_IDが未設定のためHubロードをスキップ")
         return None
 
-    import requests
-    import tempfile
-    import joblib
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
-    BASE_URL = f"https://huggingface.co/datasets/{_HF_REPO_ID}/resolve/main"
-    headers  = {"Authorization": f"Bearer {_HF_TOKEN}"}
-
-    # ── メタデータ確認 ──────────────────────────────────────────
+    logger.info("HF Hub: モデルダウンロード開始（タイムアウト90秒）...")
     try:
-        logger.info("HF Hub: メタデータをダウンロード中...")
-        meta_resp = requests.get(f"{BASE_URL}/{_META_FILE}", headers=headers, timeout=30)
-        meta_resp.raise_for_status()
-        meta = meta_resp.json()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _download_model_worker,
+                _HF_TOKEN, _HF_REPO_ID, _META_FILE, _MODEL_FILE
+            )
+            try:
+                bundle, meta = future.result(timeout=90)
+            except FutureTimeout:
+                logger.warning("HF Hubダウンロードが90秒でタイムアウト → 学習フォールバック")
+                return None
+
+        # データ更新チェック
         hub_data_mtime = meta.get('data_mtime', '')
         local_mtime    = _get_zip_mtime()
         logger.info(f"HF Hub data_mtime={hub_data_mtime!r}, local={local_mtime!r}")
         if local_mtime != 'unknown' and local_mtime != hub_data_mtime:
-            logger.info("データ更新検出: HFモデルではなく再学習へ")
+            logger.info("データ更新検出: 再学習へ")
             return None
-    except Exception as _e:
-        logger.info(f'HF Hubメタデータなし（初回 or エラー）: {_e}')
-
-    # ── モデル本体: requests で直接ダウンロード（xet/hf-transfer を完全回避）──
-    try:
-        logger.info("HF Hub: モデルをダウンロード中（requests直接DL）...")
-        model_resp = requests.get(
-            f"{BASE_URL}/{_MODEL_FILE}", headers=headers,
-            timeout=180, stream=True
-        )
-        model_resp.raise_for_status()
-
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix='.pkl', dir='/tmp')
-        try:
-            with os.fdopen(tmp_fd, 'wb') as f:
-                for chunk in model_resp.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
-            logger.info("HF Hub: joblib.load 開始...")
-            bundle = joblib.load(tmp_path)
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
 
         logger.info("HF Hub: モデルロード完了")
         return bundle
+
     except Exception as _e:
-        logger.warning(f"HF Hubロード失敗（学習フォールバック）: {_e}")
+        logger.warning(f"HF Hubロード失敗: {_e}")
         return None
 
 def _save_model_to_hub(bundle):
@@ -156,10 +166,17 @@ def prepare_model_and_data(force_retrain=False):
             return cached  # キャッシュ済みモデルを即返す
 
     # ── 以下: 学習処理 ────────────────────────────────────────
+    # HF Space 上には学習データが存在しないため、Hubロード失敗時は即エラーにする
+    zip_exists = os.path.exists('learning_data_perfect_tier.zip')
+    csv_exists = os.path.exists('learning_data_perfect_tier.csv')
+    if not zip_exists and not csv_exists:
+        raise FileNotFoundError(
+            "学習データが見つかりません。HF_TOKEN / HF_REPO_ID を確認してください。"
+        )
+
     num_features = list(NUM_FEATURES)
     cat_features = list(CAT_FEATURES)
     te_cols = list(TE_COLS)
-
 
     try:
         df = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
