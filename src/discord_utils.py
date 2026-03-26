@@ -1,4 +1,5 @@
 import os
+import io
 import json
 import datetime
 import logging
@@ -8,75 +9,21 @@ logger = logging.getLogger('keiba_ebye')
 
 _HF_TOKEN   = os.environ.get("HF_TOKEN", "")
 _HF_REPO_ID = os.environ.get("HF_REPO_ID", "")
-_DISCORD_WEBHOOK_URL        = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-_DISCORD_REVIEW_WEBHOOK_URL = (os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "").strip()) or _DISCORD_WEBHOOK_URL
-_DISCORD_RELAY_URL          = os.environ.get("DISCORD_RELAY_URL", "").strip()
-_DISCORD_RELAY_TOKEN        = os.environ.get("DISCORD_RELAY_TOKEN", "").strip()
 
 _DISCORD_QUEUE_FILE = "discord_queue.json"
 
 
 # ==========================================
-# Cloudflare Workers リレー経由送信（推奨）
+# HF Hub キュー書き込み
+# Cloudflare Workers cron（毎分）が読み取って Discord に送信する
 # ==========================================
-def _send_via_relay(content: str, username: str = "keiba-ebye 🐴",
-                    channel: str = "prediction") -> bool:
-    """Cloudflare Workers リレー経由で Discord に送信する。
-    HF Spaces から discord.com への直接接続が失敗する場合の解決策。
-    環境変数: DISCORD_RELAY_URL, DISCORD_RELAY_TOKEN
-    """
-    if not _DISCORD_RELAY_URL or not _DISCORD_RELAY_TOKEN:
-        return False
-    try:
-        resp = requests.post(
-            _DISCORD_RELAY_URL,
-            json={"content": content[:2000], "username": username, "channel": channel},
-            headers={"Authorization": f"Bearer {_DISCORD_RELAY_TOKEN}"},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            logger.info(f"Discordリレー送信成功 ({channel})")
-            return True
-        logger.warning(f"Discordリレー送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
-        return False
-    except Exception as e:
-        logger.warning(f"Discordリレー送信エラー: {e}")
-        return False
-
-
-# ==========================================
-# 直接送信（フォールバック用）
-# ==========================================
-def _send_discord_direct(webhook_url: str, content: str,
-                          username: str = "keiba-ebye 🐴") -> bool:
-    """Discord Webhook URLに直接POSTして即時送信する。"""
-    if not webhook_url:
-        logger.warning("Discord Webhook URLが未設定")
-        return False
-    try:
-        resp = requests.post(
-            webhook_url,
-            json={"content": content[:2000], "username": username},
-            timeout=10,
-        )
-        if resp.status_code in (200, 204):
-            logger.info("Discord直接送信成功")
-            return True
-        logger.warning(f"Discord直接送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
-        return False
-    except Exception as e:
-        logger.warning(f"Discord直接送信エラー: {e}")
-        return False
-
 def _push_discord_queue(content: str, channel: str = "prediction",
                         username: str = "keiba-ebye 🐴",
                         dedup_key: str = "") -> bool:
     """
-    Discord送信キューにメッセージを追加し、HF Datasetに保存する。
-    channel: "prediction"（直前予想）or "review"（振り返り）
-    GitHub Actionsのdiscord_notify.ymlが読み取って送信する。
+    HF Hub の discord_queue.json にメッセージを追加する。
+    Cloudflare Workers の cron trigger（毎分実行）が読み取って Discord に送信する。
     dedup_key: 重複防止キー（同一キーが未送信で存在する場合はスキップ）
-               予想: race_id  振り返り: 日付文字列
     """
     if not _HF_TOKEN or not _HF_REPO_ID:
         logger.warning("HF_TOKEN/HF_REPO_IDが未設定のためDiscordキューに書き込めません")
@@ -96,10 +43,9 @@ def _push_discord_queue(content: str, channel: str = "prediction",
             with open(qpath, "r", encoding="utf-8") as f:
                 queue = json.load(f)
         except Exception:
-            queue = []  # ファイルがなければ新規作成
+            queue = []
 
-        # ── 重複防止チェック ───────────────────────────────────────────
-        # dedup_keyが同じ未送信エントリが既にあればスキップ（再起動・複数タブ対策）
+        # 重複防止チェック
         if dedup_key:
             already = any(
                 q.get("dedup_key") == dedup_key and not q.get("sent", False)
@@ -107,7 +53,7 @@ def _push_discord_queue(content: str, channel: str = "prediction",
             )
             if already:
                 logger.info(f"Discord重複スキップ: {dedup_key}")
-                return True  # 既にキューにある → 成功扱い
+                return True
 
         # 新規エントリを追加
         entry = {
@@ -121,12 +67,11 @@ def _push_discord_queue(content: str, channel: str = "prediction",
         }
         queue.append(entry)
 
-        # 送信済みの古いエントリを削除（最新50件だけ保持）
+        # 古いエントリを整理（未送信50件・送信済み20件）
         queue = [q for q in queue if not q.get("sent", False)][-50:] + \
                 [q for q in queue if q.get("sent", False)][-20:]
 
-        # HF Datasetに保存
-        import io
+        # HF Hub に保存
         buf = io.BytesIO(json.dumps(queue, ensure_ascii=False, indent=2).encode("utf-8"))
         api.upload_file(
             path_or_fileobj=buf,
@@ -145,10 +90,7 @@ def _push_discord_queue(content: str, channel: str = "prediction",
 
 def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
                              race_info: dict, webhook_url: str = "") -> bool:
-    """
-    予想結果をDiscordに直接送信する。
-    race_info: {'place': '東京', 'num': 5, 'title': '...', 'mins_left': 4}
-    """
+    """予想結果を Discord キュー経由で送信する（Cloudflare Workers cron が配送）"""
     try:
         place = race_info.get('place', '')
         num   = race_info.get('num', '')
@@ -198,11 +140,9 @@ def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
         lines.append("-# keiba-ebye AI予想 / 馬券は自己責任でお願いします")
 
         content = "\n".join(lines)
-        # リレー優先、失敗時は直接送信にフォールバック
-        if _send_via_relay(content, username="keiba-ebye 🐴", channel="prediction"):
-            return True
-        url = webhook_url or _DISCORD_WEBHOOK_URL
-        return _send_discord_direct(url, content, username="keiba-ebye 🐴")
+        race_id = race_info.get('race_id', '')
+        return _push_discord_queue(content, channel="prediction",
+                                   username="keiba-ebye 🐴", dedup_key=race_id)
     except Exception as _e:
         logger.warning(f"send_discord_prediction エラー: {_e}")
         return False
@@ -210,7 +150,7 @@ def send_discord_prediction(res_df, topics, reco, pace_text, conf_text,
 
 def send_discord_review(stats: dict, rates: dict, target_date_str: str,
                         webhook_url: str = "") -> bool:
-    """振り返り結果をDiscordに直接送信する"""
+    """振り返り結果を Discord キュー経由で送信する（Cloudflare Workers cron が配送）"""
     try:
         tan_rate     = rates.get('tan_rate', 0)
         fuku_rate    = rates.get('fuku_rate', 0)
@@ -248,28 +188,18 @@ def send_discord_review(stats: dict, rates: dict, target_date_str: str,
             "-# keiba-ebye / 結果は参考情報です",
         ]
         content = "\n".join(lines)
-        # リレー優先、失敗時は直接送信にフォールバック
-        if _send_via_relay(content, username="keiba-ebye 📊", channel="review"):
-            return True
-        url = webhook_url or _DISCORD_REVIEW_WEBHOOK_URL
-        return _send_discord_direct(url, content, username="keiba-ebye 📊")
+        return _push_discord_queue(content, channel="review",
+                                   username="keiba-ebye 📊", dedup_key=target_date_str)
     except Exception as _e:
         logger.warning(f"send_discord_review エラー: {_e}")
         return False
 
 
 def _test_discord_webhook(webhook_url: str, label: str = "テスト") -> tuple[bool, str]:
-    """テストメッセージをDiscordに送信（リレー優先）"""
+    """テストメッセージを Discord キューに追加する"""
     channel = "review" if label == "振り返り" else "prediction"
-    msg = f"🔌 **keiba-ebye** 接続テスト成功！ ({label}チャンネル) ✅"
-    # リレー経由を優先
-    if _send_via_relay(msg, username="keiba-ebye 🔌", channel=channel):
-        return True, "✅ リレー送信成功！（Cloudflare Workers経由）"
-    # フォールバック: 直接送信
-    url = webhook_url or (_DISCORD_REVIEW_WEBHOOK_URL if label == "振り返り" else _DISCORD_WEBHOOK_URL)
-    if not url:
-        return False, "Webhook URLが未設定です（HF Secrets: DISCORD_WEBHOOK_URL）"
-    ok = _send_discord_direct(url, msg, username="keiba-ebye 🔌")
+    msg = f"🔌 **keiba-ebye** 接続テスト！ ({label}チャンネル) — Cloudflare Workers cron が1分以内に配送します ✅"
+    ok = _push_discord_queue(msg, channel=channel, username="keiba-ebye 🔌")
     if ok:
-        return True, "✅ 直接送信成功！（リレー未設定のためフォールバック）"
-    return False, "❌ 送信失敗（リレーURL・Webhook URLを確認してください）"
+        return True, "✅ キューに追加しました！1分以内に Discord に届きます"
+    return False, "❌ キュー書き込み失敗（HF_TOKEN / HF_REPO_ID を確認してください）"
