@@ -197,6 +197,7 @@ if _gemini_ok:
     gemini_mode = st.sidebar.toggle(
         "Gemini 解説を有効化",
         value=True,
+        key="gemini_mode_toggle",
         help="Google Gemini がML予測数値をもとにレース展望を自然言語で生成します（無料枠使用）"
     )
     gemini_model_name = st.sidebar.selectbox(
