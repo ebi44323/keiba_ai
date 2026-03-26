@@ -39,8 +39,9 @@ def _try_load_model_from_hub():
     if not _HF_TOKEN or not _HF_REPO_ID:
         return None
 
-    # ダウンロードタイムアウト設定（デフォルト60秒）
-    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
+    # hf-transfer（高速Rustクライアント）を有効化 → ダウンロード速度 3〜5倍
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
 
     try:
         import joblib
@@ -67,35 +68,19 @@ def _try_load_model_from_hub():
         except Exception as _e:
             logger.info(f'HF Hubメタデータなし（初回 or エラー）: {_e}')
 
-        # ── モデル本体のロード（キャッシュ優先） ─────────────────────
-        # キャッシュ済みバージョンと hub のバージョンが一致していれば再ダウンロードしない
-        _cache_stamp_file = "/tmp/hf_cache/model_commit.txt"
-        _cached_commit    = ""
-        if os.path.exists(_cache_stamp_file):
-            with open(_cache_stamp_file, 'r') as _f:
-                _cached_commit = _f.read().strip()
-
-        _force = (hub_model_commit == '') or (_cached_commit != hub_model_commit)
-        if _force:
-            logger.info(f"HF Hub: モデルをダウンロード中... (commit={hub_model_commit!r})")
-        else:
-            logger.info(f"HF Hub: キャッシュ済みモデルを使用 (commit={hub_model_commit!r})")
-
+        # ── モデル本体のロード ────────────────────────────────────
+        # force_download=False: hf_hub_download のETagキャッシュを活用
+        #   - 同一セッション内 or キャッシュ有り → HEAD確認のみ（高速）
+        #   - キャッシュなし or モデル更新時 → 再ダウンロード（hf-transfer使用）
+        logger.info(f"HF Hub: モデルをダウンロード中... (hf-transfer有効)")
         model_path = hf_hub_download(
             repo_id=_HF_REPO_ID, filename=_MODEL_FILE,
             repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache",
-            force_download=_force,
+            force_download=False,
         )
         logger.info("HF Hub: joblib.load 開始...")
         bundle = joblib.load(model_path)
         logger.info("HF Hub: モデルロード完了")
-
-        # キャッシュスタンプを保存
-        if hub_model_commit:
-            os.makedirs("/tmp/hf_cache", exist_ok=True)
-            with open(_cache_stamp_file, 'w') as _f:
-                _f.write(hub_model_commit)
-
         return bundle
     except Exception as _e:
         logger.warning(f"HF Hubロード失敗（学習フォールバック）: {_e}")
