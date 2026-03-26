@@ -39,9 +39,10 @@ def _try_load_model_from_hub():
     if not _HF_TOKEN or not _HF_REPO_ID:
         return None
 
-    # hf-transfer（高速Rustクライアント）を有効化 → ダウンロード速度 3〜5倍
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+    # hf-transfer は xet ストレージと競合してハングするため無効化
+    # xet プロトコル（hf-xet パッケージ）が自動で高速ダウンロードを行う
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
 
     try:
         import joblib
