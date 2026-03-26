@@ -113,10 +113,8 @@ _PRO_ACTIONS = [
     "📈 長期成績分析",
     "🔧 Optuna チューニング",
     "🏇 騎手・調教師フォーム分析",
-    "📝 馬券メモ管理",
-    "🐴 愛馬の成長記録",
 ]
-_FREE_ACTIONS = ["⏩ 次のレースを予想"]
+_FREE_ACTIONS = ["⏩ 次のレースを予想", "📝 馬券メモ管理", "🐴 愛馬の成長記録"]
 _ALL_ACTIONS = _FREE_ACTIONS + _PRO_ACTIONS
 
 action = st.sidebar.radio(
@@ -1053,7 +1051,22 @@ elif action == "📝 1日の振り返り (答え合わせ)":
         compare_ev_mode = st.checkbox("🎯 EV優先◎と比較", value=False,
                                        help="標準◎（AI勝率最大）とEV優先◎（期待値最大）の成績を並べて比較します")
 
-    if st.button("🚀 振り返り実行！", type="primary"):
+    # 日付が変わったら前のキャッシュをクリア
+    _review_key = f'review_data_{target_date}'
+    if st.session_state.get('review_last_date') != target_date:
+        for _k in [k for k in st.session_state if k.startswith('review_data_')]:
+            del st.session_state[_k]
+        st.session_state['review_last_date'] = target_date
+
+    _btn_cols = st.columns([4, 1])
+    with _btn_cols[0]:
+        _run_clicked = st.button("🚀 振り返り実行！", type="primary")
+    with _btn_cols[1]:
+        if st.session_state.get(_review_key) and st.button("🔄 再実行", help="キャッシュを捨てて再集計"):
+            del st.session_state[_review_key]
+            st.rerun()
+
+    if _run_clicked:
         with st.spinner(f'{target_date.strftime("%Y/%m/%d")} のレースデータと結果を取得・集計中...'):
             races = get_todays_races(target_date.strftime('%Y%m%d'))
             if not races:
@@ -1070,19 +1083,16 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     'shiba_races': 0, 'shiba_return': 0, 'dart_races': 0, 'dart_return': 0,
                     'exp_races': 0, 'exp_return': 0, 'new_races': 0, 'new_return': 0,
                 }
-                # EV優先◎比較用stats
                 stats_ev = {
                     'races': 0, 'tan_hits': 0, 'tan_return': 0,
                     'fuku_hits': 0, 'fuku_return': 0,
                 }
+                race_items = []
 
                 for i, r in enumerate(races):
                     res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'), bundle, skip_live_scrape=True)
                     payouts = get_all_payouts(r['id'])
 
-                    # =========================================================
-                    # レースごとの予想を expander で表示（★追加）
-                    # =========================================================
                     honmei_name = res_df.iloc[0]['馬名'] if res_df is not None else "不明"
                     honmei_num  = res_df.iloc[0]['馬番'] if res_df is not None else "-"
                     tan_pay = payouts['tansho'].get(honmei_num, 0) if res_df is not None else 0
@@ -1091,41 +1101,18 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     if tan_pay > 0:
                         expander_label += f"  → 単勝 {tan_pay/100:.1f}倍 的中！"
 
-                    with st.expander(expander_label, expanded=False):
-                        if res_df is not None:
-                            display_result(res_df, topics, reco, pace_text, conf_text, show_change_table=False, _key=f"_{r['id']}")
-                            # 払い戻し結果を表示
-                            if payouts['tansho']:
-                                st.markdown("##### 📋 払い戻し結果")
-                                result_rows = []
-                                for rank_i, row in res_df.iterrows():
-                                    uma = row['馬番']
-                                    tan = payouts['tansho'].get(uma, 0)
-                                    fuku = payouts['fukusho'].get(uma, 0)
-                                    if rank_i < 5 or tan > 0 or fuku > 0:
-                                        result_rows.append({
-                                            '印': row['印'],
-                                            '馬番': uma,
-                                            '馬名': row['馬名'],
-                                            'AI勝率': f"{row['勝率(AI予測)']*100:.1f}%",
-                                            '単勝払戻': f"¥{tan:,}" if tan > 0 else '-',
-                                            '複勝払戻': f"¥{fuku:,}" if fuku > 0 else '-',
-                                        })
-                                if result_rows:
-                                    st.dataframe(pd.DataFrame(result_rows), width='stretch', hide_index=True)
-                            else:
-                                st.warning("払い戻しデータが取得できませんでした")
-                        else:
-                            display_error_log(err_log)
+                    race_items.append({
+                        'r': r, 'res_df': res_df, 'topics': topics, 'reco': reco,
+                        'pace_text': pace_text, 'conf_text': conf_text,
+                        'payouts': payouts, 'expander_label': expander_label,
+                        'err_log': err_log, 'track_type': track_type,
+                    })
 
-                    # =========================================================
-                    # 集計処理（従来通り）
-                    # =========================================================
+                    # 集計処理
                     if res_df is not None and payouts['tansho']:
                         honmei = res_df.iloc[0]['馬番']
                         has_unraced = ('新馬' in r['title']) or ('未出走' in r['title'])
 
-                        # ── EV優先◎の計算（compare_ev_modeが有効な場合）──
                         if compare_ev_mode:
                             _ev_cands = res_df[(res_df['期待値'] >= 1.0) & (res_df['勝率(AI予測)'] >= 0.10)]
                             ev_honmei = (_ev_cands.loc[_ev_cands['期待値'].idxmax(), '馬番']
@@ -1189,8 +1176,8 @@ elif action == "📝 1日の振り返り (答え合わせ)":
 
                     time.sleep(0.5)
                     my_bar.progress((i + 1) / len(races))
-                
-                # 計算
+
+                # 回収率計算
                 tan_rate = (stats['honmei_tan_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
                 fuku_rate = (stats['honmei_fuku_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
                 uma_rate = (stats['umaren_return'] / stats['umaren_invest'] * 100) if stats['umaren_invest'] > 0 else 0
@@ -1202,9 +1189,8 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 exp_rate = (stats['exp_return'] / (stats['exp_races'] * 100) * 100) if stats['exp_races'] > 0 else 0
                 new_rate = (stats['new_return'] / (stats['new_races'] * 100) * 100) if stats['new_races'] > 0 else 0
 
-                # CSVセーブ（週次レポート用に詳細列も保存）
+                # CSVセーブ
                 csv_file = "ai_daily_history.csv"
-                # EV優先◎の回収率（compare_ev_modeがOFFの日はNaNで保存して区別する）
                 _ev_tan_rate_ev  = round((stats_ev['tan_return']  / (stats_ev['races'] * 100) * 100), 1) if stats_ev['races'] > 0 else None
                 _ev_fuku_rate_ev = round((stats_ev['fuku_return'] / (stats_ev['races'] * 100) * 100), 1) if stats_ev['races'] > 0 else None
                 daily_data = pd.DataFrame([{
@@ -1229,9 +1215,10 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     existing_df = existing_df[existing_df['日付'] != target_date.strftime('%Y/%m/%d')]
                     updated_df = pd.concat([existing_df, daily_data])
                     updated_df.to_csv(csv_file, index=False)
-                else: daily_data.to_csv(csv_file, index=False)
+                else:
+                    daily_data.to_csv(csv_file, index=False)
 
-                # HF Dataset Hubにai_daily_history.csvを保存（再起動対策）
+                # HF Hub保存
                 if _HF_TOKEN and _HF_REPO_ID:
                     try:
                         from huggingface_hub import HfApi as _HfApi
@@ -1246,109 +1233,169 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                         )
                     except Exception: pass
 
-                st.markdown("---")
-                st.markdown(f"### 🏆 {target_date.strftime('%Y/%m/%d')} レース振り返りレポート")
-                st.markdown(f"**対象レース数: {stats['honmei_races']} レース**")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.success("🎯 【本命(◎) 単勝・複勝成績】")
-                    st.write(f"- **単勝 的中率**: {(stats['honmei_tan_hits'] / stats['honmei_races'] * 100):.1f}% ({stats['honmei_tan_hits']}R)")
-                    st.write(f"- **単勝 回収率**: **{tan_rate:.1f}%**")
-                    st.write(f"- **複勝 的中率**: {(stats['honmei_fuku_hits'] / stats['honmei_races'] * 100):.1f}% ({stats['honmei_fuku_hits']}R)")
-                    st.write(f"- **複勝 回収率**: **{fuku_rate:.1f}%**")
-                    st.markdown("---")
-                    st.write(f"🌱 **芝** 回収率: {shiba_rate:.1f}% ({stats['shiba_races']}R)")
-                    st.write(f"🏜️ **ダート** 回収率: {dart_rate:.1f}% ({stats['dart_races']}R)")
-                    st.markdown("---")
-                    st.write(f"📚 **既走馬のみ** 回収率: **{exp_rate:.1f}%** ({stats['exp_races']}R)")
-                    st.write(f"🔰 **未出走混在** 回収率: **{new_rate:.1f}%** ({stats['new_races']}R)")
-                    
-                with col2:
-                    st.info("🔗 【馬券シミュレーション】")
-                    st.write(f"- **馬連流し (◎ → 2〜5番手へ4点)**")
-                    st.write(f"  投資: ¥{stats['umaren_invest']:,} / 回収率: **{uma_rate:.1f}%** (的中 {stats['umaren_hits']}R)")
-                    st.write(f"- **穴馬ワイド (◎ → 期待値特大の穴馬へ)**")
-                    st.write(f"  該当: {stats['wide_ana_races']}R / 回収率: **{wide_rate:.1f}%** (的中 {stats['wide_ana_hits']}回)")
-                    st.markdown("---")
-                    st.warning("🔥 【上位5頭内 期待値1.5以上馬 ベタ買い】")
-                    st.write(f"- 該当数: {int(stats['ev_invest']/100)} 頭")
-                    st.write(f"- **単勝 回収率**: **{ev_tan_rate:.1f}%** (的中 {stats['ev_tan_hits']}頭)")
-                    st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {stats['ev_fuku_hits']}頭)")
-
-                # ── EV優先◎ 比較表示 ──────────────────────────────────────
-                if compare_ev_mode and stats_ev['races'] > 0:
-                    st.markdown("---")
-                    st.markdown("### 🎯 EV優先◎ vs 標準◎ 比較")
-                    ev_tan_rate_ev   = (stats_ev['tan_return']  / (stats_ev['races'] * 100) * 100) if stats_ev['races'] > 0 else 0
-                    ev_fuku_rate_ev  = (stats_ev['fuku_return'] / (stats_ev['races'] * 100) * 100) if stats_ev['races'] > 0 else 0
-                    _cmp_data = {
-                        '指標':     ['単勝 的中率', '単勝 回収率', '複勝 的中率', '複勝 回収率'],
-                        '標準◎ (AI勝率最大)': [
-                            f"{stats['honmei_tan_hits'] / stats['honmei_races'] * 100:.1f}%",
-                            f"{tan_rate:.1f}%",
-                            f"{stats['honmei_fuku_hits'] / stats['honmei_races'] * 100:.1f}%",
-                            f"{fuku_rate:.1f}%",
-                        ],
-                        'EV優先◎ (期待値最大)': [
-                            f"{stats_ev['tan_hits'] / stats_ev['races'] * 100:.1f}%",
-                            f"{ev_tan_rate_ev:.1f}%",
-                            f"{stats_ev['fuku_hits'] / stats_ev['races'] * 100:.1f}%",
-                            f"{ev_fuku_rate_ev:.1f}%",
-                        ],
-                    }
-                    def _cmp_color(row):
-                        std_val  = float(row['標準◎ (AI勝率最大)'].replace('%',''))
-                        ev_val   = float(row['EV優先◎ (期待値最大)'].replace('%',''))
-                        color_ev = 'background-color:rgba(75,200,75,0.15)' if ev_val > std_val else ''
-                        color_std = 'background-color:rgba(75,75,255,0.10)' if std_val >= ev_val else ''
-                        return ['', color_std, color_ev]
-                    st.dataframe(
-                        pd.DataFrame(_cmp_data).style.apply(_cmp_color, axis=1),
-                        width='stretch', hide_index=True
-                    )
-                    st.caption(f"対象: {stats_ev['races']}レース。EV優先◎が標準◎と同じ馬の場合は同結果になります。")
-
-                # ── Discord 振り返り投稿エリア ─────────────────────────────
-                if _DISCORD_REVIEW_WEBHOOK_URL:
-                    st.markdown("---")
-                    _review_rates = {
+                # 結果をsession_stateに保存（Geminiボタン押下後のrerunで消えないように）
+                st.session_state[_review_key] = {
+                    'race_items': race_items,
+                    'stats': stats, 'stats_ev': stats_ev,
+                    'rates': {
                         'tan_rate': tan_rate, 'fuku_rate': fuku_rate,
+                        'uma_rate': uma_rate, 'wide_rate': wide_rate,
                         'ev_tan_rate': ev_tan_rate, 'ev_fuku_rate': ev_fuku_rate,
-                        'uma_rate': uma_rate, 'shiba_rate': shiba_rate, 'dart_rate': dart_rate,
-                    }
-                    _review_date_str = target_date.strftime('%Y/%m/%d')
+                        'shiba_rate': shiba_rate, 'dart_rate': dart_rate,
+                        'exp_rate': exp_rate, 'new_rate': new_rate,
+                    },
+                    'compare_ev_mode': compare_ev_mode,
+                }
 
-                    # 自動送信チェック: 当日のレース開催日 & 17時以降 & 未送信
-                    _today_jst = datetime.datetime.now(pytz.timezone('Asia/Tokyo'))
-                    _is_race_day = target_date == _today_jst.date()
-                    _after_17h   = _today_jst.hour >= 17
-                    _auto_sent_key = f'review_auto_sent_{target_date}'
-                    _already_sent  = st.session_state.get(_auto_sent_key, False)
+    # ── 結果表示（session_stateから。Geminiボタン押下後も消えない）──
+    _review_data = st.session_state.get(_review_key)
+    if _review_data:
+        _race_items   = _review_data['race_items']
+        _stats        = _review_data['stats']
+        _stats_ev     = _review_data['stats_ev']
+        _rates        = _review_data['rates']
+        _cmp_ev_mode  = _review_data['compare_ev_mode']
 
-                    if _is_race_day and _after_17h and not _already_sent:
-                        _ok = send_discord_review(stats, _review_rates,
-                                                  _review_date_str, _DISCORD_REVIEW_WEBHOOK_URL)
-                        if _ok:
-                            st.session_state[_auto_sent_key] = True
-                            st.success("📤 振り返り結果をDiscordに自動投稿しました！（17時以降の初回実行）")
-                        else:
-                            st.warning("⚠️ Discord自動投稿に失敗しました")
+        tan_rate     = _rates['tan_rate']
+        fuku_rate    = _rates['fuku_rate']
+        uma_rate     = _rates['uma_rate']
+        wide_rate    = _rates['wide_rate']
+        ev_tan_rate  = _rates['ev_tan_rate']
+        ev_fuku_rate = _rates['ev_fuku_rate']
+        shiba_rate   = _rates['shiba_rate']
+        dart_rate    = _rates['dart_rate']
+        exp_rate     = _rates['exp_rate']
+        new_rate     = _rates['new_rate']
 
-                    # 手動送信ボタン
-                    _dc1, _dc2 = st.columns([3, 1])
-                    with _dc1:
-                        st.caption("📊 振り返り結果をDiscordに投稿できます"
-                                   "（当日17時以降は振り返り実行時に自動送信）")
-                    with _dc2:
-                        if st.button("📤 Discordに投稿", key=f"review_discord_{target_date}",
-                                     type="primary"):
-                            _ok = send_discord_review(stats, _review_rates,
-                                                      _review_date_str, _DISCORD_REVIEW_WEBHOOK_URL)
-                            if _ok:
-                                st.success("📤 振り返り結果をDiscordに投稿しました！")
-                            else:
-                                st.error("❌ 投稿失敗（Webhook URLを確認してください）")
+        # レースごとのexpander
+        for _item in _race_items:
+            with st.expander(_item['expander_label'], expanded=False):
+                if _item['res_df'] is not None:
+                    display_result(_item['res_df'], _item['topics'], _item['reco'],
+                                   _item['pace_text'], _item['conf_text'],
+                                   show_change_table=False, _key=f"_{_item['r']['id']}")
+                    if _item['payouts']['tansho']:
+                        st.markdown("##### 📋 払い戻し結果")
+                        result_rows = []
+                        for rank_i, row in _item['res_df'].iterrows():
+                            uma = row['馬番']
+                            tan = _item['payouts']['tansho'].get(uma, 0)
+                            fuku = _item['payouts']['fukusho'].get(uma, 0)
+                            if rank_i < 5 or tan > 0 or fuku > 0:
+                                result_rows.append({
+                                    '印': row['印'], '馬番': uma, '馬名': row['馬名'],
+                                    'AI勝率': f"{row['勝率(AI予測)']*100:.1f}%",
+                                    '単勝払戻': f"¥{tan:,}" if tan > 0 else '-',
+                                    '複勝払戻': f"¥{fuku:,}" if fuku > 0 else '-',
+                                })
+                        if result_rows:
+                            st.dataframe(pd.DataFrame(result_rows), width='stretch', hide_index=True)
+                    else:
+                        st.warning("払い戻しデータが取得できませんでした")
+                else:
+                    display_error_log(_item['err_log'])
+
+        st.markdown("---")
+        st.markdown(f"### 🏆 {target_date.strftime('%Y/%m/%d')} レース振り返りレポート")
+        st.markdown(f"**対象レース数: {_stats['honmei_races']} レース**")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.success("🎯 【本命(◎) 単勝・複勝成績】")
+            st.write(f"- **単勝 的中率**: {(_stats['honmei_tan_hits'] / _stats['honmei_races'] * 100):.1f}% ({_stats['honmei_tan_hits']}R)")
+            st.write(f"- **単勝 回収率**: **{tan_rate:.1f}%**")
+            st.write(f"- **複勝 的中率**: {(_stats['honmei_fuku_hits'] / _stats['honmei_races'] * 100):.1f}% ({_stats['honmei_fuku_hits']}R)")
+            st.write(f"- **複勝 回収率**: **{fuku_rate:.1f}%**")
+            st.markdown("---")
+            st.write(f"🌱 **芝** 回収率: {shiba_rate:.1f}% ({_stats['shiba_races']}R)")
+            st.write(f"🏜️ **ダート** 回収率: {dart_rate:.1f}% ({_stats['dart_races']}R)")
+            st.markdown("---")
+            st.write(f"📚 **既走馬のみ** 回収率: **{exp_rate:.1f}%** ({_stats['exp_races']}R)")
+            st.write(f"🔰 **未出走混在** 回収率: **{new_rate:.1f}%** ({_stats['new_races']}R)")
+
+        with col2:
+            st.info("🔗 【馬券シミュレーション】")
+            st.write(f"- **馬連流し (◎ → 2〜5番手へ4点)**")
+            st.write(f"  投資: ¥{_stats['umaren_invest']:,} / 回収率: **{uma_rate:.1f}%** (的中 {_stats['umaren_hits']}R)")
+            st.write(f"- **穴馬ワイド (◎ → 期待値特大の穴馬へ)**")
+            st.write(f"  該当: {_stats['wide_ana_races']}R / 回収率: **{wide_rate:.1f}%** (的中 {_stats['wide_ana_hits']}回)")
+            st.markdown("---")
+            st.warning("🔥 【上位5頭内 期待値1.5以上馬 ベタ買い】")
+            st.write(f"- 該当数: {int(_stats['ev_invest']/100)} 頭")
+            st.write(f"- **単勝 回収率**: **{ev_tan_rate:.1f}%** (的中 {_stats['ev_tan_hits']}頭)")
+            st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {_stats['ev_fuku_hits']}頭)")
+
+        # EV優先◎ 比較表示
+        if _cmp_ev_mode and _stats_ev['races'] > 0:
+            st.markdown("---")
+            st.markdown("### 🎯 EV優先◎ vs 標準◎ 比較")
+            ev_tan_rate_ev  = (_stats_ev['tan_return']  / (_stats_ev['races'] * 100) * 100) if _stats_ev['races'] > 0 else 0
+            ev_fuku_rate_ev = (_stats_ev['fuku_return'] / (_stats_ev['races'] * 100) * 100) if _stats_ev['races'] > 0 else 0
+            _cmp_data = {
+                '指標': ['単勝 的中率', '単勝 回収率', '複勝 的中率', '複勝 回収率'],
+                '標準◎ (AI勝率最大)': [
+                    f"{_stats['honmei_tan_hits'] / _stats['honmei_races'] * 100:.1f}%",
+                    f"{tan_rate:.1f}%",
+                    f"{_stats['honmei_fuku_hits'] / _stats['honmei_races'] * 100:.1f}%",
+                    f"{fuku_rate:.1f}%",
+                ],
+                'EV優先◎ (期待値最大)': [
+                    f"{_stats_ev['tan_hits'] / _stats_ev['races'] * 100:.1f}%",
+                    f"{ev_tan_rate_ev:.1f}%",
+                    f"{_stats_ev['fuku_hits'] / _stats_ev['races'] * 100:.1f}%",
+                    f"{ev_fuku_rate_ev:.1f}%",
+                ],
+            }
+            def _cmp_color(row):
+                std_val  = float(row['標準◎ (AI勝率最大)'].replace('%',''))
+                ev_val   = float(row['EV優先◎ (期待値最大)'].replace('%',''))
+                color_ev = 'background-color:rgba(75,200,75,0.15)' if ev_val > std_val else ''
+                color_std = 'background-color:rgba(75,75,255,0.10)' if std_val >= ev_val else ''
+                return ['', color_std, color_ev]
+            st.dataframe(
+                pd.DataFrame(_cmp_data).style.apply(_cmp_color, axis=1),
+                width='stretch', hide_index=True
+            )
+            st.caption(f"対象: {_stats_ev['races']}レース。EV優先◎が標準◎と同じ馬の場合は同結果になります。")
+
+        # Discord 振り返り投稿エリア
+        if _DISCORD_REVIEW_WEBHOOK_URL:
+            st.markdown("---")
+            _review_rates = {
+                'tan_rate': tan_rate, 'fuku_rate': fuku_rate,
+                'ev_tan_rate': ev_tan_rate, 'ev_fuku_rate': ev_fuku_rate,
+                'uma_rate': uma_rate, 'shiba_rate': shiba_rate, 'dart_rate': dart_rate,
+            }
+            _review_date_str = target_date.strftime('%Y/%m/%d')
+
+            _today_jst = datetime.datetime.now(pytz.timezone('Asia/Tokyo'))
+            _is_race_day = target_date == _today_jst.date()
+            _after_17h   = _today_jst.hour >= 17
+            _auto_sent_key = f'review_auto_sent_{target_date}'
+            _already_sent  = st.session_state.get(_auto_sent_key, False)
+
+            if _is_race_day and _after_17h and not _already_sent:
+                _ok = send_discord_review(_stats, _review_rates,
+                                          _review_date_str, _DISCORD_REVIEW_WEBHOOK_URL)
+                if _ok:
+                    st.session_state[_auto_sent_key] = True
+                    st.success("📤 振り返り結果をDiscordに自動投稿しました！（17時以降の初回実行）")
+                else:
+                    st.warning("⚠️ Discord自動投稿に失敗しました")
+
+            _dc1, _dc2 = st.columns([3, 1])
+            with _dc1:
+                st.caption("📊 振り返り結果をDiscordに投稿できます"
+                           "（当日17時以降は振り返り実行時に自動送信）")
+            with _dc2:
+                if st.button("📤 Discordに投稿", key=f"review_discord_{target_date}",
+                             type="primary"):
+                    _ok = send_discord_review(_stats, _review_rates,
+                                              _review_date_str, _DISCORD_REVIEW_WEBHOOK_URL)
+                    if _ok:
+                        st.success("📤 振り返り結果をDiscordに投稿しました！")
+                    else:
+                        st.error("❌ 投稿失敗（Webhook URLを確認してください）")
 
 elif action == "📈 長期成績分析":
     st.subheader("📈 長期成績分析 & 回収率ダッシュボード")
