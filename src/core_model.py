@@ -32,60 +32,63 @@ def _get_zip_mtime():
 def _try_load_model_from_hub():
     """
     HF Hubからモデルをロードする。
-    【重要】repo_type="dataset" を使用。
-    "space"を使うとファイルアップロード時にSpaceが再起動してしまう。
+    hf_hub_download は xet/hf-transfer と競合してハングするため、
+    requests による直接 HTTP ダウンロードに切り替えた。
     返値: (model, features, cat_features, ...) タプル or None
     """
     if not _HF_TOKEN or not _HF_REPO_ID:
         return None
 
-    # hf-transfer は xet ストレージと競合してハングするため無効化
-    # xet プロトコル（hf-xet パッケージ）が自動で高速ダウンロードを行う
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
+    import requests
+    import tempfile
+    import joblib
 
+    BASE_URL = f"https://huggingface.co/datasets/{_HF_REPO_ID}/resolve/main"
+    headers  = {"Authorization": f"Bearer {_HF_TOKEN}"}
+
+    # ── メタデータ確認 ──────────────────────────────────────────
     try:
-        import joblib
-        from huggingface_hub import hf_hub_download
+        logger.info("HF Hub: メタデータをダウンロード中...")
+        meta_resp = requests.get(f"{BASE_URL}/{_META_FILE}", headers=headers, timeout=30)
+        meta_resp.raise_for_status()
+        meta = meta_resp.json()
+        hub_data_mtime = meta.get('data_mtime', '')
+        local_mtime    = _get_zip_mtime()
+        logger.info(f"HF Hub data_mtime={hub_data_mtime!r}, local={local_mtime!r}")
+        if local_mtime != 'unknown' and local_mtime != hub_data_mtime:
+            logger.info("データ更新検出: HFモデルではなく再学習へ")
+            return None
+    except Exception as _e:
+        logger.info(f'HF Hubメタデータなし（初回 or エラー）: {_e}')
 
-        # ── メタデータ確認（毎回 force_download: 軽量なので問題なし） ──
-        hub_model_commit = ''
-        try:
-            logger.info("HF Hub: メタデータをダウンロード中...")
-            meta_path = hf_hub_download(
-                repo_id=_HF_REPO_ID, filename=_META_FILE,
-                repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache",
-                force_download=True,
-            )
-            with open(meta_path, 'r') as f:
-                meta = json.load(f)
-            hub_data_mtime   = meta.get('data_mtime', '')
-            hub_model_commit = meta.get('model_commit', '')  # モデルのバージョン識別子
-            local_mtime      = _get_zip_mtime()
-            logger.info(f"HF Hub data_mtime={hub_data_mtime!r}, local={local_mtime!r}")
-            if local_mtime != 'unknown' and local_mtime != hub_data_mtime:
-                logger.info("データ更新検出: HFモデルではなく再学習へ")
-                return None
-        except Exception as _e:
-            logger.info(f'HF Hubメタデータなし（初回 or エラー）: {_e}')
-
-        # ── モデル本体のロード ────────────────────────────────────
-        # force_download=False: hf_hub_download のETagキャッシュを活用
-        #   - 同一セッション内 or キャッシュ有り → HEAD確認のみ（高速）
-        #   - キャッシュなし or モデル更新時 → 再ダウンロード（hf-transfer使用）
-        logger.info(f"HF Hub: モデルをダウンロード中... (hf-transfer有効)")
-        model_path = hf_hub_download(
-            repo_id=_HF_REPO_ID, filename=_MODEL_FILE,
-            repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache",
-            force_download=False,
+    # ── モデル本体: requests で直接ダウンロード（xet/hf-transfer を完全回避）──
+    try:
+        logger.info("HF Hub: モデルをダウンロード中（requests直接DL）...")
+        model_resp = requests.get(
+            f"{BASE_URL}/{_MODEL_FILE}", headers=headers,
+            timeout=180, stream=True
         )
-        logger.info("HF Hub: joblib.load 開始...")
-        bundle = joblib.load(model_path)
+        model_resp.raise_for_status()
+
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix='.pkl', dir='/tmp')
+        try:
+            with os.fdopen(tmp_fd, 'wb') as f:
+                for chunk in model_resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+            logger.info("HF Hub: joblib.load 開始...")
+            bundle = joblib.load(tmp_path)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
         logger.info("HF Hub: モデルロード完了")
         return bundle
     except Exception as _e:
         logger.warning(f"HF Hubロード失敗（学習フォールバック）: {_e}")
-        return None  # Hubにモデルなし or エラー → 学習へ
+        return None
 
 def _save_model_to_hub(bundle):
     """
