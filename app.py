@@ -676,11 +676,27 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             st.caption("本命党「鉄板師・剛三」と穴党「穴師・乱丸」が正反対の視点で分析します（Google Gemini 無料枠使用）。")
         else:
             _cache_key = f"gemini_{_key}"
-            _gcached = st.session_state.get(_cache_key)
 
+            # キャッシュがなければボタンを表示→生成してキャッシュに保存
+            if not st.session_state.get(_cache_key):
+                st.markdown("##### 🤖 2アナリスト AI分析")
+                st.caption("本命党と穴党、2人の視点でレース展望と具体的な買い目を生成します。")
+                if st.button("✨ 2人のアナリストに分析させる", type="primary", key=f"gemini_run{_key}"):
+                    with st.spinner("鉄板師と穴師が分析中... (5〜15秒)"):
+                        _result = generate_two_analysts(
+                            df_res, pace_text, confidence_text,
+                            topics or [], reco or "",
+                            model_name=gemini_model_name
+                        )
+                    if _result:
+                        st.session_state[_cache_key] = _result
+                    else:
+                        st.error("生成に失敗しました。GEMINI_API_KEY を確認してください。")
+
+            # キャッシュがあれば表示（生成直後もそのまま描画）
+            _gcached = st.session_state.get(_cache_key)
             if _gcached and 'honmei' in _gcached:
-                _used_m = _gcached.get('model', '')
-                st.caption(f"生成モデル: {_used_m}  ※AI生成テキストです。参考情報としてお読みください。")
+                st.caption(f"生成モデル: {_gcached.get('model', '')}  ※AI生成テキストです。参考情報としてお読みください。")
                 _g_col1, _g_col2 = st.columns(2)
                 with _g_col1:
                     st.markdown("#### 🎯 本命党「鉄板師・剛三」")
@@ -699,21 +715,6 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                 if st.button("🔄 再生成", key=f"gemini_regen{_key}"):
                     del st.session_state[_cache_key]
                     st.rerun()
-            else:
-                st.markdown("##### 🤖 2アナリスト AI分析")
-                st.caption("本命党と穴党、2人の視点でレース展望と具体的な買い目を生成します。")
-                if st.button("✨ 2人のアナリストに分析させる", type="primary", key=f"gemini_run{_key}"):
-                    with st.spinner("鉄板師と穴師が分析中... (5〜15秒)"):
-                        _result = generate_two_analysts(
-                            df_res, pace_text, confidence_text,
-                            topics or [], reco or "",
-                            model_name=gemini_model_name
-                        )
-                    if _result:
-                        st.session_state[_cache_key] = _result
-                        st.rerun()
-                    else:
-                        st.error("生成に失敗しました。GEMINI_API_KEY を確認してください。")
 
 
 if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予想"]:
