@@ -9,8 +9,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
