@@ -98,8 +98,9 @@ def run_longterm_ev_backtest(df, bundle, ev_threshold=1.0, min_win_prob=0.10,
         # 標準◎
         std_idx = rdf['AI勝率'].idxmax()
         std_row = rdf.loc[std_idx]
+        # 単勝はCSV内で小数倍率（例: 3.5）で格納 → ×100 で100円あたりの払戻額に変換
         std_win  = (int(std_row['着順']) == 1) if pd.notna(std_row['着順']) else False
-        std_pay  = float(std_row['単勝']) if std_win else 0.0
+        std_pay  = float(std_row['単勝']) * 100 if std_win else 0.0
 
         # EV優先◎
         cands = rdf[(rdf['EV'] >= ev_threshold) & (rdf['AI勝率'] >= min_win_prob)]
@@ -110,7 +111,7 @@ def run_longterm_ev_backtest(df, bundle, ev_threshold=1.0, min_win_prob=0.10,
             ev_row  = std_row
             ev_mode = '標準fallback'
         ev_win  = (int(ev_row['着順']) == 1) if pd.notna(ev_row['着順']) else False
-        ev_pay  = float(ev_row['単勝']) if ev_win else 0.0
+        ev_pay  = float(ev_row['単勝']) * 100 if ev_win else 0.0
 
         records.append({
             '日付':          rdf['日付'].iloc[0],
