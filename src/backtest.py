@@ -58,7 +58,13 @@ def run_longterm_ev_backtest(df, bundle, ev_threshold=1.0, min_win_prob=0.10,
         if col not in cat_features:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    X = df[avail].fillna(0)
+    # カテゴリ列は '不明' で、数値列は 0 で fillna
+    X = df[avail].copy()
+    for col in X.columns:
+        if hasattr(X[col], 'cat'):
+            X[col] = X[col].cat.add_categories(['不明']).fillna('不明')
+        else:
+            X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
 
     def _norm(s):
         mn, mx = s.min(), s.max()
