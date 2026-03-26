@@ -2,6 +2,36 @@ import pandas as pd
 import logging
 logger = logging.getLogger('keiba_ebye')
 
+
+def _build_gemini_html(r: dict) -> str:
+    """GeminiアナリストコメントがあればHTML断片を返す。なければ空文字。"""
+    h = r.get('gemini_honmei', {})
+    a = r.get('gemini_ana', {})
+    model = r.get('gemini_model', '')
+    if not h and not a:
+        return ""
+    hc = h.get('comment', '')
+    hb = h.get('bet', '')
+    ac = a.get('comment', '')
+    ab = a.get('bet', '')
+    return f"""
+<div class="gemini-block">
+  <div class="gemini-title">🤖 AI思考モード（{model}）</div>
+  <div class="gemini-row">
+    <div class="gemini-honmei">
+      <div class="gemini-analyst">🎯 本命党「鉄板師・剛三」</div>
+      <p>{hc}</p>
+      <div class="gemini-bet">💰 買い目: {hb}</div>
+    </div>
+    <div class="gemini-ana">
+      <div class="gemini-analyst">💣 穴党「穴師・乱丸」</div>
+      <p>{ac}</p>
+      <div class="gemini-bet">🎰 買い目: {ab}</div>
+    </div>
+  </div>
+</div>"""
+
+
 def generate_pdf_report(results_list, ev_threshold=1.5):
     """
     予想レポートをHTML形式で生成してbytesを返す。
@@ -42,6 +72,7 @@ def generate_pdf_report(results_list, ev_threshold=1.5):
                 <tbody>{rows_html}</tbody>
               </table>
               <p class="reco">推奨: {r.get('reco','')[:100]}</p>
+              {_build_gemini_html(r)}
             </div>"""
         
         ev_html = ""
@@ -70,6 +101,14 @@ def generate_pdf_report(results_list, ev_threshold=1.5):
   td {{ border:1px solid #ddd; padding:2px 4px; text-align:center; }}
   tr:nth-child(even) {{ background:#f8f8f8; }}
   .ev-summary {{ margin-top:16px; padding:8px; background:#fff8f0; border:1px solid #ffd0a0; border-radius:4px; }}
+  .gemini-block {{ margin-top:8px; padding:8px; background:#f0f4ff; border:1px solid #b0c4ff; border-radius:4px; }}
+  .gemini-title {{ font-size:10px; font-weight:bold; color:#3a5bc7; margin-bottom:6px; }}
+  .gemini-row {{ display:flex; gap:8px; }}
+  .gemini-honmei, .gemini-ana {{ flex:1; padding:6px; border-radius:3px; font-size:10px; }}
+  .gemini-honmei {{ background:#e8f4e8; border-left:3px solid #4caf50; }}
+  .gemini-ana    {{ background:#fff3e0; border-left:3px solid #ff9800; }}
+  .gemini-analyst {{ font-weight:bold; margin-bottom:3px; }}
+  .gemini-bet {{ font-size:9px; margin-top:4px; font-weight:bold; color:#555; }}
   @media print {{ body {{ margin:5mm; }} .race-block {{ page-break-inside:avoid; }} }}
 </style></head>
 <body>
@@ -136,6 +175,24 @@ def generate_txt_report(results_list, ev_threshold=1.5):
         out.append("-" * 56)
         out.append("★ = 期待値" + str(ev_threshold) + "以上の注目馬")
         out.append("")
+
+        # AIアナリスト（Gemini）コメント
+        _gh = r.get('gemini_honmei', {})
+        _ga = r.get('gemini_ana', {})
+        if _gh or _ga:
+            out.append(f"[🤖 AI思考モード ({r.get('gemini_model','')})]")
+            if _gh.get('comment'):
+                out.append(f"  🎯 鉄板師・剛三（本命党）:")
+                out.append(f"    {_gh['comment']}")
+            if _gh.get('bet'):
+                out.append(f"    💰 買い目: {_gh['bet']}")
+            out.append("")
+            if _ga.get('comment'):
+                out.append(f"  💣 穴師・乱丸（穴党）:")
+                out.append(f"    {_ga['comment']}")
+            if _ga.get('bet'):
+                out.append(f"    🎰 買い目: {_ga['bet']}")
+            out.append("")
 
         # 注目トピック
         if r.get("topics"):

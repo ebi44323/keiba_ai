@@ -38,6 +38,7 @@ from src.scraper import get_todays_races, get_weekend_dates, get_payouts, get_al
 from src.reports import generate_pdf_report, generate_txt_report
 from src.discord_utils import _push_discord_queue, send_discord_prediction, send_discord_review, _test_discord_webhook, _DISCORD_WEBHOOK_URL, _DISCORD_REVIEW_WEBHOOK_URL
 from src.inference import run_real_prediction
+from src.gemini_utils import generate_two_analysts, check_gemini_available
 
 @st.cache_data(ttl=3600*12, show_spinner=False)
 def get_morning_prediction(race_id, race_date_str, _bundle):
@@ -190,6 +191,26 @@ if ev_first_mode:
     ev_first_min_prob  = st.sidebar.slider("◎昇格の最低AI勝率", 0.05, 0.30, 0.10, 0.01,
                            help="AI勝率がこれ未満の馬はEV優先でも◎になりません。")
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🤖 AI思考モード")
+_gemini_ok = check_gemini_available()
+if _gemini_ok:
+    gemini_mode = st.sidebar.toggle(
+        "Gemini 解説を有効化",
+        value=False,
+        help="Google Gemini がML予測数値をもとにレース展望を自然言語で生成します（無料枠使用）"
+    )
+    gemini_model_name = st.sidebar.selectbox(
+        "モデル選択",
+        ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash"],
+        index=0,
+        help="2.0-flash が速くて安定。2.5-pro は高品質だが少し遅い。"
+    ) if gemini_mode else "gemini-2.0-flash"
+else:
+    gemini_mode = False
+    gemini_model_name = "gemini-2.0-flash"
+    st.sidebar.caption("🤖 AI思考モード: HF Secrets に `GEMINI_API_KEY` を設定してください")
+
 # ── モデル管理 (Pro + HF Hubが設定済みの場合のみ表示) ─────
 if _is_pro and _hub_available:
     st.sidebar.markdown("---")
@@ -222,7 +243,7 @@ def display_error_log(err_log):
             st.code(log, language=None)
 
 def display_result(df_res, topics, reco, pace_text, confidence_text, show_change_table=True, _key=""):
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 予想一覧", "💡 展開・買い目", "🔍 性能詳細", "🎰 複合馬券EV"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 予想一覧", "💡 展開・買い目", "🔍 性能詳細", "🎰 複合馬券EV", "🤖 AI思考"])
 
     with tab1:
         if "鉄板" in confidence_text: st.success(confidence_text)
@@ -389,6 +410,32 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                             pass
                         if _hints:
                             st.caption("　注目ポイント: " + " / ".join(_hints))
+                    except Exception:
+                        pass
+
+        # ── 穴馬複勝推奨 ──────────────────────────────────────────
+        if '穴馬マーク' in df_res.columns and '穴馬スコア' in df_res.columns:
+            _fuku_cands = df_res[
+                (df_res['穴馬マーク'] == '🎯') &
+                (df_res['期待値'].astype(float) >= 1.5)
+            ]
+            if not _fuku_cands.empty:
+                st.markdown("---")
+                st.success("#### 🎯💰 複勝推奨馬（穴馬スコア高 × EV1.5以上）")
+                st.caption("穴馬スコアが高く期待値も1.5以上の馬は、単勝より**複勝・ワイド**での活用が安定します。")
+                for _, _fc in _fuku_cands.iterrows():
+                    try:
+                        _odds  = float(_fc.get('単勝オッズ', 0))
+                        _ev    = float(_fc.get('期待値', 0) or 0)
+                        _score = float(_fc.get('穴馬スコア', 0))
+                        _prob  = float(_fc.get('勝率(AI予測)', 0)) * 100
+                        _fprob = float(_fc.get('複勝率(AI予測)', 0)) * 100
+                        st.markdown(
+                            f"**🎯 {_fc['馬名']}**　"
+                            f"単勝 {_odds:.1f}倍 / EV {_ev:.2f} / 穴馬スコア {_score:.3f}  \n"
+                            f"AI勝率 {_prob:.1f}% / AI複勝率 {_fprob:.1f}%"
+                        )
+                        st.caption("💡 推奨: **複勝** または **ワイド流し**（大穴高配当狙い）")
                     except Exception:
                         pass
 
@@ -622,6 +669,51 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                 st.info(f"EV {ev4_threshold:.1f}以上の組み合わせはありません。")
             else:
                 st.dataframe(df_san.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
+
+    with tab5:
+        if not gemini_mode:
+            st.info("🤖 サイドバーの **「AI思考モード」** をONにすると、2人のAIアナリストがレース展望と買い目を生成します。")
+            st.caption("本命党「鉄板師・剛三」と穴党「穴師・乱丸」が正反対の視点で分析します（Google Gemini 無料枠使用）。")
+        else:
+            _cache_key = f"gemini_{_key}"
+            _gcached = st.session_state.get(_cache_key)
+
+            if _gcached and 'honmei' in _gcached:
+                _used_m = _gcached.get('model', '')
+                st.caption(f"生成モデル: {_used_m}  ※AI生成テキストです。参考情報としてお読みください。")
+                _g_col1, _g_col2 = st.columns(2)
+                with _g_col1:
+                    st.markdown("#### 🎯 本命党「鉄板師・剛三」")
+                    _hc = _gcached.get('honmei', {})
+                    if _hc.get('comment'):
+                        st.info(_hc['comment'])
+                    if _hc.get('bet'):
+                        st.success(f"💰 **買い目:** {_hc['bet']}")
+                with _g_col2:
+                    st.markdown("#### 💣 穴党「穴師・乱丸」")
+                    _ac = _gcached.get('ana', {})
+                    if _ac.get('comment'):
+                        st.warning(_ac['comment'])
+                    if _ac.get('bet'):
+                        st.error(f"🎰 **買い目:** {_ac['bet']}")
+                if st.button("🔄 再生成", key=f"gemini_regen{_key}"):
+                    del st.session_state[_cache_key]
+                    st.rerun()
+            else:
+                st.markdown("##### 🤖 2アナリスト AI分析")
+                st.caption("本命党と穴党、2人の視点でレース展望と具体的な買い目を生成します。")
+                if st.button("✨ 2人のアナリストに分析させる", type="primary", key=f"gemini_run{_key}"):
+                    with st.spinner("鉄板師と穴師が分析中... (5〜15秒)"):
+                        _result = generate_two_analysts(
+                            df_res, pace_text, confidence_text,
+                            topics or [], reco or "",
+                            model_name=gemini_model_name
+                        )
+                    if _result:
+                        st.session_state[_cache_key] = _result
+                        st.rerun()
+                    else:
+                        st.error("生成に失敗しました。GEMINI_API_KEY を確認してください。")
 
 
 if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予想"]:
@@ -899,6 +991,15 @@ elif action == "📅 今週末の全レース予想":
                     display_error_log(_cr.get("elog"))
 
     if _valid and _td2:
+        # ── Geminiキャッシュをレポートデータに埋め込む ──────────────
+        for _vr in _valid:
+            _gk = f"gemini__{_vr.get('place','')}{_vr.get('num','')}"
+            _gc = st.session_state.get(_gk)
+            if _gc and 'honmei' in _gc:
+                _vr['gemini_honmei'] = _gc['honmei']
+                _vr['gemini_ana']    = _gc['ana']
+                _vr['gemini_model']  = _gc.get('model', '')
+
         # ── 注目レース TOP3 ──────────────────────────────────────
         st.markdown("---")
         st.markdown("### 🎯 本日の注目レース（EV最大順）")
@@ -2505,8 +2606,9 @@ elif action == "🐴 愛馬の成長記録":
                         st.markdown("---")
 
                         # ── タブ構成 ───────────────────────────────────
-                        tab_idx, tab_agari, tab_weight, tab_rank, tab_table = st.tabs([
-                            "📈 タイム指数", "💨 末脚・タイム差", "⚖️ 馬体重", "👑 着順・人気", "📋 詳細テーブル"
+                        tab_idx, tab_agari, tab_weight, tab_rank, tab_course, tab_si, tab_table = st.tabs([
+                            "📈 タイム指数", "💨 末脚・タイム差", "⚖️ 馬体重", "👑 着順・人気",
+                            "🏟️ コース別成績", "📊 スピード指数ランク", "📋 詳細テーブル"
                         ])
 
                         def make_line(data, x, y, color='#4B8BFF', title='', reverse_y=False, zero_line=False):
@@ -2524,10 +2626,11 @@ elif action == "🐴 愛馬の成長記録":
                             return chart
 
                         with tab_idx:
-                            st.caption("数値が高いほど優秀なパフォーマンスです。")
+                            st.caption("数値が高いほど優秀なパフォーマンスです。灰破線 = 直近3走移動平均")
                             if 'タイム指数' in df_horse.columns:
-                                d = df_horse[['日付_str','タイム指数','競馬場','芝/ダート','距離','着順']].dropna(subset=['タイム指数'])
+                                d = df_horse[['日付_str','タイム指数','競馬場','芝/ダート','距離','着順']].dropna(subset=['タイム指数']).reset_index(drop=True)
                                 if not d.empty:
+                                    d['移動平均(3走)'] = d['タイム指数'].rolling(3, min_periods=2).mean().round(1)
                                     chart = alt.Chart(d).mark_line(point=True).encode(
                                         x=alt.X('日付_str:N', sort=None, title=''),
                                         y=alt.Y('タイム指数:Q', title='タイム指数'),
@@ -2536,10 +2639,18 @@ elif action == "🐴 愛馬の成長記録":
                                             alt.value('#FF4B4B'),
                                             alt.value('#4B8BFF')
                                         ),
-                                        tooltip=['日付_str','タイム指数','競馬場','芝/ダート','距離','着順']
+                                        tooltip=['日付_str','タイム指数','移動平均(3走)','競馬場','芝/ダート','距離','着順']
                                     ).interactive().properties(height=280)
-                                    st.altair_chart(chart, width='stretch')
-                                    st.caption("赤点 = 1着")
+                                    _ma_d = d.dropna(subset=['移動平均(3走)'])
+                                    ma_line = alt.Chart(_ma_d).mark_line(
+                                        strokeDash=[6, 3], color='#888888', strokeWidth=2
+                                    ).encode(
+                                        x=alt.X('日付_str:N', sort=None),
+                                        y=alt.Y('移動平均(3走):Q'),
+                                        tooltip=['日付_str','移動平均(3走)']
+                                    )
+                                    st.altair_chart((chart + ma_line).interactive(), width='stretch')
+                                    st.caption("赤点 = 1着 / 灰破線 = 直近3走移動平均")
                             else:
                                 st.info("タイム指数データがありません（補正タイム偏差列が必要）")
 
@@ -2614,6 +2725,93 @@ elif action == "🐴 愛馬の成長記録":
                                         x='x:Q', y=alt.Y('y:Q', scale=alt.Scale(reverse=True)))
                                     st.altair_chart(sc + diag, width='stretch')
                                     st.caption("青 = 人気より上の着順（激走）/ 赤 = 人気を下回る着順（凡走）/ 灰点線 = 人気通り")
+
+                        with tab_course:
+                            st.caption("競馬場・コース・騎手別の成績集計（表示中の範囲内）")
+                            _dc = df_horse.copy()
+                            _dc['着順'] = pd.to_numeric(_dc['着順'], errors='coerce')
+                            _dc['人気'] = pd.to_numeric(_dc['人気'], errors='coerce')
+                            _dc['距離'] = pd.to_numeric(_dc['距離'], errors='coerce')
+                            _dc['距離帯'] = pd.cut(_dc['距離'],
+                                bins=[0,1200,1600,2000,9999], right=True,
+                                labels=['〜1200m','1201〜1600m','1601〜2000m','2001m〜'])
+
+                            def _agg(df, col):
+                                g = df.groupby(col, observed=True).agg(
+                                    出走=('着順','count'),
+                                    勝利=('着順', lambda x: (x==1).sum()),
+                                    複勝=('着順', lambda x: (x<=3).sum()),
+                                    平均着順=('着順','mean'),
+                                ).reset_index()
+                                g['勝率']  = (g['勝利']/g['出走']*100).round(1).astype(str) + '%'
+                                g['複勝率'] = (g['複勝']/g['出走']*100).round(1).astype(str) + '%'
+                                g['平均着順'] = g['平均着順'].round(1)
+                                return g[[col,'出走','勝率','複勝率','平均着順']].sort_values('出走', ascending=False)
+
+                            _cc1, _cc2 = st.columns(2)
+                            with _cc1:
+                                st.markdown("##### 競馬場別")
+                                if '競馬場' in _dc.columns:
+                                    st.dataframe(_agg(_dc,'競馬場'), width='stretch', hide_index=True)
+                            with _cc2:
+                                st.markdown("##### 距離帯別")
+                                st.dataframe(_agg(_dc,'距離帯'), width='stretch', hide_index=True)
+
+                            st.markdown("##### 芝/ダート別")
+                            _cc3, _cc4 = st.columns(2)
+                            with _cc3:
+                                if '芝/ダート' in _dc.columns:
+                                    st.dataframe(_agg(_dc,'芝/ダート'), width='stretch', hide_index=True)
+                            with _cc4:
+                                st.markdown("##### 騎手別")
+                                if '騎手' in _dc.columns:
+                                    st.dataframe(_agg(_dc,'騎手'), width='stretch', hide_index=True)
+
+                        with tab_si:
+                            st.caption("同条件（芝/ダート × 距離帯）の全データ内でのスピード指数パーセンタイルランク")
+                            _si_col = 'スピード指数' if 'スピード指数' in df_horse.columns else None
+                            if _si_col and _si_col in df_hist.columns:
+                                _sh = df_horse[['日付_str', _si_col, '芝/ダート', '距離', '競馬場', '着順']].copy()
+                                _sh[_si_col] = pd.to_numeric(_sh[_si_col], errors='coerce')
+                                _sh['距離'] = pd.to_numeric(_sh['距離'], errors='coerce')
+                                _sh['距離帯'] = pd.cut(_sh['距離'],
+                                    bins=[0,1200,1600,2000,9999], right=True,
+                                    labels=['〜1200m','1201〜1600m','1601〜2000m','2001m〜'])
+
+                                _sa = df_hist[[_si_col, '芝/ダート', '距離']].copy()
+                                _sa[_si_col] = pd.to_numeric(_sa[_si_col], errors='coerce')
+                                _sa['距離'] = pd.to_numeric(_sa['距離'], errors='coerce')
+                                _sa['距離帯'] = pd.cut(_sa['距離'],
+                                    bins=[0,1200,1600,2000,9999], right=True,
+                                    labels=['〜1200m','1201〜1600m','1601〜2000m','2001m〜'])
+                                _sa = _sa.dropna(subset=[_si_col, '芝/ダート', '距離帯'])
+
+                                _pcts = []
+                                for _, _srow in _sh.iterrows():
+                                    _sv = _srow[_si_col]
+                                    if pd.isna(_sv):
+                                        _pcts.append(np.nan)
+                                        continue
+                                    _mask = (_sa['芝/ダート'] == _srow.get('芝/ダート')) & \
+                                            (_sa['距離帯'] == _srow.get('距離帯'))
+                                    _grp = _sa.loc[_mask, _si_col].dropna()
+                                    _pcts.append(round((_grp <= _sv).mean() * 100, 1) if len(_grp) > 0 else np.nan)
+
+                                _sh['ランク(%)'] = _pcts
+                                _sh = _sh.dropna(subset=[_si_col])
+                                if not _sh.empty:
+                                    _chart_si = alt.Chart(_sh).mark_line(point=True, color='#9B59B6').encode(
+                                        x=alt.X('日付_str:N', sort=None, title=''),
+                                        y=alt.Y('ランク(%):Q', title='スピード指数 パーセンタイル(%)',
+                                                scale=alt.Scale(domain=[0, 100])),
+                                        tooltip=['日付_str', _si_col, 'ランク(%)', '競馬場', '芝/ダート', '距離', '着順']
+                                    ).interactive().properties(height=260)
+                                    _rule50 = alt.Chart(pd.DataFrame({'y': [50]})).mark_rule(
+                                        color='gray', strokeDash=[4, 4]).encode(y='y:Q')
+                                    st.altair_chart(_chart_si + _rule50, width='stretch')
+                                    st.caption("50% = 同条件の平均 / 80%以上 = 上位20%のパフォーマンス")
+                            else:
+                                st.info("スピード指数データがありません")
 
                         with tab_table:
                             disp_cols = [c for c in [
