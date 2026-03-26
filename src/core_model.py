@@ -46,7 +46,8 @@ def _try_load_model_from_hub():
         import joblib
         from huggingface_hub import hf_hub_download
 
-        # メタデータを確認: データが更新されていれば再学習
+        # ── メタデータ確認（毎回 force_download: 軽量なので問題なし） ──
+        hub_model_commit = ''
         try:
             logger.info("HF Hub: メタデータをダウンロード中...")
             meta_path = hf_hub_download(
@@ -56,25 +57,45 @@ def _try_load_model_from_hub():
             )
             with open(meta_path, 'r') as f:
                 meta = json.load(f)
-            hub_data_mtime = meta.get('data_mtime', '')
-            local_mtime    = _get_zip_mtime()
+            hub_data_mtime   = meta.get('data_mtime', '')
+            hub_model_commit = meta.get('model_commit', '')  # モデルのバージョン識別子
+            local_mtime      = _get_zip_mtime()
             logger.info(f"HF Hub data_mtime={hub_data_mtime!r}, local={local_mtime!r}")
             if local_mtime != 'unknown' and local_mtime != hub_data_mtime:
                 logger.info("データ更新検出: HFモデルではなく再学習へ")
-                return None  # データが更新されているので再学習
+                return None
         except Exception as _e:
-            logger.info(f'HF Hubメタデータなし（初回 or エラー）: {_e}')  # 初回 → そのままロードを試みる
+            logger.info(f'HF Hubメタデータなし（初回 or エラー）: {_e}')
 
-        # モデル本体をロード
-        logger.info("HF Hub: モデルをダウンロード中...")
+        # ── モデル本体のロード（キャッシュ優先） ─────────────────────
+        # キャッシュ済みバージョンと hub のバージョンが一致していれば再ダウンロードしない
+        _cache_stamp_file = "/tmp/hf_cache/model_commit.txt"
+        _cached_commit    = ""
+        if os.path.exists(_cache_stamp_file):
+            with open(_cache_stamp_file, 'r') as _f:
+                _cached_commit = _f.read().strip()
+
+        _force = (hub_model_commit == '') or (_cached_commit != hub_model_commit)
+        if _force:
+            logger.info(f"HF Hub: モデルをダウンロード中... (commit={hub_model_commit!r})")
+        else:
+            logger.info(f"HF Hub: キャッシュ済みモデルを使用 (commit={hub_model_commit!r})")
+
         model_path = hf_hub_download(
             repo_id=_HF_REPO_ID, filename=_MODEL_FILE,
             repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache",
-            force_download=True,
+            force_download=_force,
         )
         logger.info("HF Hub: joblib.load 開始...")
         bundle = joblib.load(model_path)
         logger.info("HF Hub: モデルロード完了")
+
+        # キャッシュスタンプを保存
+        if hub_model_commit:
+            os.makedirs("/tmp/hf_cache", exist_ok=True)
+            with open(_cache_stamp_file, 'w') as _f:
+                _f.write(hub_model_commit)
+
         return bundle
     except Exception as _e:
         logger.warning(f"HF Hubロード失敗（学習フォールバック）: {_e}")
@@ -114,10 +135,12 @@ def _save_model_to_hub(bundle):
             token=_HF_TOKEN,
         )
 
-        # メタデータ保存
+        # メタデータ保存（model_commitを含める→次回起動時のキャッシュ判定に使用）
+        model_commit = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
         meta = {
-            'data_mtime': _get_zip_mtime(),
-            'trained_at': datetime.datetime.now().isoformat(),
+            'data_mtime':   _get_zip_mtime(),
+            'trained_at':   datetime.datetime.now().isoformat(),
+            'model_commit': model_commit,
         }
         meta_buf = io.BytesIO(json.dumps(meta, ensure_ascii=False, indent=2).encode())
         api.upload_file(
