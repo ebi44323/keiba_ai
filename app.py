@@ -1726,7 +1726,7 @@ elif action == "📊 AIチューニング & バックテスト":
     st.subheader("📊 AIチューニング & バックテスト (時系列分割)")
     st.info("過去のデータを時系列に分割し、未来の情報が一切混入しない（リーク防止）厳密なバックテストを行います。\\nまた、Optunaを用いたAIのハイパーパラメータ自動最適化も実行可能です。")
 
-    tab_bt, tab_op = st.tabs(["🧪 厳密バックテスト", "🔧 Optuna自動チューニング"])
+    tab_bt, tab_ev, tab_op = st.tabs(["🧪 厳密バックテスト", "📈 EV優先長期検証", "🔧 Optuna自動チューニング"])
 
     with tab_bt:
         st.markdown("#### リーク防止版 Time-Series Split バックテスト")
@@ -1752,6 +1752,155 @@ elif action == "📊 AIチューニング & バックテスト":
                 except Exception as e:
                     import traceback
                     st.error(f"バックテストエラー: {e}")
+                    st.code(traceback.format_exc())
+
+    with tab_ev:
+        st.markdown("#### 📈 EV優先◎ vs 標準◎ 超長期バックテスト")
+        st.warning(
+            "⚠️ **注意**: 学習データ上での評価のため、回収率は実戦より過楽観になる場合があります。"
+            "EV優先と標準◎の**相対比較**（どちらが上か）を見るための指標としてご利用ください。"
+        )
+
+        col_ev1, col_ev2 = st.columns(2)
+        with col_ev1:
+            ev_bt_threshold = st.slider("EV閾値（これ以上のEVを◎候補に）", 0.5, 2.0, 1.0, 0.1,
+                                        key="ev_bt_thr")
+            ev_bt_min_prob  = st.slider("最低AI勝率（EV優先◎の最低条件）", 0.05, 0.30, 0.10, 0.01,
+                                        key="ev_bt_minp")
+        with col_ev2:
+            min_yr = 2020
+            max_yr = pd.Timestamp.now().year
+            ev_bt_years = st.slider("集計年範囲", min_yr, max_yr, (min_yr, max_yr),
+                                    key="ev_bt_yr")
+
+        if st.button("🚀 超長期バックテスト実行", type="primary", key="ev_bt_run"):
+            with st.spinner("全データに推論を適用中... (1〜2分かかります)"):
+                try:
+                    import altair as alt
+                    from src.backtest import run_longterm_ev_backtest
+                    from src.features_engine import TE_COLS, create_features
+
+                    df_ev = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+                    df_ev['日付'] = pd.to_datetime(df_ev['日付'], format='mixed', errors='coerce')
+                    df_ev = df_ev.dropna(subset=['日付', '着順', '単勝'])
+                    df_ev, _ = create_features(df_ev, te_dicts)
+
+                    date_from = f"{ev_bt_years[0]}-01-01"
+                    date_to   = f"{ev_bt_years[1]}-12-31"
+
+                    race_df = run_longterm_ev_backtest(
+                        df_ev, bundle,
+                        ev_threshold=ev_bt_threshold,
+                        min_win_prob=ev_bt_min_prob,
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
+
+                    if race_df.empty:
+                        st.warning("対象レースがありませんでした。期間・閾値を変更してください。")
+                    else:
+                        n_races   = len(race_df)
+                        ev_fb_pct = (race_df['EV_モード'] == '標準fallback').mean() * 100
+
+                        # ── KPI ────────────────────────────────────────────
+                        std_invest = n_races * 100
+                        std_ret    = race_df['標準_払戻'].sum()
+                        std_rate   = std_ret / std_invest * 100 if std_invest else 0
+                        ev_invest  = n_races * 100
+                        ev_ret     = race_df['EV_払戻'].sum()
+                        ev_rate    = ev_ret / ev_invest * 100 if ev_invest else 0
+
+                        k1, k2, k3, k4, k5 = st.columns(5)
+                        k1.metric("対象レース数", f"{n_races:,}R")
+                        k2.metric("標準◎ 単勝回収率", f"{std_rate:.1f}%",
+                                  f"{std_rate - 100:+.1f}%", delta_color="normal")
+                        k3.metric("EV優先◎ 単勝回収率", f"{ev_rate:.1f}%",
+                                  f"{ev_rate - 100:+.1f}%", delta_color="normal")
+                        k4.metric("EV優先◎の差分", f"{ev_rate - std_rate:+.1f}pt")
+                        k5.metric("標準fallback率", f"{ev_fb_pct:.0f}%",
+                                  help="EV候補なしで標準◎と同じ馬を選んだ割合")
+
+                        st.markdown("---")
+
+                        # ── 月次回収率比較グラフ ────────────────────────
+                        monthly = race_df.groupby('年月').agg(
+                            標準_回収率=('標準_払戻', lambda x: x.sum() / (len(x) * 100) * 100),
+                            EV優先_回収率=('EV_払戻', lambda x: x.sum() / (len(x) * 100) * 100),
+                            レース数=('レースID', 'count'),
+                        ).reset_index()
+                        monthly['年月_str'] = monthly['年月'].astype(str)
+
+                        melt = monthly.melt(
+                            id_vars='年月_str',
+                            value_vars=['標準_回収率', 'EV優先_回収率'],
+                            var_name='方式', value_name='回収率'
+                        )
+                        line = alt.Chart(melt).mark_line(point=True).encode(
+                            x=alt.X('年月_str:O', title='年月', axis=alt.Axis(labelAngle=-45)),
+                            y=alt.Y('回収率:Q', title='単勝回収率(%)', scale=alt.Scale(zero=False)),
+                            color=alt.Color('方式:N', scale=alt.Scale(
+                                domain=['標準_回収率', 'EV優先_回収率'],
+                                range=['#4c78a8', '#f58518']
+                            )),
+                            tooltip=['年月_str', '方式', alt.Tooltip('回収率:Q', format='.1f')]
+                        ).properties(title='月次 単勝回収率比較', height=320)
+                        ref = alt.Chart(pd.DataFrame({'y': [100]})).mark_rule(
+                            color='red', strokeDash=[4, 4], opacity=0.5
+                        ).encode(y='y:Q')
+                        st.altair_chart((line + ref), width='stretch')
+
+                        # ── 累計損益グラフ ────────────────────────────────
+                        race_df['標準_損益']     = race_df['標準_払戻'] - 100
+                        race_df['EV優先_損益']   = race_df['EV_払戻']   - 100
+                        race_df['標準_累計']     = race_df['標準_損益'].cumsum()
+                        race_df['EV優先_累計']   = race_df['EV優先_損益'].cumsum()
+                        race_df['レース番号']    = range(1, len(race_df) + 1)
+
+                        cum_melt = race_df[['レース番号', '標準_累計', 'EV優先_累計']].melt(
+                            id_vars='レース番号', var_name='方式', value_name='累計損益(円)'
+                        )
+                        cum_line = alt.Chart(cum_melt).mark_line().encode(
+                            x=alt.X('レース番号:Q', title='レース数'),
+                            y=alt.Y('累計損益(円):Q', title='累計損益（100円ベット）'),
+                            color=alt.Color('方式:N', scale=alt.Scale(
+                                domain=['標準_累計', 'EV優先_累計'],
+                                range=['#4c78a8', '#f58518']
+                            )),
+                        ).properties(title='累計損益推移', height=280)
+                        ref0 = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(
+                            color='gray', strokeDash=[4, 4], opacity=0.4
+                        ).encode(y='y:Q')
+                        st.altair_chart((cum_line + ref0), width='stretch')
+
+                        # ── 年次集計表 ────────────────────────────────────
+                        race_df['年'] = race_df['日付'].dt.year
+                        yearly = race_df.groupby('年').agg(
+                            レース数=('レースID', 'count'),
+                            標準_回収率=('標準_払戻', lambda x: x.sum() / (len(x) * 100) * 100),
+                            EV優先_回収率=('EV_払戻', lambda x: x.sum() / (len(x) * 100) * 100),
+                        ).reset_index()
+                        yearly['差分(EV-標準)'] = yearly['EV優先_回収率'] - yearly['標準_回収率']
+                        yearly = yearly.rename(columns={
+                            '標準_回収率': '標準◎回収率(%)',
+                            'EV優先_回収率': 'EV優先◎回収率(%)',
+                        })
+                        st.markdown("##### 年次集計")
+                        st.dataframe(
+                            yearly.style.format({
+                                '標準◎回収率(%)': '{:.1f}',
+                                'EV優先◎回収率(%)': '{:.1f}',
+                                '差分(EV-標準)': '{:+.1f}',
+                            }).applymap(
+                                lambda v: 'color: #2ca02c' if isinstance(v, float) and v > 0
+                                else ('color: #d62728' if isinstance(v, float) and v < 0 else ''),
+                                subset=['差分(EV-標準)']
+                            ),
+                            width='stretch', hide_index=True,
+                        )
+
+                except Exception as e:
+                    import traceback
+                    st.error(f"EV優先長期バックテストエラー: {e}")
                     st.code(traceback.format_exc())
 
     with tab_op:

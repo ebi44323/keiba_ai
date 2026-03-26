@@ -5,6 +5,125 @@ import logging
 
 logger = logging.getLogger('keiba_ebye')
 
+
+def run_longterm_ev_backtest(df, bundle, ev_threshold=1.0, min_win_prob=0.10,
+                              date_from=None, date_to=None):
+    """
+    学習済みbundleを全期間データに適用し、EV優先◎ vs 標準◎ の回収率を比較する。
+
+    ⚠️ 注意: 学習データ上での評価のため回収率は過楽観になる可能性あり。
+             EV優先と標準◎の「相対比較」が主目的。
+
+    引数:
+      df           : create_features適用済みのDataFrame
+      bundle       : 学習済みモデルbundle
+      ev_threshold : EV優先◎に採用する最低EV閾値（デフォルト1.0）
+      min_win_prob : EV優先◎に採用する最低AI勝率（デフォルト0.10）
+      date_from/to : 集計対象期間の絞り込み（None=全期間）
+
+    戻り値: race_df（レースごとの集計DataFrame）
+    """
+    (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
+     latest_horse_data, horse_course_dict, ped_dict,
+     known_jockeys, known_trainers, te_dicts, global_mean, *_rest) = bundle
+
+    df = df.copy()
+
+    # 日付・数値フィルタ
+    df['日付'] = pd.to_datetime(df['日付'], errors='coerce')
+    for col in ['着順', '単勝']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.dropna(subset=['日付', '着順', '単勝', 'レースID'])
+
+    if date_from:
+        df = df[df['日付'] >= pd.Timestamp(date_from)]
+    if date_to:
+        df = df[df['日付'] <= pd.Timestamp(date_to)]
+
+    if df.empty:
+        return pd.DataFrame()
+
+    # TE適用（学習済み te_dicts を使用）
+    from src.features_engine import TE_COLS
+    for col in list(TE_COLS):
+        if col in df.columns:
+            df[f'{col}_TE'] = df[col].map(te_dicts.get(col, {})).fillna(global_mean)
+
+    # カテゴリ・数値型変換
+    for col in cat_features:
+        if col in df.columns:
+            df[col] = df[col].astype(str).fillna('不明').astype('category')
+    avail = [f for f in features if f in df.columns]
+    for col in avail:
+        if col not in cat_features:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    X = df[avail].fillna(0)
+
+    def _norm(s):
+        mn, mx = s.min(), s.max()
+        return (s - mn) / (mx - mn + 1e-9)
+
+    score_a = pd.Series(model.predict(X), index=df.index)
+    score_b = pd.Series(model_win.predict(X), index=df.index)
+    score_c = pd.Series(1.0 - model_reg.predict(X), index=df.index)
+    df['予測スコア'] = _norm(score_a) * 0.35 + _norm(score_b) * 0.50 + _norm(score_c) * 0.15
+
+    grp = df.groupby('レースID')
+    df['exp_s']  = np.exp(df['予測スコア'] - grp['予測スコア'].transform('max'))
+    df['AI勝率'] = df['exp_s'] / grp['exp_s'].transform('sum')
+
+    # 推定オッズ (市場勝率の逆数; 0除算回避)
+    if '市場勝率' in df.columns:
+        mw = pd.to_numeric(df['市場勝率'], errors='coerce').fillna(0)
+        df['推定オッズ'] = np.where(mw > 0.01, 1.0 / mw, 0.0)
+    else:
+        df['推定オッズ'] = 0.0
+    df['EV'] = df['AI勝率'] * df['推定オッズ']
+
+    # ── レースごとに ◎ を決定 ──────────────────────────────────
+    records = []
+    for race_id, rdf in grp:
+        if len(rdf) < 2:
+            continue
+
+        # 標準◎
+        std_idx = rdf['AI勝率'].idxmax()
+        std_row = rdf.loc[std_idx]
+        std_win  = (int(std_row['着順']) == 1) if pd.notna(std_row['着順']) else False
+        std_pay  = float(std_row['単勝']) if std_win else 0.0
+
+        # EV優先◎
+        cands = rdf[(rdf['EV'] >= ev_threshold) & (rdf['AI勝率'] >= min_win_prob)]
+        if not cands.empty:
+            ev_row  = cands.loc[cands['EV'].idxmax()]
+            ev_mode = 'EV優先'
+        else:
+            ev_row  = std_row
+            ev_mode = '標準fallback'
+        ev_win  = (int(ev_row['着順']) == 1) if pd.notna(ev_row['着順']) else False
+        ev_pay  = float(ev_row['単勝']) if ev_win else 0.0
+
+        records.append({
+            '日付':          rdf['日付'].iloc[0],
+            'レースID':      race_id,
+            '標準_AI勝率':   round(float(std_row['AI勝率']), 4),
+            '標準_払戻':     std_pay,
+            'EV_AI勝率':     round(float(ev_row['AI勝率']), 4),
+            'EV_EV値':       round(float(ev_row['EV']), 3),
+            'EV_払戻':       ev_pay,
+            'EV_モード':     ev_mode,
+        })
+
+    if not records:
+        return pd.DataFrame()
+
+    result_df = pd.DataFrame(records).sort_values('日付').reset_index(drop=True)
+    result_df['年月'] = result_df['日付'].dt.to_period('M')
+
+    logger.info(f"超長期バックテスト完了: {len(result_df)}レース")
+    return result_df
+
 def run_timeseries_backtest(df, features, cat_features, te_cols, n_splits=3, test_days=30):
     """
     リーク防止版の時系列バックテスト（Time-Series Split）
