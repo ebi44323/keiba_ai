@@ -194,9 +194,11 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 🤖 AI思考モード")
 _gemini_ok = check_gemini_available()
 if _gemini_ok:
+    # session_stateにキーがない場合のみTrueで初期化（デフォルトON保証）
+    if "gemini_mode_toggle" not in st.session_state:
+        st.session_state["gemini_mode_toggle"] = True
     gemini_mode = st.sidebar.toggle(
         "Gemini 解説を有効化",
-        value=True,
         key="gemini_mode_toggle",
         help="Google Gemini がML予測数値をもとにレース展望を自然言語で生成します（無料枠使用）"
     )
