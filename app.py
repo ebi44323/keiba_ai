@@ -155,12 +155,12 @@ else:
     # 接続テストボタン
     _test_col1, _test_col2 = st.sidebar.columns(2)
     with _test_col1:
-        if st.button("🔌 予想ch テスト", key="discord_test_pred", use_container_width=True):
+        if st.button("🔌 予想ch テスト", key="discord_test_pred", width='stretch'):
             _ok, _msg = _test_discord_webhook(_DISCORD_WEBHOOK_URL, "直前予想")
             if _ok: st.sidebar.success(_msg)
             else:   st.sidebar.error(_msg)
     with _test_col2:
-        if st.button("🔌 振返ch テスト", key="discord_test_review", use_container_width=True):
+        if st.button("🔌 振返ch テスト", key="discord_test_review", width='stretch'):
             _ok, _msg = _test_discord_webhook(_DISCORD_REVIEW_WEBHOOK_URL, "振り返り")
             if _ok: st.sidebar.success(_msg)
             else:   st.sidebar.error(_msg)
@@ -320,7 +320,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
         st.dataframe(
             show_df.style.apply(highlight_row, axis=1)
                    .format({'期待値':'{:.2f}','オッズ':'{:.1f}','枠番':'{:.0f}','馬番':'{:.0f}'}),
-            use_container_width=True, hide_index=True
+            width='stretch', hide_index=True
         )
 
         # ── リアルタイム勝率バー（下段: グラフ）────────────────
@@ -343,7 +343,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             text=alt.Text('勝率%:Q', format='.1f'),
             color=alt.value('var(--color-text-secondary)')
         )
-        st.altair_chart((bar_chart + text_chart).configure_view(strokeWidth=0), use_container_width=True)
+        st.altair_chart((bar_chart + text_chart).configure_view(strokeWidth=0), width='stretch')
         st.caption("赤バー = EV1.5以上の注目馬 / 青バー = 通常")
 
     with tab2:
@@ -415,7 +415,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                     "距離の変更。距離延長/短縮で得意不得意が変わる。適性距離の確認推奨",
                 ],
             }
-            st.dataframe(pd.DataFrame(guide_data), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(guide_data), width='stretch', hide_index=True)
 
         # スコアテーブル
         st.markdown("#### 📐 AI評価スコア詳細")
@@ -451,7 +451,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
         fmt_s = {v: '{:.2f}' for v in avail_s.values()}
         st.dataframe(
             score_df.style.apply(highlight_score, axis=1).format(fmt_s, na_rep='不明'),
-            use_container_width=True, hide_index=True
+            width='stretch', hide_index=True
         )
         st.caption("赤=上昇度+2以上 / 青=地力55以上 / 緑=コース適性0.2以下 or 安定度0.3以下")
 
@@ -514,7 +514,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                     elif '超短' in v:    styles[cols.index('休養日数')] = 'color:#FF6666'
                 return styles
 
-            st.dataframe(change_df.style.apply(highlight_change, axis=1), use_container_width=True, hide_index=True)
+            st.dataframe(change_df.style.apply(highlight_change, axis=1), width='stretch', hide_index=True)
             st.caption("オレンジ=変化あり / [超短]=14日以内 / [休み明け]=56日以上")
 
         # スピード指数バーチャート
@@ -536,7 +536,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                     x='近5走_最高スピード指数:Q', tooltip=['馬名', '近5走_最高スピード指数']
                 )
                 layer = bar + tick
-            st.altair_chart(layer.properties(height=max(220, len(chart_data)*30)), use_container_width=True)
+            st.altair_chart(layer.properties(height=max(220, len(chart_data)*30)), width='stretch')
             st.caption("青バー=近5走中央値(地力) / 赤ティック=近5走最高値(ポテンシャル)")
 
     with tab4:
@@ -604,7 +604,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             if df_uma.empty:
                 st.info(f"EV {ev4_threshold:.1f}以上の組み合わせはありません。下限を下げてみてください。")
             else:
-                st.dataframe(df_uma.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
+                st.dataframe(df_uma.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
         with sub2:
             df_wid = (pd.DataFrame(wide_rows)
                         .sort_values('推定EV', ascending=False)
@@ -613,7 +613,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             if df_wid.empty:
                 st.info(f"EV {ev4_threshold:.1f}以上の組み合わせはありません。")
             else:
-                st.dataframe(df_wid.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
+                st.dataframe(df_wid.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
         with sub3:
             df_san = (pd.DataFrame(sanrenpuku_rows)
                         .sort_values('推定EV', ascending=False)
@@ -622,7 +622,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             if df_san.empty:
                 st.info(f"EV {ev4_threshold:.1f}以上の組み合わせはありません。")
             else:
-                st.dataframe(df_san.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), use_container_width=True, hide_index=True)
+                st.dataframe(df_san.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
 
 
 if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予想"]:
@@ -678,7 +678,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                             st.warning(f"⚡ 発走{mins_left}分前！最新オッズで予想を更新します...")
 
 
-                live_update = st.button("🔄 直前オッズ・馬体重で最新情報を取得し再予測", use_container_width=True)
+                live_update = st.button("🔄 直前オッズ・馬体重で最新情報を取得し再予測", width='stretch')
                 # ── オッズのみ軽量更新ボタン ──────────────────────────
                 _odds_only_key = f'odds_only_{next_race["id"]}'
                 if st.button("⚡ オッズのみ更新", key=_odds_only_key,
@@ -791,7 +791,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
             target_race = todays_races[options.index(selected)]
 
             _spec_key = target_race['id']
-            live_update = st.button("🔄 直前オッズ・馬体重で最新情報を取得し再推論", use_container_width=True)
+            live_update = st.button("🔄 直前オッズ・馬体重で最新情報を取得し再推論", width='stretch')
             if st.button("🚀 朝版 予想開始", type="primary") or live_update:
                 with st.spinner('推論中...'):
                     if live_update:
@@ -916,7 +916,7 @@ elif action == "📅 今週末の全レース予想":
                 'コメント': _sr.get('confidence', '')[:30],
             })
         if _rank_rows:
-            st.dataframe(pd.DataFrame(_rank_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(_rank_rows), width='stretch', hide_index=True)
         st.markdown("---")
         _c1, _c2 = st.columns(2)
         _c1.download_button(
@@ -1004,7 +1004,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                                             '複勝払戻': f"¥{fuku:,}" if fuku > 0 else '-',
                                         })
                                 if result_rows:
-                                    st.dataframe(pd.DataFrame(result_rows), use_container_width=True, hide_index=True)
+                                    st.dataframe(pd.DataFrame(result_rows), width='stretch', hide_index=True)
                             else:
                                 st.warning("払い戻しデータが取得できませんでした")
                         else:
@@ -1197,7 +1197,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                         return ['', color_std, color_ev]
                     st.dataframe(
                         pd.DataFrame(_cmp_data).style.apply(_cmp_color, axis=1),
-                        use_container_width=True, hide_index=True
+                        width='stretch', hide_index=True
                     )
                     st.caption(f"対象: {stats_ev['races']}レース。EV優先◎が標準◎と同じ馬の場合は同結果になります。")
 
@@ -1384,7 +1384,7 @@ elif action == "📈 長期成績分析":
                 )
                 ev_layers = rule100 + ev_line
 
-            st.altair_chart(line + ev_layers, use_container_width=True)
+            st.altair_chart(line + ev_layers, width='stretch')
             _ev_note = "　破線 = EV優先◎" if has_ev else ""
             st.caption(f"灰色破線 = 損益分岐点 / {ma_window}日移動平均を表示中{_ev_note}")
 
@@ -1412,7 +1412,7 @@ elif action == "📈 長期成績分析":
             st.dataframe(
                 show_table.style.applymap(color_rate, subset=_tbl_cols)
                           .format(_fmt, na_rep='-'),
-                use_container_width=True, hide_index=True
+                width='stretch', hide_index=True
             )
             if has_ev:
                 st.caption("🎯 EV優先列は「振り返り」でEV優先比較チェックをONにした日のみ記録されます。「-」は未集計。")
@@ -1446,7 +1446,7 @@ elif action == "📈 長期成績分析":
                         .applymap(color_rate, subset=_cmp_cols_rate)
                         .applymap(color_diff, subset=_cmp_cols_diff)
                         .format({c:'{:.1f}%' for c in _cmp_cols_rate + _cmp_cols_diff}, na_rep='-'),
-                    use_container_width=True, hide_index=True
+                    width='stretch', hide_index=True
                 )
                 # 平均差サマリー
                 avg_diff_tan  = _cmp['単勝差'].mean()
@@ -1469,7 +1469,7 @@ elif action == "📈 長期成績分析":
                 st.dataframe(
                     monthly.style.applymap(color_rate, subset=_monthly_cols)
                            .format({c:'{:.1f}%' for c in _monthly_cols}, na_rep='-'),
-                    use_container_width=True
+                    width='stretch'
                 )
 
             # ── 累積損益シミュレーション ────────────────────
@@ -1495,7 +1495,7 @@ elif action == "📈 長期成績分析":
             zero_rule = alt.Chart(rule_data).mark_rule(
                 color='gray', strokeDash=[4,4], opacity=0.5
             ).encode(y='y:Q')
-            st.altair_chart(cum_chart + zero_rule, use_container_width=True)
+            st.altair_chart(cum_chart + zero_rule, width='stretch')
 
             total_profit  = history_df['累積損益'].iloc[-1] if len(history_df) > 0 else 0
             total_invest_h = len(history_df) * sim_unit
@@ -1526,7 +1526,7 @@ elif action == "📈 長期成績分析":
                         legend=alt.Legend(title='回収率(%)')),
                     tooltip=['週','曜日', alt.Tooltip('回収率:Q', format='.1f')]
                 ).properties(height=180)
-                st.altair_chart(heat, use_container_width=True)
+                st.altair_chart(heat, width='stretch')
                 st.caption("赤=高回収率 / 青=低回収率。開催日(主に土日)のみ反映")
 
 # ==========================================
@@ -1668,7 +1668,7 @@ elif action == "🧪 性能試験 (バックテスト)":
                         color='戦略:N',
                         tooltip=['番号','戦略','累計損益']
                     ).properties(height=250)
-                    st.altair_chart(line + rule0, use_container_width=True)
+                    st.altair_chart(line + rule0, width='stretch')
 
                     st.markdown("#### 🔍 条件別成績")
 
@@ -1692,13 +1692,13 @@ elif action == "🧪 性能試験 (バックテスト)":
                         return df.style.apply(color_row,axis=1).format({'単勝回収率(%)':'{}%','複勝回収率(%)':'{}%','投資':'¥{:,}','単勝損益':'¥{:,}'})
 
                     bt1, bt2, bt3, bt4 = st.tabs(["⛰️ 芝/ダート", "🏟️ 競馬場", "📏 距離帯", "📋 全ベット一覧"])
-                    with bt1: st.dataframe(style_seg(make_seg(df_ana,'芝/ダート')), use_container_width=True, hide_index=True)
-                    with bt2: st.dataframe(style_seg(make_seg(df_ana,'競馬場')), use_container_width=True, hide_index=True)
+                    with bt1: st.dataframe(style_seg(make_seg(df_ana,'芝/ダート')), width='stretch', hide_index=True)
+                    with bt2: st.dataframe(style_seg(make_seg(df_ana,'競馬場')), width='stretch', hide_index=True)
                     with bt3:
                         sort_order = ["短距離(〜1400m)","マイル(1600m)","中距離(1800〜2200m)","長距離(2400m〜)","不明"]
                         df_d = make_seg(df_ana,'距離帯')
                         df_d = df_d.set_index('距離帯').reindex([x for x in sort_order if x in df_d['距離帯'].values]).reset_index()
-                        st.dataframe(style_seg(df_d), use_container_width=True, hide_index=True)
+                        st.dataframe(style_seg(df_d), width='stretch', hide_index=True)
                     with bt4:
                         show_detail = df_ana[['レース','印','馬名','AI勝率','期待値','単勝オッズ','投資額','単勝回収','複勝回収']].copy()
                         show_detail['AI勝率'] = (show_detail['AI勝率']*100).round(1).astype(str)+'%'
@@ -1709,7 +1709,7 @@ elif action == "🧪 性能試験 (バックテスト)":
                             return ['']*len(row)
                         st.dataframe(show_detail.style.apply(color_result,axis=1)
                                      .format({'期待値':'{:.2f}','単勝オッズ':'{:.1f}','投資額':'¥{:,}','単勝回収':'¥{:,}','複勝回収':'¥{:,}'}),
-                                     use_container_width=True, hide_index=True)
+                                     width='stretch', hide_index=True)
 
                 if results_for_txt:
                     _db1, _db2 = st.columns(2)
@@ -1816,7 +1816,7 @@ elif action == "📊 AIチューニング & バックテスト":
                         )
                     if cv_df is not None and not cv_df.empty:
                         st.subheader("試行結果 (上位10件)")
-                        st.dataframe(cv_df.head(10), use_container_width=True)
+                        st.dataframe(cv_df.head(10), width='stretch')
                     st.info(
                         "✅ **適用方法**: 上のコードを `src/core_model.py` の "
                         "`model_win = lgb.LGBMRanker(...)` と置き換えて再学習してください。\n\n"
@@ -1950,7 +1950,7 @@ elif action == "🏇 騎手・調教師フォーム分析":
                     '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%',
                     '単勝回収率(%)':'{:.1f}%','フォームスコア':'{:.1f}'
                 }),
-                use_container_width=True, hide_index=True, height=480
+                width='stretch', hide_index=True, height=480
             )
             st.caption("赤=回収率120%超 / 橙=100%超 / 出走15回以上を表示 / 騎手詳細は「🔍 騎手詳細」タブから")
 
@@ -2047,15 +2047,15 @@ elif action == "🏇 騎手・調教師フォーム分析":
                     with mc1:
                         st.altair_chart(
                             _mk_bar(m3, '年月', '勝率(%)', '勝率(%)', "月別 勝率"),
-                            use_container_width=True)
+                            width='stretch')
                     with mc2:
                         st.altair_chart(
                             _mk_bar(m3, '年月', '単勝回収率(%)', '単勝回収率(%)', "月別 単勝回収率"),
-                            use_container_width=True)
+                            width='stretch')
                     st.dataframe(
                         m3.sort_values('年月', ascending=False).style.format({
                             '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                        }), use_container_width=True, hide_index=True
+                        }), width='stretch', hide_index=True
                     )
                 else:
                     st.info("直近3ヶ月のデータがありません")
@@ -2078,13 +2078,13 @@ elif action == "🏇 騎手・調教師フォーム分析":
                                 tooltip=list(qdf.columns))
                         .properties(height=240, title="四半期別 単勝回収率推移"))
                     with qc1:
-                        st.altair_chart(win_line, use_container_width=True)
+                        st.altair_chart(win_line, width='stretch')
                     with qc2:
-                        st.altair_chart(ret_line + rule100, use_container_width=True)
+                        st.altair_chart(ret_line + rule100, width='stretch')
                     st.dataframe(
                         qdf.sort_values('四半期', ascending=False).style.format({
                             '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                        }), use_container_width=True, hide_index=True
+                        }), width='stretch', hide_index=True
                     )
 
             # ── 競馬場別 ───────────────────────────────────────────────────
@@ -2094,13 +2094,13 @@ elif action == "🏇 騎手・調教師フォーム分析":
                     vc1, vc2 = st.columns(2)
                     with vc1:
                         st.altair_chart(_mk_bar(vdf, '競馬場', '勝率(%)', '勝率(%)', "競馬場別 勝率"),
-                                        use_container_width=True)
+                                        width='stretch')
                     with vc2:
                         st.altair_chart(_mk_bar(vdf, '競馬場', '単勝回収率(%)', '単勝回収率(%)', "競馬場別 単勝回収率"),
-                                        use_container_width=True)
+                                        width='stretch')
                     st.dataframe(vdf.style.format({
                         '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                    }), use_container_width=True, hide_index=True)
+                    }), width='stretch', hide_index=True)
                 else:
                     st.info("競馬場別データが不足しています（5戦以上の競馬場のみ表示）")
 
@@ -2116,13 +2116,13 @@ elif action == "🏇 騎手・調教師フォーム分析":
                     gc1, gc2 = st.columns(2)
                     with gc1:
                         st.altair_chart(_mk_bar(gg, '枠番', '勝率(%)', '勝率(%)', "枠番別 勝率"),
-                                        use_container_width=True)
+                                        width='stretch')
                     with gc2:
                         st.altair_chart(_mk_bar(gg, '枠番', '複勝率(%)', '複勝率(%)', "枠番別 複勝率"),
-                                        use_container_width=True)
+                                        width='stretch')
                     st.dataframe(gg.style.format({
                         '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                    }), use_container_width=True, hide_index=True)
+                    }), width='stretch', hide_index=True)
 
             # ── 距離帯別 ───────────────────────────────────────────────────
             with t_dist:
@@ -2137,13 +2137,13 @@ elif action == "🏇 騎手・調教師フォーム分析":
                     dc1, dc2 = st.columns(2)
                     with dc1:
                         st.altair_chart(_mk_bar(dg, '距離帯', '勝率(%)', '勝率(%)', "距離帯別 勝率"),
-                                        use_container_width=True)
+                                        width='stretch')
                     with dc2:
                         st.altair_chart(_mk_bar(dg, '距離帯', '単勝回収率(%)', '単勝回収率(%)', "距離帯別 単勝回収率"),
-                                        use_container_width=True)
+                                        width='stretch')
                     st.dataframe(dg.style.format({
                         '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                    }), use_container_width=True, hide_index=True)
+                    }), width='stretch', hide_index=True)
 
             # ── 芝/ダート別 ────────────────────────────────────────────────
             with t_surface:
@@ -2152,13 +2152,13 @@ elif action == "🏇 騎手・調教師フォーム分析":
                     sc1, sc2 = st.columns(2)
                     with sc1:
                         st.altair_chart(_mk_bar(sdf, '芝/ダート', '勝率(%)', '勝率(%)', "芝/ダート別 勝率", height=200),
-                                        use_container_width=True)
+                                        width='stretch')
                     with sc2:
                         st.altair_chart(_mk_bar(sdf, '芝/ダート', '単勝回収率(%)', '単勝回収率(%)', "芝/ダート別 単勝回収率", height=200),
-                                        use_container_width=True)
+                                        width='stretch')
                     st.dataframe(sdf.style.format({
                         '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                    }), use_container_width=True, hide_index=True)
+                    }), width='stretch', hide_index=True)
 
             # ── 馬場状態別 ─────────────────────────────────────────────────
             with t_cond:
@@ -2171,13 +2171,13 @@ elif action == "🏇 騎手・調教師フォーム分析":
                     cc1, cc2 = st.columns(2)
                     with cc1:
                         st.altair_chart(_mk_bar(cg, '馬場', '勝率(%)', '勝率(%)', "馬場状態別 勝率", height=200),
-                                        use_container_width=True)
+                                        width='stretch')
                     with cc2:
                         st.altair_chart(_mk_bar(cg, '馬場', '複勝率(%)', '複勝率(%)', "馬場状態別 複勝率", height=200),
-                                        use_container_width=True)
+                                        width='stretch')
                     st.dataframe(cg.style.format({
                         '勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'
-                    }), use_container_width=True, hide_index=True)
+                    }), width='stretch', hide_index=True)
                     # 不良・重馬場の特徴コメント
                     for baba in ['重','不良']:
                         row = cg[cg['馬場'] == baba]
@@ -2210,11 +2210,11 @@ elif action == "🏇 騎手・調教師フォーム分析":
 
                     sc1, sc2 = st.columns(2)
                     with sc1:
-                        st.altair_chart(_mk_bar(sg, '脚質', '勝率(%)', '勝率(%)', "脚質別 勝率"), use_container_width=True)
+                        st.altair_chart(_mk_bar(sg, '脚質', '勝率(%)', '勝率(%)', "脚質別 勝率"), width='stretch')
                     with sc2:
-                        st.altair_chart(_mk_bar(sg, '脚質', '複勝率(%)', '複勝率(%)', "脚質別 複勝率"), use_container_width=True)
+                        st.altair_chart(_mk_bar(sg, '脚質', '複勝率(%)', '複勝率(%)', "脚質別 複勝率"), width='stretch')
                     st.dataframe(sg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                 use_container_width=True, hide_index=True)
+                                 width='stretch', hide_index=True)
 
                     # 失速フラグ分析
                     if '失速フラグ' in jdf.columns:
@@ -2266,9 +2266,9 @@ elif action == "🏇 騎手・調教師フォーム分析":
                         cg['_s'] = cg['脚質'].map({v:i for i,v in enumerate(style_order)})
                         cg = cg.sort_values('_s').drop(columns=['_s'])
                         st.altair_chart(_mk_bar(cg, '脚質', '上がり最速率(%)', '上がり最速率(%)',
-                                               "脚質別 上がり最速率", height=220), use_container_width=True)
+                                               "脚質別 上がり最速率", height=220), width='stretch')
                         st.dataframe(cg[['脚質','出走数','上がり最速回','上がり最速率(%)']].style.format(
-                            {'上がり最速率(%)':'{:.1f}%'}), use_container_width=True, hide_index=True)
+                            {'上がり最速率(%)':'{:.1f}%'}), width='stretch', hide_index=True)
 
             # ── 人気別成績 ────────────────────────────────────────────────
             with t_popular:
@@ -2299,11 +2299,11 @@ elif action == "🏇 騎手・調教師フォーム分析":
 
                     pc1, pc2 = st.columns(2)
                     with pc1:
-                        st.altair_chart(_mk_bar(pg, '人気帯', '勝率(%)', '勝率(%)', "人気帯別 勝率"), use_container_width=True)
+                        st.altair_chart(_mk_bar(pg, '人気帯', '勝率(%)', '勝率(%)', "人気帯別 勝率"), width='stretch')
                     with pc2:
-                        st.altair_chart(_mk_bar(pg, '人気帯', '単勝回収率(%)', '単勝回収率(%)', "人気帯別 単勝回収率"), use_container_width=True)
+                        st.altair_chart(_mk_bar(pg, '人気帯', '単勝回収率(%)', '単勝回収率(%)', "人気帯別 単勝回収率"), width='stretch')
                     st.dataframe(pg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                 use_container_width=True, hide_index=True)
+                                 width='stretch', hide_index=True)
 
             # ── 馬体重・性別 ──────────────────────────────────────────────
             with t_weight:
@@ -2331,11 +2331,11 @@ elif action == "🏇 騎手・調教師フォーム分析":
 
                     wc1, wc2 = st.columns(2)
                     with wc1:
-                        st.altair_chart(_mk_bar(wg, '馬体重帯', '勝率(%)', '勝率(%)', "馬体重帯別 勝率"), use_container_width=True)
+                        st.altair_chart(_mk_bar(wg, '馬体重帯', '勝率(%)', '勝率(%)', "馬体重帯別 勝率"), width='stretch')
                     with wc2:
-                        st.altair_chart(_mk_bar(wg, '馬体重帯', '複勝率(%)', '複勝率(%)', "馬体重帯別 複勝率"), use_container_width=True)
+                        st.altair_chart(_mk_bar(wg, '馬体重帯', '複勝率(%)', '複勝率(%)', "馬体重帯別 複勝率"), width='stretch')
                     st.dataframe(wg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                 use_container_width=True, hide_index=True)
+                                 width='stretch', hide_index=True)
 
                 # 性別別
                 st.markdown("---")
@@ -2345,11 +2345,11 @@ elif action == "🏇 騎手・調教師フォーム分析":
                     if len(sex_g) > 0:
                         sc1, sc2 = st.columns(2)
                         with sc1:
-                            st.altair_chart(_mk_bar(sex_g, '性別', '勝率(%)', '勝率(%)', "性別 勝率", height=220), use_container_width=True)
+                            st.altair_chart(_mk_bar(sex_g, '性別', '勝率(%)', '勝率(%)', "性別 勝率", height=220), width='stretch')
                         with sc2:
-                            st.altair_chart(_mk_bar(sex_g, '性別', '単勝回収率(%)', '単勝回収率(%)', "性別 単勝回収率", height=220), use_container_width=True)
+                            st.altair_chart(_mk_bar(sex_g, '性別', '単勝回収率(%)', '単勝回収率(%)', "性別 単勝回収率", height=220), width='stretch')
                         st.dataframe(sex_g.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                     use_container_width=True, hide_index=True)
+                                     width='stretch', hide_index=True)
 
             # ── 相性調教師 ────────────────────────────────────────────────
             with t_trainer:
@@ -2371,19 +2371,19 @@ elif action == "🏇 騎手・調教師フォーム分析":
                         st.markdown("##### 🔝 相性ベスト調教師 TOP15（勝率順）")
                         st.dataframe(
                             top_tr.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                            use_container_width=True, hide_index=True, height=420)
+                            width='stretch', hide_index=True, height=420)
                     with tc2:
                         st.markdown("##### 📉 相性ワースト調教師 TOP10")
                         st.dataframe(
                             bot_tr.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                            use_container_width=True, hide_index=True, height=280)
+                            width='stretch', hide_index=True, height=280)
 
                     # 単勝回収率トップ（儲かる組み合わせ）
                     st.markdown("##### 💰 単勝回収率トップ調教師（馬券妙味）")
                     best_ret = tr_g.sort_values('単勝回収率(%)', ascending=False).head(10)
                     st.dataframe(
                         best_ret.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                        use_container_width=True, hide_index=True)
+                        width='stretch', hide_index=True)
 
             # ── 回り・コース地形 ─────────────────────────────────────────
             with t_rotation:
@@ -2394,9 +2394,9 @@ elif action == "🏇 騎手・調教師フォーム分析":
                         st.markdown("##### 🔄 左回り/右回り")
                         rg = _stat_table(jdf.dropna(subset=['回り']), '回り', min_r=5)
                         if len(rg) > 0:
-                            st.altair_chart(_mk_bar(rg, '回り', '勝率(%)', '勝率(%)', "", height=200), use_container_width=True)
+                            st.altair_chart(_mk_bar(rg, '回り', '勝率(%)', '勝率(%)', "", height=200), width='stretch')
                             st.dataframe(rg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                         use_container_width=True, hide_index=True)
+                                         width='stretch', hide_index=True)
                             # 差があれば得意苦手コメント
                             if len(rg) >= 2:
                                 maxr = rg.loc[rg['勝率(%)'].idxmax(), '回り']
@@ -2409,9 +2409,9 @@ elif action == "🏇 騎手・調教師フォーム分析":
                         st.markdown("##### 🏟️ コース地形")
                         cog = _stat_table(jdf.dropna(subset=['コース地形']), 'コース地形', min_r=5)
                         if len(cog) > 0:
-                            st.altair_chart(_mk_bar(cog, 'コース地形', '勝率(%)', '勝率(%)', "", height=200), use_container_width=True)
+                            st.altair_chart(_mk_bar(cog, 'コース地形', '勝率(%)', '勝率(%)', "", height=200), width='stretch')
                             st.dataframe(cog.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                         use_container_width=True, hide_index=True)
+                                         width='stretch', hide_index=True)
 
                 # 頭数帯別（少頭数 vs 多頭数）
                 st.markdown("---")
@@ -2429,10 +2429,10 @@ elif action == "🏇 騎手・調教師フォーム分析":
                     if len(hg) > 0:
                         hc1, hc2 = st.columns(2)
                         with hc1:
-                            st.altair_chart(_mk_bar(hg, '頭数帯', '勝率(%)', '勝率(%)', "頭数帯別 勝率", height=220), use_container_width=True)
+                            st.altair_chart(_mk_bar(hg, '頭数帯', '勝率(%)', '勝率(%)', "頭数帯別 勝率", height=220), width='stretch')
                         with hc2:
                             st.dataframe(hg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                         use_container_width=True, hide_index=True)
+                                         width='stretch', hide_index=True)
 
             # ── ローテーション・乗り替わり ────────────────────────────────
             with t_roto:
@@ -2448,9 +2448,9 @@ elif action == "🏇 騎手・調教師フォーム分析":
                         rg2['_s'] = rg2['ローテ'].map({v:i for i,v in enumerate(rote_order)})
                         rg2 = rg2.sort_values('_s').drop(columns=['_s'])
                         if len(rg2) > 0:
-                            st.altair_chart(_mk_bar(rg2, 'ローテ', '勝率(%)', '勝率(%)', "", height=220), use_container_width=True)
+                            st.altair_chart(_mk_bar(rg2, 'ローテ', '勝率(%)', '勝率(%)', "", height=220), width='stretch')
                             st.dataframe(rg2.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                         use_container_width=True, hide_index=True)
+                                         width='stretch', hide_index=True)
                             # 長期休養明けの傾向
                             kyuka = rg2[rg2['ローテ']=='長期休養明け']
                             if len(kyuka) > 0 and kyuka.iloc[0]['出走数'] >= 3:
@@ -2467,9 +2467,9 @@ elif action == "🏇 騎手・調教師フォーム分析":
                         mf['乗替'] = mf['乗り替わりフラグ'].map({1.0:'初騎乗（乗替）', 0.0:'継続騎乗'})
                         mg = _stat_table(mf.dropna(subset=['乗替']), '乗替', min_r=5)
                         if len(mg) > 0:
-                            st.altair_chart(_mk_bar(mg, '乗替', '勝率(%)', '勝率(%)', "", height=220), use_container_width=True)
+                            st.altair_chart(_mk_bar(mg, '乗替', '勝率(%)', '勝率(%)', "", height=220), width='stretch')
                             st.dataframe(mg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                         use_container_width=True, hide_index=True)
+                                         width='stretch', hide_index=True)
                             cont  = mg[mg['乗替']=='継続騎乗']
                             first = mg[mg['乗替']=='初騎乗（乗替）']
                             if len(cont) > 0 and len(first) > 0:
@@ -2490,10 +2490,10 @@ elif action == "🏇 騎手・調教師フォーム分析":
                     if len(kg) > 0:
                         kc1, kc2 = st.columns(2)
                         with kc1:
-                            st.altair_chart(_mk_bar(kg, '斤量帯', '勝率(%)', '勝率(%)', "斤量帯別 勝率", height=220), use_container_width=True)
+                            st.altair_chart(_mk_bar(kg, '斤量帯', '勝率(%)', '勝率(%)', "斤量帯別 勝率", height=220), width='stretch')
                         with kc2:
                             st.dataframe(kg.style.format({'勝率(%)':'{:.1f}%','複勝率(%)':'{:.1f}%','単勝回収率(%)':'{:.1f}%'}),
-                                         use_container_width=True, hide_index=True)
+                                         width='stretch', hide_index=True)
 
             # ── 近走履歴 ───────────────────────────────────────────────────
             with t_recent:
@@ -2516,7 +2516,7 @@ elif action == "🏇 騎手・調教師フォーム分析":
                              .format({'着順': '{:.0f}', '人気': '{:.0f}',
                                       '単勝': '{:.1f}', '距離': '{:.0f}m',
                                       '枠番': '{:.0f}'}, na_rep='-'),
-                    use_container_width=True, hide_index=True, height=520
+                    width='stretch', hide_index=True, height=520
                 )
                 st.caption("金=1着 / 緑=3着以内")
 
@@ -2761,7 +2761,7 @@ elif action == "🐴 愛馬の成長記録":
                                         ),
                                         tooltip=['日付_str','タイム指数','競馬場','芝/ダート','距離','着順']
                                     ).interactive().properties(height=280)
-                                    st.altair_chart(chart, use_container_width=True)
+                                    st.altair_chart(chart, width='stretch')
                                     st.caption("赤点 = 1着")
                             else:
                                 st.info("タイム指数データがありません（補正タイム偏差列が必要）")
@@ -2774,14 +2774,14 @@ elif action == "🐴 愛馬の成長記録":
                                     d = df_horse[['日付_str','上り']].dropna(subset=['上り'])
                                     if not d.empty:
                                         c = make_line(d,'日付_str','上り','#FFA500','上がり3F(秒)',reverse_y=True)
-                                        if c: st.altair_chart(c, use_container_width=True)
+                                        if c: st.altair_chart(c, width='stretch')
                             with col_b:
                                 st.caption("1着タイム差 (0.0=1着)")
                                 if 'タイム差' in df_horse.columns:
                                     d = df_horse[['日付_str','タイム差']].dropna(subset=['タイム差'])
                                     if not d.empty:
                                         c = make_line(d,'日付_str','タイム差','#FF4B4B','タイム差(秒)',reverse_y=True)
-                                        if c: st.altair_chart(c, use_container_width=True)
+                                        if c: st.altair_chart(c, width='stretch')
 
                         with tab_weight:
                             col_w1, col_w2 = st.columns(2)
@@ -2792,7 +2792,7 @@ elif action == "🐴 愛馬の成長記録":
                                     d = df_horse[['日付_str', wt_col]].replace(0, np.nan).dropna(subset=[wt_col])
                                     if not d.empty:
                                         c = make_line(d,'日付_str', wt_col,'#4BFF8B','馬体重(kg)')
-                                        if c: st.altair_chart(c, use_container_width=True)
+                                        if c: st.altair_chart(c, width='stretch')
                                 else:
                                     st.info("馬体重データなし")
                             with col_w2:
@@ -2801,7 +2801,7 @@ elif action == "🐴 愛馬の成長記録":
                                     d = df_horse[['日付_str','馬体重増減']].dropna(subset=['馬体重増減'])
                                     if not d.empty:
                                         c = make_line(d,'日付_str','馬体重増減','#888','増減(kg)',zero_line=True)
-                                        if c: st.altair_chart(c, use_container_width=True)
+                                        if c: st.altair_chart(c, width='stretch')
 
                         with tab_rank:
                             st.caption("数値が低い（1位に近い）ほど上位。Y軸反転。")
@@ -2816,7 +2816,7 @@ elif action == "🐴 愛馬の成長記録":
                                     color=alt.Color('項目:N'),
                                     tooltip=['日付_str','項目','順位']
                                 ).interactive().properties(height=250)
-                                st.altair_chart(cr, use_container_width=True)
+                                st.altair_chart(cr, width='stretch')
 
                                 # 人気 vs 着順の散布図（人気より走った/凡走した分析）
                                 st.markdown("##### 📊 人気 vs 着順（左下 = 人気通り勝ち / 右上 = 人気負け）")
@@ -2835,7 +2835,7 @@ elif action == "🐴 愛馬の成長記録":
                                     diag_data = pd.DataFrame({'x':range(1,19),'y':range(1,19)})
                                     diag = alt.Chart(diag_data).mark_line(color='gray',strokeDash=[3,3],opacity=0.5).encode(
                                         x='x:Q', y=alt.Y('y:Q', scale=alt.Scale(reverse=True)))
-                                    st.altair_chart(sc + diag, use_container_width=True)
+                                    st.altair_chart(sc + diag, width='stretch')
                                     st.caption("青 = 人気より上の着順（激走）/ 赤 = 人気を下回る着順（凡走）/ 灰点線 = 人気通り")
 
                         with tab_table:
@@ -2860,7 +2860,7 @@ elif action == "🐴 愛馬の成長記録":
                             if '馬体重増減' in show.columns: fmt['馬体重増減'] = '{:+.0f}'
                             st.dataframe(
                                 show.style.apply(color_rank, axis=1).format(fmt),
-                                use_container_width=True, hide_index=True
+                                width='stretch', hide_index=True
                             )
 
             except Exception as e:
