@@ -109,9 +109,8 @@ _PRO_ACTIONS = [
     "📅 今週末の全レース予想",
     "🔍 レースを指定して予想",
     "📝 1日の振り返り (答え合わせ)",
-    "🧪 性能試験 (バックテスト)",
     "📈 長期成績分析",
-    "📊 AIチューニング & バックテスト",
+    "🔧 Optuna チューニング",
     "🏇 騎手・調教師フォーム分析",
     "📝 馬券メモ管理",
     "🐴 愛馬の成長記録",
@@ -1529,452 +1528,81 @@ elif action == "📈 長期成績分析":
                 st.altair_chart(heat, width='stretch')
                 st.caption("赤=高回収率 / 青=低回収率。開催日(主に土日)のみ反映")
 
-# ==========================================
-# 🌟 性能試験 (バックテスト) 機能
-# ==========================================
-elif action == "🧪 性能試験 (バックテスト)":
-    st.subheader("🧪 性能試験 (バックテスト)")
-    with st.expander("ℹ️ バックテスト精度について（必読）", expanded=False):
-        st.info("""**バックテスト結果の見方**
+elif action == "🔧 Optuna チューニング":
+    st.subheader("🔧 Optuna ハイパーパラメータ チューニング")
+    st.info("Optunaを用いてモデルBのハイパーパラメータを自動最適化します。\n目標AUC: 0.74〜0.78（市場勝率なし）")
 
-過去2週間以内のバックテストは信頼性が高いです。それより古い日付は参考値として扱ってください。
+    st.markdown("#### Optuna 超パラメータ自動最適化")
+    st.caption("AIの予測精度を最大限に引き出すためのパラメータ探索を行います。実行には時間がかかります。")
 
-モデルは「学習データの最終日」までの全期間で学習されています。
-古い日付でのバックテストでは、直近2週間より前の検証で一部の馬情報（コース適性・直近成績）に
-「その時点では知り得なかった未来情報」が混入する場合があります。
+    col_op1, col_op2 = st.columns([1, 1])
+    with col_op1:
+        n_trials = st.number_input("探索回数 (Trials)", min_value=10, max_value=500, value=50, step=10)
+    with col_op2:
+        n_folds = st.number_input("CV分割数 (Folds)", min_value=2, max_value=6, value=3, step=1)
 
-今回のバージョンからリーク防止処理を追加済みです（最新_日付がバックテスト日以降の馬は前走情報をNaNマスク）。
-それでも学習モデル自体は全期間データで学習されているため、完全な隔離ではありません。""")
+    exclude_market = st.checkbox(
+        "🎯 市場勝率を除外してチューニング（推奨）",
+        value=True,
+        help="単勝オッズ由来の特徴量を除外し、AIの真の予測力でチューニングします。\n"
+             "check_market_rate_auc.py の検証結果: 真のモデル力 AUC ≈ 0.76"
+    )
+    exclude_list = ['市場勝率'] if exclude_market else []
 
-    # ── 設定エリア ────────────────────────────────────────
-    col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
-    with col_cfg1:
-        test_date = st.date_input("テストする日付", datetime.date.today() - datetime.timedelta(days=3))
-    with col_cfg2:
-        ev_threshold = st.slider("期待値フィルター", 1.0, 3.0, 1.5, 0.1,
-                                  help="この値以上の期待値の馬だけをベット対象にします")
-    with col_cfg3:
-        bet_unit = st.number_input("1点あたりの賭け金 (円)", 100, 10000, 100, 100)
+    if exclude_market:
+        st.info("ℹ️ 市場勝率を除外: 目標AUC 0.74〜0.78（真の予測力基準）")
+    else:
+        st.warning("⚠️ 市場勝率を含む: オッズ依存のため AUC が過大評価されます（参考値）")
 
-    if st.button("🔥 バックテスト実行！", type="primary"):
-        with st.spinner(f'全レースを推論・集計中...'):
-            test_races = get_todays_races(test_date.strftime('%Y%m%d'))
-            if not test_races:
-                st.error("レースが見つかりません。")
-            else:
-                my_bar = st.progress(0, text="集計中...")
-                results_for_txt = []
-                analysis_records = []  # レースごとの詳細記録
+    if st.button("🔧 チューニング開始", type="primary"):
+        with st.spinner(f"Optunaによる探索中 ({n_trials} trials × {n_folds} folds)..."):
+            try:
+                df_op = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+                df_op['日付'] = pd.to_datetime(df_op['日付'], format='mixed', errors='coerce')
+                df_op = df_op.dropna(subset=['日付', '着順', '単勝'])
+                for col in ['着順', '単勝', '人気']: df_op[col] = pd.to_numeric(df_op[col], errors='coerce')
 
-                for i, r in enumerate(test_races):
-                    with st.expander(f"🏁 {r['place']} {r['num']}R"):
-                        res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], test_date.strftime('%Y-%m-%d'), bundle, skip_live_scrape=True)
-                        t_dict, f_dict = get_payouts(r['id'])
+                from src.optuna_tuner import run_optuna_tuning
+                from src.features_engine import TE_COLS, create_features
+                df_op, _ = create_features(df_op, te_dicts)
+                best_p, msg, cv_df = run_optuna_tuning(
+                    df_op, features, cat_features, list(TE_COLS),
+                    n_trials=int(n_trials), n_folds=int(n_folds),
+                    exclude_features=exclude_list if exclude_list else None,
+                )
 
-                        if res_df is not None:
-                            display_result(res_df, topics, reco, pace_text, conf_text, show_change_table=False, _key=f"_{r['id']}")
-                            results_for_txt.append({'date': test_date.strftime('%Y年%m月%d日'), 'place': place, 'num': r['num'], 'track': track_type, 'dist': dist, 'pace': pace_text, 'confidence': conf_text, 'df': res_df, 'topics': topics, 'reco': reco})
-
-                            if not t_dict:
-                                st.warning("⚠️ 払い戻しデータが取得できませんでした（予想は表示済み）")
-                            else:
-                                try:
-                                    d = int(dist)
-                                    if d <= 1400: d_cat = "短距離(〜1400m)"
-                                    elif d <= 1600: d_cat = "マイル(1600m)"
-                                    elif d <= 2200: d_cat = "中距離(1800〜2200m)"
-                                    else: d_cat = "長距離(2400m〜)"
-                                except: d_cat = "不明"
-
-                                honmei = res_df.iloc[0]['馬番']
-                                honmei_tan = t_dict.get(honmei, 0)
-                                honmei_fuku = f_dict.get(honmei, 0)
-
-                                ev_targets = res_df[(res_df.index < 5) & (res_df['期待値'] >= ev_threshold)]
-                                for _, horse in ev_targets.iterrows():
-                                    ret_t = t_dict.get(horse['馬番'], 0)
-                                    ret_f = f_dict.get(horse['馬番'], 0)
-                                    analysis_records.append({
-                                        'レース': f"{place}{r['num']}R",
-                                        '競馬場': place,
-                                        '芝/ダート': track_type,
-                                        '距離帯': d_cat,
-                                        '馬名': horse['馬名'],
-                                        '印': horse['印'],
-                                        'AI勝率': horse['勝率(AI予測)'],
-                                        '期待値': horse['期待値'],
-                                        '単勝オッズ': horse['単勝オッズ'],
-                                        '投資額': bet_unit,
-                                        '単勝回収': ret_t * bet_unit // 100,
-                                        '複勝回収': ret_f * bet_unit // 100,
-                                        '本命単勝払戻': honmei_tan,
-                                        '本命複勝払戻': honmei_fuku,
-                                    })
-                        else:
-                            if err_log: display_error_log(err_log)
-                            else: st.warning(f"⚠️ {r['place']} {r['num']}R: 取得失敗")
-                    time.sleep(1.0)
-                    my_bar.progress((i + 1) / len(test_races))
-
-                # ── 集計レポート ─────────────────────────────────────
-                st.markdown("---")
-                st.markdown(f"### 🏆 {test_date.strftime('%Y/%m/%d')} バックテスト集計レポート")
-
-                if not analysis_records:
-                    st.warning("期待値フィルターに合致する馬がいませんでした。フィルター値を下げてみてください。")
-                else:
-                    import altair as alt
-                    df_ana = pd.DataFrame(analysis_records)
-                    total_invest   = df_ana['投資額'].sum()
-                    total_tan_ret  = df_ana['単勝回収'].sum()
-                    total_fuku_ret = df_ana['複勝回収'].sum()
-                    tan_hits  = (df_ana['単勝回収'] > 0).sum()
-                    fuku_hits = (df_ana['複勝回収'] > 0).sum()
-                    tan_rate  = total_tan_ret  / total_invest * 100 if total_invest > 0 else 0
-                    fuku_rate = total_fuku_ret / total_invest * 100 if total_invest > 0 else 0
-
-                    # KPIカード
-                    k1, k2, k3, k4, k5 = st.columns(5)
-                    k1.metric("🎯 対象ベット数", f"{len(df_ana)}件",
-                              help=f"期待値{ev_threshold}以上 × 上位5頭以内")
-                    k2.metric("💰 総投資額", f"¥{total_invest:,}")
-                    k3.metric("📈 単勝回収率",
-                              f"{tan_rate:.1f}%",
-                              f"{tan_rate-100:+.1f}%",
-                              delta_color="normal")
-                    k4.metric("📊 複勝回収率",
-                              f"{fuku_rate:.1f}%",
-                              f"{fuku_rate-100:+.1f}%",
-                              delta_color="normal")
-                    k5.metric("✅ 的中数",
-                              f"単:{tan_hits} / 複:{fuku_hits}",
-                              f"的中率 {tan_hits/len(df_ana)*100:.0f}% / {fuku_hits/len(df_ana)*100:.0f}%")
-
-                    st.markdown("---")
-
-                    # 損益推移グラフ
-                    df_ana['損益(単)']  = df_ana['単勝回収'] - df_ana['投資額']
-                    df_ana['損益(複)']  = df_ana['複勝回収'] - df_ana['投資額']
-                    df_ana['累計損益(単)'] = df_ana['損益(単)'].cumsum()
-                    df_ana['累計損益(複)'] = df_ana['損益(複)'].cumsum()
-                    df_ana['番号'] = range(1, len(df_ana)+1)
-
-                    st.markdown("#### 📈 累積損益推移")
-                    melted = df_ana.melt('番号', value_vars=['累計損益(単)','累計損益(複)'], var_name='戦略', value_name='累計損益')
-                    rule0 = alt.Chart(pd.DataFrame({'y':[0]})).mark_rule(color='gray', strokeDash=[4,4]).encode(y='y:Q')
-                    line = alt.Chart(melted).mark_line(point=True).encode(
-                        x=alt.X('番号:Q', title='ベット番号'),
-                        y=alt.Y('累計損益:Q', title='累計損益 (円)'),
-                        color='戦略:N',
-                        tooltip=['番号','戦略','累計損益']
-                    ).properties(height=250)
-                    st.altair_chart(line + rule0, width='stretch')
-
-                    st.markdown("#### 🔍 条件別成績")
-
-                    def make_seg(df, col):
-                        g = df.groupby(col).agg(
-                            件数=('投資額','count'),
-                            投資=('投資額','sum'),
-                            単勝回収=('単勝回収','sum'),
-                            複勝回収=('複勝回収','sum'),
-                        ).reset_index()
-                        g['単勝回収率(%)'] = (g['単勝回収']/g['投資']*100).round(1)
-                        g['複勝回収率(%)'] = (g['複勝回収']/g['投資']*100).round(1)
-                        g['単勝損益']=g['単勝回収']-g['投資']
-                        return g[[col,'件数','投資','単勝回収率(%)','複勝回収率(%)','単勝損益']].sort_values('単勝回収率(%)',ascending=False)
-
-                    def style_seg(df):
-                        def color_row(row):
-                            if row['単勝回収率(%)'] >= 120: return ['background-color:rgba(255,75,75,0.15)']*len(row)
-                            if row['単勝回収率(%)'] >= 100: return ['background-color:rgba(255,165,0,0.1)']*len(row)
-                            return ['']*len(row)
-                        return df.style.apply(color_row,axis=1).format({'単勝回収率(%)':'{}%','複勝回収率(%)':'{}%','投資':'¥{:,}','単勝損益':'¥{:,}'})
-
-                    bt1, bt2, bt3, bt4 = st.tabs(["⛰️ 芝/ダート", "🏟️ 競馬場", "📏 距離帯", "📋 全ベット一覧"])
-                    with bt1: st.dataframe(style_seg(make_seg(df_ana,'芝/ダート')), width='stretch', hide_index=True)
-                    with bt2: st.dataframe(style_seg(make_seg(df_ana,'競馬場')), width='stretch', hide_index=True)
-                    with bt3:
-                        sort_order = ["短距離(〜1400m)","マイル(1600m)","中距離(1800〜2200m)","長距離(2400m〜)","不明"]
-                        df_d = make_seg(df_ana,'距離帯')
-                        df_d = df_d.set_index('距離帯').reindex([x for x in sort_order if x in df_d['距離帯'].values]).reset_index()
-                        st.dataframe(style_seg(df_d), width='stretch', hide_index=True)
-                    with bt4:
-                        show_detail = df_ana[['レース','印','馬名','AI勝率','期待値','単勝オッズ','投資額','単勝回収','複勝回収']].copy()
-                        show_detail['AI勝率'] = (show_detail['AI勝率']*100).round(1).astype(str)+'%'
-                        show_detail['期待値'] = show_detail['期待値'].round(2)
-                        show_detail['結果'] = show_detail['単勝回収'].apply(lambda x: '✅ 的中' if x>0 else '❌')
-                        def color_result(row):
-                            if row['単勝回収'] > 0: return ['background-color:rgba(75,255,75,0.1)']*len(row)
-                            return ['']*len(row)
-                        st.dataframe(show_detail.style.apply(color_result,axis=1)
-                                     .format({'期待値':'{:.2f}','単勝オッズ':'{:.1f}','投資額':'¥{:,}','単勝回収':'¥{:,}','複勝回収':'¥{:,}'}),
-                                     width='stretch', hide_index=True)
-
-                if results_for_txt:
-                    _db1, _db2 = st.columns(2)
-                    _db1.download_button("📥 バックテスト結果 (.txt)", data=generate_txt_report(results_for_txt), file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.txt", mime="text/plain")
-                    _html_b = generate_pdf_report(results_for_txt)
-                    if _html_b: _db2.download_button("🌐 バックテスト結果 (.html)", data=_html_b, file_name=f"keiba_backtest_{test_date.strftime('%Y%m%d')}.html", mime="text/html")
-
-# 🌟 新機能: 一口馬主・推し馬向け 成長記録グラフ
-
-# ==========================================
-# ② 新・モデル検証＆AIチューニング (Phase 3実装)
-# ==========================================
-elif action == "📊 AIチューニング & バックテスト":
-    st.subheader("📊 AIチューニング & バックテスト (時系列分割)")
-    st.info("過去のデータを時系列に分割し、未来の情報が一切混入しない（リーク防止）厳密なバックテストを行います。\\nまた、Optunaを用いたAIのハイパーパラメータ自動最適化も実行可能です。")
-
-    tab_bt, tab_ev, tab_op = st.tabs(["🧪 厳密バックテスト", "📈 EV優先長期検証", "🔧 Optuna自動チューニング"])
-
-    with tab_bt:
-        st.markdown("#### リーク防止版 Time-Series Split バックテスト")
-        bt_splits = st.slider("検証を遡る回数 (n_splits)", 1, 5, 3)
-        bt_days = st.slider("1回あたりの検証日数", 7, 60, 30)
-
-        if st.button("🚀 バックテスト実行", type="primary"):
-            with st.spinner(f"過去 {bt_splits} 期間分のモデル学習と推論を行っています... (数分かかります)"):
-                try:
-                    df_bt = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
-                    df_bt['日付'] = pd.to_datetime(df_bt['日付'], format='mixed', errors='coerce')
-                    df_bt = df_bt.dropna(subset=['日付', '着順', '単勝'])
-                    for col in ['着順', '単勝', '人気']: df_bt[col] = pd.to_numeric(df_bt[col], errors='coerce')
-
-                    from src.backtest import run_timeseries_backtest
-                    from src.features_engine import TE_COLS, create_features
-                    df_bt, _ = create_features(df_bt, te_dicts)
-                    ret_rate, res_df = run_timeseries_backtest(df_bt, features, cat_features, list(TE_COLS), n_splits=bt_splits, test_days=bt_days)
-
-                    st.success(f"✅ 全期間テスト完了！ 総合単勝回収率: **{ret_rate:.1f}%**")
-                    if not res_df.empty:
-                        st.dataframe(res_df.groupby('fold').apply(lambda x: x.sort_values('AI勝率', ascending=False).groupby('レースID').head(1)).reset_index(drop=True)[['日付','レースID','馬券内','着順','単勝','AI勝率']])
-                except Exception as e:
-                    import traceback
-                    st.error(f"バックテストエラー: {e}")
-                    st.code(traceback.format_exc())
-
-    with tab_ev:
-        st.markdown("#### 📈 EV優先◎ vs 標準◎ 超長期バックテスト")
-        st.warning(
-            "⚠️ **注意**: 学習データ上での評価のため、回収率は実戦より過楽観になる場合があります。"
-            "EV優先と標準◎の**相対比較**（どちらが上か）を見るための指標としてご利用ください。"
-        )
-
-        col_ev1, col_ev2 = st.columns(2)
-        with col_ev1:
-            ev_bt_threshold = st.slider("EV閾値（これ以上のEVを◎候補に）", 0.5, 2.0, 1.0, 0.1,
-                                        key="ev_bt_thr")
-            ev_bt_min_prob  = st.slider("最低AI勝率（EV優先◎の最低条件）", 0.05, 0.30, 0.10, 0.01,
-                                        key="ev_bt_minp")
-        with col_ev2:
-            min_yr = 2020
-            max_yr = pd.Timestamp.now().year
-            ev_bt_years = st.slider("集計年範囲", min_yr, max_yr, (min_yr, max_yr),
-                                    key="ev_bt_yr")
-
-        if st.button("🚀 超長期バックテスト実行", type="primary", key="ev_bt_run"):
-            with st.spinner("全データに推論を適用中... (1〜2分かかります)"):
-                try:
-                    import altair as alt
-                    from src.backtest import run_longterm_ev_backtest
-                    from src.features_engine import TE_COLS, create_features
-
-                    df_ev = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
-                    df_ev['日付'] = pd.to_datetime(df_ev['日付'], format='mixed', errors='coerce')
-                    df_ev = df_ev.dropna(subset=['日付', '着順', '単勝'])
-                    df_ev, _ = create_features(df_ev, te_dicts)
-
-                    date_from = f"{ev_bt_years[0]}-01-01"
-                    date_to   = f"{ev_bt_years[1]}-12-31"
-
-                    race_df = run_longterm_ev_backtest(
-                        df_ev, bundle,
-                        ev_threshold=ev_bt_threshold,
-                        min_win_prob=ev_bt_min_prob,
-                        date_from=date_from,
-                        date_to=date_to,
+                st.success(msg)
+                if best_p:
+                    st.subheader("✅ 最適パラメータ")
+                    st.json(best_p)
+                    st.code(
+                        f"# src/core_model.py の model_win に貼り付けてください\n"
+                        f"model_win = lgb.LGBMRanker(\n"
+                        f"    n_estimators={best_p.get('n_estimators')},\n"
+                        f"    learning_rate={best_p.get('learning_rate'):.6f},\n"
+                        f"    num_leaves={best_p.get('num_leaves')},\n"
+                        f"    max_bin={best_p.get('max_bin')},\n"
+                        f"    cat_smooth={best_p.get('cat_smooth'):.4f},\n"
+                        f"    colsample_bytree={best_p.get('colsample_bytree'):.4f},\n"
+                        f"    subsample={best_p.get('subsample'):.4f},\n"
+                        f"    min_child_samples={best_p.get('min_child_samples')},\n"
+                        f"    random_state=123,\n"
+                        f"    importance_type='gain',\n"
+                        f")",
+                        language="python"
                     )
-
-                    if race_df.empty:
-                        st.warning("対象レースがありませんでした。期間・閾値を変更してください。")
-                    else:
-                        n_races   = len(race_df)
-                        ev_fb_pct = (race_df['EV_モード'] == '標準fallback').mean() * 100
-
-                        # ── KPI ────────────────────────────────────────────
-                        std_invest = n_races * 100
-                        std_ret    = race_df['標準_払戻'].sum()
-                        std_rate   = std_ret / std_invest * 100 if std_invest else 0
-                        ev_invest  = n_races * 100
-                        ev_ret     = race_df['EV_払戻'].sum()
-                        ev_rate    = ev_ret / ev_invest * 100 if ev_invest else 0
-
-                        k1, k2, k3, k4, k5 = st.columns(5)
-                        k1.metric("対象レース数", f"{n_races:,}R")
-                        k2.metric("標準◎ 単勝回収率", f"{std_rate:.1f}%",
-                                  f"{std_rate - 100:+.1f}%", delta_color="normal")
-                        k3.metric("EV優先◎ 単勝回収率", f"{ev_rate:.1f}%",
-                                  f"{ev_rate - 100:+.1f}%", delta_color="normal")
-                        k4.metric("EV優先◎の差分", f"{ev_rate - std_rate:+.1f}pt")
-                        k5.metric("標準fallback率", f"{ev_fb_pct:.0f}%",
-                                  help="EV候補なしで標準◎と同じ馬を選んだ割合")
-
-                        st.markdown("---")
-
-                        # ── 月次回収率比較グラフ ────────────────────────
-                        monthly = race_df.groupby('年月').agg(
-                            標準_回収率=('標準_払戻', lambda x: x.sum() / (len(x) * 100) * 100),
-                            EV優先_回収率=('EV_払戻', lambda x: x.sum() / (len(x) * 100) * 100),
-                            レース数=('レースID', 'count'),
-                        ).reset_index()
-                        monthly['年月_str'] = monthly['年月'].astype(str)
-
-                        melt = monthly.melt(
-                            id_vars='年月_str',
-                            value_vars=['標準_回収率', 'EV優先_回収率'],
-                            var_name='方式', value_name='回収率'
-                        )
-                        line = alt.Chart(melt).mark_line(point=True).encode(
-                            x=alt.X('年月_str:O', title='年月', axis=alt.Axis(labelAngle=-45)),
-                            y=alt.Y('回収率:Q', title='単勝回収率(%)', scale=alt.Scale(zero=False)),
-                            color=alt.Color('方式:N', scale=alt.Scale(
-                                domain=['標準_回収率', 'EV優先_回収率'],
-                                range=['#4c78a8', '#f58518']
-                            )),
-                            tooltip=['年月_str', '方式', alt.Tooltip('回収率:Q', format='.1f')]
-                        ).properties(title='月次 単勝回収率比較', height=320)
-                        ref = alt.Chart(pd.DataFrame({'y': [100]})).mark_rule(
-                            color='red', strokeDash=[4, 4], opacity=0.5
-                        ).encode(y='y:Q')
-                        st.altair_chart((line + ref), width='stretch')
-
-                        # ── 累計損益グラフ ────────────────────────────────
-                        race_df['標準_損益']     = race_df['標準_払戻'] - 100
-                        race_df['EV優先_損益']   = race_df['EV_払戻']   - 100
-                        race_df['標準_累計']     = race_df['標準_損益'].cumsum()
-                        race_df['EV優先_累計']   = race_df['EV優先_損益'].cumsum()
-                        race_df['レース番号']    = range(1, len(race_df) + 1)
-
-                        cum_melt = race_df[['レース番号', '標準_累計', 'EV優先_累計']].melt(
-                            id_vars='レース番号', var_name='方式', value_name='累計損益(円)'
-                        )
-                        cum_line = alt.Chart(cum_melt).mark_line().encode(
-                            x=alt.X('レース番号:Q', title='レース数'),
-                            y=alt.Y('累計損益(円):Q', title='累計損益（100円ベット）'),
-                            color=alt.Color('方式:N', scale=alt.Scale(
-                                domain=['標準_累計', 'EV優先_累計'],
-                                range=['#4c78a8', '#f58518']
-                            )),
-                        ).properties(title='累計損益推移', height=280)
-                        ref0 = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(
-                            color='gray', strokeDash=[4, 4], opacity=0.4
-                        ).encode(y='y:Q')
-                        st.altair_chart((cum_line + ref0), width='stretch')
-
-                        # ── 年次集計表 ────────────────────────────────────
-                        race_df['年'] = race_df['日付'].dt.year
-                        yearly = race_df.groupby('年').agg(
-                            レース数=('レースID', 'count'),
-                            標準_回収率=('標準_払戻', lambda x: x.sum() / (len(x) * 100) * 100),
-                            EV優先_回収率=('EV_払戻', lambda x: x.sum() / (len(x) * 100) * 100),
-                        ).reset_index()
-                        yearly['差分(EV-標準)'] = yearly['EV優先_回収率'] - yearly['標準_回収率']
-                        yearly = yearly.rename(columns={
-                            '標準_回収率': '標準◎回収率(%)',
-                            'EV優先_回収率': 'EV優先◎回収率(%)',
-                        })
-                        st.markdown("##### 年次集計")
-                        st.dataframe(
-                            yearly.style.format({
-                                '標準◎回収率(%)': '{:.1f}',
-                                'EV優先◎回収率(%)': '{:.1f}',
-                                '差分(EV-標準)': '{:+.1f}',
-                            }).applymap(
-                                lambda v: 'color: #2ca02c' if isinstance(v, float) and v > 0
-                                else ('color: #d62728' if isinstance(v, float) and v < 0 else ''),
-                                subset=['差分(EV-標準)']
-                            ),
-                            width='stretch', hide_index=True,
-                        )
-
-                except Exception as e:
-                    import traceback
-                    st.error(f"EV優先長期バックテストエラー: {e}")
-                    st.code(traceback.format_exc())
-
-    with tab_op:
-        st.markdown("#### Optuna 超パラメータ自動最適化")
-        st.caption("AIの予測精度を最大限に引き出すためのパラメータ探索を行います。実行には時間がかかります。")
-
-        col_op1, col_op2 = st.columns([1, 1])
-        with col_op1:
-            n_trials = st.number_input("探索回数 (Trials)", min_value=10, max_value=500, value=50, step=10)
-        with col_op2:
-            n_folds = st.number_input("CV分割数 (Folds)", min_value=2, max_value=6, value=3, step=1)
-
-        exclude_market = st.checkbox(
-            "🎯 市場勝率を除外してチューニング（推奨）",
-            value=True,
-            help="単勝オッズ由来の特徴量を除外し、AIの真の予測力でチューニングします。\n"
-                 "check_market_rate_auc.py の検証結果: 真のモデル力 AUC ≈ 0.76"
-        )
-        exclude_list = ['市場勝率'] if exclude_market else []
-
-        if exclude_market:
-            st.info("ℹ️ 市場勝率を除外: 目標AUC 0.74〜0.78（真の予測力基準）")
-        else:
-            st.warning("⚠️ 市場勝率を含む: オッズ依存のため AUC が過大評価されます（参考値）")
-
-        if st.button("🔧 チューニング開始", type="primary"):
-            with st.spinner(f"Optunaによる探索中 ({n_trials} trials × {n_folds} folds)..."):
-                try:
-                    df_op = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
-                    df_op['日付'] = pd.to_datetime(df_op['日付'], format='mixed', errors='coerce')
-                    df_op = df_op.dropna(subset=['日付', '着順', '単勝'])
-                    for col in ['着順', '単勝', '人気']: df_op[col] = pd.to_numeric(df_op[col], errors='coerce')
-
-                    from src.optuna_tuner import run_optuna_tuning
-                    from src.features_engine import TE_COLS, create_features
-                    df_op, _ = create_features(df_op, te_dicts)
-                    best_p, msg, cv_df = run_optuna_tuning(
-                        df_op, features, cat_features, list(TE_COLS),
-                        n_trials=int(n_trials), n_folds=int(n_folds),
-                        exclude_features=exclude_list if exclude_list else None,
-                    )
-
-                    st.success(msg)
-                    if best_p:
-                        st.subheader("✅ 最適パラメータ")
-                        st.json(best_p)
-                        st.code(
-                            f"# src/core_model.py の model_win に貼り付けてください\n"
-                            f"model_win = lgb.LGBMRanker(\n"
-                            f"    n_estimators={best_p.get('n_estimators')},\n"
-                            f"    learning_rate={best_p.get('learning_rate'):.6f},\n"
-                            f"    num_leaves={best_p.get('num_leaves')},\n"
-                            f"    max_bin={best_p.get('max_bin')},\n"
-                            f"    cat_smooth={best_p.get('cat_smooth'):.4f},\n"
-                            f"    colsample_bytree={best_p.get('colsample_bytree'):.4f},\n"
-                            f"    subsample={best_p.get('subsample'):.4f},\n"
-                            f"    min_child_samples={best_p.get('min_child_samples')},\n"
-                            f"    random_state=123,\n"
-                            f"    importance_type='gain',\n"
-                            f")",
-                            language="python"
-                        )
-                    if cv_df is not None and not cv_df.empty:
-                        st.subheader("試行結果 (上位10件)")
-                        st.dataframe(cv_df.head(10), width='stretch')
-                    st.info(
-                        "✅ **適用方法**: 上のコードを `src/core_model.py` の "
-                        "`model_win = lgb.LGBMRanker(...)` と置き換えて再学習してください。\n\n"
-                        "目標: AUC 0.74〜0.78（市場勝率なし）が信頼できる最適化結果の範囲です。"
-                    )
-                except Exception as e:
-                    import traceback
-                    st.error(f"Optunaチューニングエラー: {e}")
-                    st.code(traceback.format_exc())
+                if cv_df is not None and not cv_df.empty:
+                    st.subheader("試行結果 (上位10件)")
+                    st.dataframe(cv_df.head(10), width='stretch')
+                st.info(
+                    "✅ **適用方法**: 上のコードを `src/core_model.py` の "
+                    "`model_win = lgb.LGBMRanker(...)` と置き換えて再学習してください。\n\n"
+                    "目標: AUC 0.74〜0.78（市場勝率なし）が信頼できる最適化結果の範囲です。"
+                )
+            except Exception as e:
+                import traceback
+                st.error(f"Optunaチューニングエラー: {e}")
+                st.code(traceback.format_exc())
 
 elif action == "🏇 騎手・調教師フォーム分析":
 
