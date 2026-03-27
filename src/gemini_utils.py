@@ -153,3 +153,103 @@ AIの数字を参考にしつつも、そのまま読み上げるのではなく
     except Exception as e:
         logger.warning(f"2アナリスト生成失敗: {e}")
         return None
+
+
+def generate_review_analysis(race_items: list, stats: dict, rates: dict,
+                              target_date_str: str,
+                              model_name: str = "gemini-2.5-flash") -> str | None:
+    """
+    振り返りデータをGeminiに渡して敗因・傾向分析コメントを生成する。
+
+    戻り値: 分析テキスト（str）、失敗時は None
+    """
+    if not _GEMINI_API_KEY:
+        return None
+
+    try:
+        # 各レースの結果サマリーを構築
+        miss_lines = []
+        hit_lines = []
+        for item in race_items:
+            res_df = item.get('res_df')
+            payouts = item.get('payouts', {})
+            r = item.get('r', {})
+            if res_df is None or not payouts.get('tansho'):
+                continue
+
+            honmei_row = res_df.iloc[0]
+            honmei_num = honmei_row['馬番']
+            honmei_name = honmei_row['馬名']
+            honmei_wp = float(honmei_row.get('勝率(AI予測)', 0)) * 100
+            honmei_odds = float(honmei_row.get('単勝オッズ', 0))
+
+            tan_pay = payouts['tansho'].get(honmei_num, 0)
+            place_label = f"{r.get('place', '')} {r.get('num', '')}R「{r.get('title', '')}」"
+
+            if tan_pay > 0:
+                hit_lines.append(
+                    f"  ✅ {place_label}  ◎{honmei_num}番{honmei_name}"
+                    f"(AI{honmei_wp:.0f}%/{honmei_odds:.1f}倍) → 的中 ¥{tan_pay//100:.1f}倍"
+                )
+            else:
+                # 実際の勝ち馬を特定
+                winner_num = next(iter(payouts['tansho']), None)
+                winner_pay = next(iter(payouts['tansho'].values()), 0)
+                if winner_num is not None:
+                    w_rows = res_df[res_df['馬番'] == winner_num]
+                    if not w_rows.empty:
+                        w_row = w_rows.iloc[0]
+                        w_name = w_row['馬名']
+                        w_wp = float(w_row.get('勝率(AI予測)', 0)) * 100
+                        w_rank = res_df.index.get_loc(w_rows.index[0]) + 1
+                        miss_lines.append(
+                            f"  ❌ {place_label}  ◎{honmei_num}番{honmei_name}"
+                            f"(AI{honmei_wp:.0f}%/{honmei_odds:.1f}倍)"
+                            f" → 実際の1着: {winner_num}番{w_name}"
+                            f"(AI{w_wp:.0f}%/AI順位{w_rank}位/{winner_pay//100:.1f}倍)"
+                        )
+                    else:
+                        miss_lines.append(
+                            f"  ❌ {place_label}  ◎{honmei_num}番{honmei_name}"
+                            f"(AI{honmei_wp:.0f}%/{honmei_odds:.1f}倍)"
+                            f" → 実際の1着: {winner_num}番(AI予測外/{winner_pay//100:.1f}倍)"
+                        )
+
+        total = stats.get('honmei_races', 0)
+        hits = stats.get('honmei_tan_hits', 0)
+        tan_rate = rates.get('tan_rate', 0)
+        fuku_rate = rates.get('fuku_rate', 0)
+
+        miss_text = "\n".join(miss_lines) if miss_lines else "  (外れレースなし)"
+        hit_text = "\n".join(hit_lines) if hit_lines else "  (的中レースなし)"
+
+        prompt = f"""あなたは競馬AI予測システムの分析担当です。
+以下は {target_date_str} の振り返りデータです。LightGBMランキングモデルの予測結果と実際の結果を比較し、敗因と傾向を分析してください。
+
+【本日の成績サマリー】
+- 対象レース数: {total}R
+- 単勝的中: {hits}R / 単勝回収率: {tan_rate:.1f}% / 複勝回収率: {fuku_rate:.1f}%
+
+【的中レース】
+{hit_text}
+
+【外れレース（◎ vs 実際の1着）】
+{miss_text}
+
+━━━━━━━━━━━━━━━━━━━━━━
+以下の観点で分析してください（合計300〜400字、日本語）:
+1. **敗因パターン**: 外れレースに共通する傾向（例: 人気薄に逃げ切られた、ハイオッズ馬に足元をすくわれた等）
+2. **モデルの癖**: AIが過大/過小評価しやすい状況（例: 人気馬に引っ張られやすい、穴馬のEV見落とし等）
+3. **今後の活かし方**: 明日以降の予想で注意すべき点を1〜2つ具体的に
+
+分析者らしい口調で、数字を参照しながら具体的に述べてください。"""
+
+        model, used_model = _make_model(model_name)
+        response = model.generate_content(prompt)
+        text = (response.text or "").strip()
+        logger.info(f"振り返り分析生成完了 ({used_model})")
+        return text
+
+    except Exception as e:
+        logger.warning(f"振り返り分析生成失敗: {e}")
+        return None

@@ -39,7 +39,7 @@ from src.scraper import get_todays_races, get_weekend_dates, get_payouts, get_al
 from src.reports import generate_pdf_report, generate_txt_report
 from src.discord_utils import _push_discord_queue, send_discord_prediction, send_discord_review, _test_discord_webhook, _DISCORD_WEBHOOK_URL, _DISCORD_REVIEW_WEBHOOK_URL
 from src.inference import run_real_prediction
-from src.gemini_utils import generate_two_analysts, check_gemini_available
+from src.gemini_utils import generate_two_analysts, check_gemini_available, generate_review_analysis
 
 @st.cache_data(ttl=3600*12, show_spinner=False)
 def get_morning_prediction(race_id, race_date_str, _bundle):
@@ -1369,6 +1369,29 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 width='stretch', hide_index=True
             )
             st.caption(f"対象: {_stats_ev['races']}レース。EV優先◎が標準◎と同じ馬の場合は同結果になります。")
+
+        # Gemini 敗因分析エリア
+        if _gemini_ok and gemini_mode:
+            st.markdown("---")
+            _analysis_key = f"review_analysis_{target_date}"
+            if st.button("🔍 AIに敗因・傾向を分析させる", key=f"review_analysis_btn_{target_date}"):
+                with st.spinner("Geminiが敗因を分析中..."):
+                    _analysis = generate_review_analysis(
+                        _race_items, _stats, _rates,
+                        target_date.strftime('%Y/%m/%d'),
+                        model_name=gemini_model_name,
+                    )
+                if _analysis:
+                    st.session_state[_analysis_key] = _analysis
+                else:
+                    st.error("分析生成に失敗しました。GEMINI_API_KEY を確認してください。")
+            _saved_analysis = st.session_state.get(_analysis_key)
+            if _saved_analysis:
+                st.markdown("#### 🤖 AI敗因・傾向分析")
+                st.info(_saved_analysis)
+                if st.button("🔄 再分析", key=f"review_analysis_regen_{target_date}"):
+                    del st.session_state[_analysis_key]
+                    st.rerun()
 
         # Discord 振り返り投稿エリア
         if _DISCORD_REVIEW_WEBHOOK_URL:
