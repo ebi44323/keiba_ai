@@ -477,7 +477,9 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         else:
             win_probs = softmax_probs
         df_test['勝率(AI予測)']   = win_probs
-        df_test['複勝率(AI予測)'] = np.clip(win_probs*2.8, 0, 0.99)
+        # 複勝率: Bradley-Terry式 3p/(2p+1) → 高勝率馬でも現実的な値になる
+        # 例: 勝率40%→複勝率67%, 10%→25%, 均等フィールド(1/18)→3/18
+        df_test['複勝率(AI予測)'] = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
         df_test['期待値'] = df_test['勝率(AI予測)']*df_test['単勝オッズ']
         df_test['期待値'] = df_test['期待値'].clip(upper=50.0)  # 取消馬などの異常EV防止
         df_test = df_test.sort_values('勝率(AI予測)', ascending=False).reset_index(drop=True)
