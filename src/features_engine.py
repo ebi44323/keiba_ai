@@ -28,6 +28,9 @@ NUM_FEATURES = [
     'レース格上挑戦フラグ',         # 前走より上のクラスに出走（0/1）
     'コース初挑戦フラグ',           # 競馬場×芝ダートの初出走（0/1）
     '近5走_スピード指数安定性',     # 近5走スピード指数の標準偏差（低いほど安定）
+    # ── 未出走馬評価用特徴量 ──
+    '新馬フラグ',                   # 初出走（キャリア数=0）: 0/1
+    '血統距離適性スコア',           # 父×距離カテゴリ×芝ダート別の歴史的着順パーセント（高いほど適性あり）
 ]
 
 CAT_FEATURES = [
@@ -142,11 +145,38 @@ def create_features(df, te_dicts=None):
     df['市場勝率'] = pd.to_numeric(df['単勝'], errors='coerce').replace(0, np.nan)
     df['市場勝率'] = (1.0 / df['市場勝率']).clip(0, 1)
 
+    # ── 血統距離適性スコア（日付順ソート中に計算してリーク防止）────────────
+    # df はこの時点で日付順にソート済み（L100の sort_values('日付') から変わっていない）
+    # 父×距離カテゴリ×芝ダート別の着順パーセント展開平均: 高いほど適性あり
+    if '父' in df.columns and '着順パーセント' in df.columns:
+        def _dist_bucket_fn(d):
+            try:
+                d = float(d)
+                if d < 1400: return 'sprint'
+                elif d < 1800: return 'mile'
+                elif d < 2200: return 'intermediate'
+                else: return 'long'
+            except: return 'unknown'
+        df['_dBucket'] = df['距離'].apply(_dist_bucket_fn)
+        _ped_detail = df.groupby(['父', '_dBucket', '芝/ダート'])['着順パーセント'].transform(
+            lambda x: x.shift(1).expanding(min_periods=3).mean()
+        )
+        _ped_sire = df.groupby('父')['着順パーセント'].transform(
+            lambda x: x.shift(1).expanding(min_periods=5).mean()
+        )
+        df['血統距離適性スコア'] = (1.0 - _ped_detail.fillna(_ped_sire).fillna(0.5))
+        df = df.drop(columns=['_dBucket'])
+    else:
+        df['血統距離適性スコア'] = 0.5
+
     df = df.sort_values(['馬ID','日付']).reset_index(drop=True)
 
     # ── 新特徴量1: キャリア数（累計出走回数）─────────────────────
     # 新馬・キャリア浅い馬の識別に使う（スピード指数等がNaNの馬を正しく評価）
     df['キャリア数'] = df.groupby('馬ID').cumcount()  # 0始まり（初出走=0）
+
+    # ── 新馬フラグ（キャリア数=0の初出走馬）──────────────────────
+    df['新馬フラグ'] = (df['キャリア数'] == 0).astype(float)
 
     # ── 新特徴量2: 上り順位（レース内での末脚の相対順位）──────────
     # 上り絶対値から順位を計算（1=最も末脚が速い）

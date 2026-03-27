@@ -393,12 +393,38 @@ def prepare_model_and_data(force_retrain=False):
         logger.warning(f'pedigree_master_all.csv 読み込み失敗: {_e}')
         ped_dict = {}
 
+    # ── 血統距離適性辞書（推論時の未出走馬評価用）───────────────────────────
+    # key: (父, 距離バケット, 芝/ダート) or (父,) フォールバック
+    # value: 1.0 - mean(着順パーセント) → 高いほど適性あり
+    ped_aptitude_dict = {}
+    try:
+        if '父' in df.columns and '着順パーセント' in df.columns and '距離' in df.columns:
+            def _dist_bucket_fn(d):
+                try:
+                    d = float(d)
+                    if d < 1400: return 'sprint'
+                    elif d < 1800: return 'mile'
+                    elif d < 2200: return 'intermediate'
+                    else: return 'long'
+                except: return 'unknown'
+            _df_pa = df[df['父'].notna() & ~df['父'].isin(['不明', '', 'nan'])].copy()
+            _df_pa['_dBucket'] = _df_pa['距離'].apply(_dist_bucket_fn)
+            for (sire, db, td), grp in _df_pa.groupby(['父', '_dBucket', '芝/ダート'], observed=True):
+                if len(grp) >= 3:
+                    ped_aptitude_dict[(sire, db, td)] = round(1.0 - grp['着順パーセント'].mean(), 4)
+            for sire, grp in _df_pa.groupby('父', observed=True):
+                if len(grp) >= 5:
+                    ped_aptitude_dict[(sire,)] = round(1.0 - grp['着順パーセント'].mean(), 4)
+        logger.info(f'血統距離適性辞書: {len(ped_aptitude_dict)} entries')
+    except Exception as _e:
+        logger.warning(f'血統距離適性辞書 構築失敗: {_e}')
+
     best_weight = 0.35  # 後方互換性および参照用
     bundle = (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
-              auc_win, auc_place, calibrator, model_d)
-              # _extra[0]=calibrator, _extra[1]=model_d（後方互換: *extraで受ける）
+              auc_win, auc_place, calibrator, model_d, ped_aptitude_dict)
+              # _extra[0]=calibrator, _extra[1]=model_d, _extra[2]=ped_aptitude_dict（後方互換: *extraで受ける）
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)

@@ -32,8 +32,9 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
      latest_horse_data, horse_course_dict, ped_dict,
      known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
      auc_win, auc_place, *_extra) = bundle
-    calibrator = _extra[0] if _extra else None
-    model_d    = _extra[1] if len(_extra) > 1 else None
+    calibrator        = _extra[0] if _extra else None
+    model_d           = _extra[1] if len(_extra) > 1 else None
+    ped_aptitude_dict = _extra[2] if len(_extra) > 2 else {}
     
     error_log = []
     odds_dict = {}      # 馬番(int) → オッズ(float)
@@ -365,6 +366,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
 
         # 追加特徴量の推論時設定
         df_test['キャリア数']        = pd.to_numeric(_safe_col(df_test, 'キャリア数',        np.nan), errors='coerce')
+        # ── 新馬フラグ（初出走: キャリア数が0またはNaN）────────────────────
+        df_test['新馬フラグ'] = (df_test['キャリア数'].isna() | (df_test['キャリア数'] == 0)).astype(float)
         df_test['上り順位率']        = pd.to_numeric(_safe_col(df_test, '上り順位率',        np.nan), errors='coerce')
         df_test['前走_上り順位率']   = pd.to_numeric(_safe_col(df_test, '前走_上り順位率',   np.nan), errors='coerce')
         df_test['前走_前半ペース値'] = pd.to_numeric(_safe_col(df_test, '前走_前半ペース値', np.nan), errors='coerce')
@@ -393,6 +396,29 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
 
         # ── 新特徴量: 市場勝率（オッズの逆数） ─────────────────────
         df_test['市場勝率'] = (1.0 / df_test['単勝オッズ'].replace(0, np.nan)).clip(0, 1)
+
+        # ── 血統距離適性スコア（ped_aptitude_dict lookup）────────────────
+        def _dist_bucket_fn(d):
+            try:
+                d = float(d)
+                if d < 1400: return 'sprint'
+                elif d < 1800: return 'mile'
+                elif d < 2200: return 'intermediate'
+                else: return 'long'
+            except: return 'unknown'
+        _dist_bkt = _dist_bucket_fn(distance)
+
+        def _ped_aptitude(row):
+            sire = str(row.get('父', '不明') or '不明')
+            if sire in ('不明', 'nan', ''):
+                return 0.5
+            track = str(row.get('芝/ダート', '芝') or '芝')
+            v = ped_aptitude_dict.get((sire, _dist_bkt, track))
+            if v is None:
+                v = ped_aptitude_dict.get((sire,))
+            return v if v is not None else 0.5
+
+        df_test['血統距離適性スコア'] = df_test.apply(_ped_aptitude, axis=1).astype(float)
 
         # ★修正BUG2: TE は TE_COLS と完全一致させる
         for col in TE_COLS:
@@ -495,10 +521,13 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         top1_umaban = df_test.loc[0,'馬番']
         himo_umabans = df_test.loc[1:4,'馬番'].astype(str).tolist() if len(df_test)>=5 else df_test.loc[1:,'馬番'].astype(str).tolist()
         himo_str = "・".join(himo_umabans)
-        # 未出走馬混在の判定: レーステキストのみで判断する。
+        # 未出走馬混在の判定: レーステキスト + 新馬フラグで判断
         # 注意: df_test['前走_着順'].isna() はリーク防止コードで NaN 上書きされるため使用不可
         #       → skip_live_scrape=True（振り返り）時にほぼ全レースが誤判定される
-        has_unraced = ('新馬' in race_text) or ('未出走' in race_text)
+        has_unraced = (
+            ('新馬' in race_text) or ('未出走' in race_text) or
+            (df_test['新馬フラグ'].sum() > 0)
+        )
         ana_horse_nums = []; topics_list = []
         for rank, row in df_test.iterrows():
             if not has_unraced and rank>=4 and row['期待値']>=1.5:
