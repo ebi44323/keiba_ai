@@ -422,6 +422,8 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
         st.caption("赤バー = EV1.5以上の注目馬 / 青バー = 通常")
 
     with tab2:
+        if "見送り" in confidence_text or "未出走" in confidence_text:
+            st.error("🛑 **【注意】未出走馬が混在しています。** 過去実績のない馬が含まれており、展開予想・穴馬評価の信頼性が低下しています。購入は見送りを推奨します。")
         st.info(f"**🏇 展開予想:**\n{pace_text}")
         ev_horses = df_res[(df_res.index < 5) & (df_res['期待値'] >= sim_ev_filter)]
         if not ev_horses.empty:
