@@ -224,15 +224,20 @@ if _is_pro and _hub_available:
     if auc_win > 0:
         st.sidebar.caption(f"⚠️ AUC(参考): 1着={auc_win:.4f} / 複勝={auc_place:.4f}")
         st.sidebar.caption("　└ 特徴量リークにより過大評価の可能性あり")
-    if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
-        st.cache_resource.clear()
-        with st.spinner("再学習中... (数分かかります)"):
-            (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
-             latest_horse_data, horse_course_dict, ped_dict,
-             known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
-             auc_win, auc_place, *_extra) = prepare_model_and_data(force_retrain=True)
-        st.sidebar.success("✅ 再学習完了・Hubにアップロードしました")
-        st.rerun()
+    _local_data_exists = (os.path.exists('learning_data_perfect_tier.zip') or
+                          os.path.exists('learning_data_perfect_tier.csv'))
+    if _local_data_exists:
+        if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
+            st.cache_resource.clear()
+            with st.spinner("再学習中... (数分かかります)"):
+                (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
+                 latest_horse_data, horse_course_dict, ped_dict,
+                 known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, ensemble_weight,
+                 auc_win, auc_place, *_extra) = prepare_model_and_data(force_retrain=True)
+            st.sidebar.success("✅ 再学習完了・Hubにアップロードしました")
+            st.rerun()
+    else:
+        st.sidebar.caption("🔄 強制再学習: ローカル実行環境でのみ利用可能")
 
 tokyo_tz = pytz.timezone('Asia/Tokyo')
 now = datetime.datetime.now(tokyo_tz)

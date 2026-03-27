@@ -434,7 +434,13 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         if calibrator is not None:
             try:
                 calibrated = np.clip(calibrator.predict(softmax_probs), 1e-6, 1.0)
-                win_probs  = calibrated / calibrated.sum()
+                # IsotonicRegressionはステップ関数のため、1レース内の確率が同一ステップに
+                # 落ちると全馬同値になる。その場合はraw softmaxにフォールバック。
+                if calibrated.max() - calibrated.min() < 1e-6:
+                    logger.warning("Isotonic calibration後に全馬同値 → softmaxにフォールバック")
+                    win_probs = softmax_probs
+                else:
+                    win_probs = calibrated / calibrated.sum()
             except Exception:
                 win_probs = softmax_probs
         else:

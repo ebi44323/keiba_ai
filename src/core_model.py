@@ -170,6 +170,11 @@ def prepare_model_and_data(force_retrain=False):
     zip_exists = os.path.exists('learning_data_perfect_tier.zip')
     csv_exists = os.path.exists('learning_data_perfect_tier.csv')
     if not zip_exists and not csv_exists:
+        # force_retrain=True でもローカルデータがない場合はHubから再ロード（HF Space向け）
+        logger.warning("force_retrain=True だが学習データが存在しないためHF Hubからロード試行")
+        cached = _try_load_model_from_hub()
+        if cached is not None:
+            return cached
         raise FileNotFoundError(
             "学習データが見つかりません。HF_TOKEN / HF_REPO_ID を確認してください。"
         )
