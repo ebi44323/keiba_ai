@@ -4,6 +4,13 @@
 競馬AI予測システム。Streamlit + LightGBM 3モデルアンサンブル。
 HuggingFace Spaces にデプロイ。GitHub push → sync.yml → HF自動反映。
 
+## バージョン管理ルール
+- `app.py` 33行目: `st.caption("vYYYY-MM-DDx")` を**毎回の変更時に必ず更新**すること
+- 形式: `v年-月-日+アルファベット`（同日複数回は a→b→c と増やす）
+- 例: `v2026-03-28a`、`v2026-03-28b`
+- **用途**: HF Space Filesタブでコード到達確認・アプリ画面で起動確認に使う
+- 現在: `v2026-03-28a`
+
 ---
 
 ## ファイル構成
