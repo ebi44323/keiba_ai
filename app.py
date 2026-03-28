@@ -43,8 +43,8 @@ from src.gemini_utils import generate_two_analysts, check_gemini_available, gene
 
 @st.cache_data(ttl=3600*12, show_spinner=False)
 def get_morning_prediction(race_id, race_date_str, _bundle):
-    # 朝版（直前スクレイピングなし）
-    return run_real_prediction(race_id, race_date_str, _bundle, skip_live_scrape=True)
+    # 朝版（直前版と同じくfetch_horse_last_race()を呼んで前走情報を最新化）
+    return run_real_prediction(race_id, race_date_str, _bundle, skip_live_scrape=False)
 
 
 
@@ -1087,7 +1087,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 race_items = []
 
                 for i, r in enumerate(races):
-                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'), bundle, skip_live_scrape=True)
+                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False)
                     payouts = get_all_payouts(r['id'])
 
                     honmei_name = res_df.iloc[0]['馬名'] if res_df is not None else "不明"
