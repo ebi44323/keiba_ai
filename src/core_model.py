@@ -179,11 +179,11 @@ def prepare_model_and_data(force_retrain=False):
     # SPACE_ID は HuggingFace Spaces が自動設定する環境変数
     on_hf_space = bool(os.environ.get("SPACE_ID"))
     if on_hf_space:
-        raise RuntimeError(
-            "HF Hub からのモデルロードに失敗しました（タイムアウトまたは接続エラー）。\n"
-            "HF Space 上での再学習は OOM クラッシュになるため実行しません。\n"
-            "しばらく待ってからページを再読み込みしてください。"
+        logger.error(
+            "HF Hub からのモデルロードに失敗しました（タイムアウトまたは接続エラー）。"
+            "HF Space 上での再学習は OOM クラッシュになるため実行しません。"
         )
+        return None
 
     zip_exists = os.path.exists('learning_data_perfect_tier.zip')
     csv_exists = os.path.exists('learning_data_perfect_tier.csv')
