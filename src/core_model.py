@@ -85,13 +85,17 @@ def _try_load_model_from_hub():
                 logger.warning("HF Hubダウンロードが90秒でタイムアウト → 学習フォールバック")
                 return None
 
-        # データ更新チェック
+        # データ更新チェック（警告のみ・再学習はしない）
+        # ⚠️ HF Space上でreturn Noneすると197k行の再学習が走ってOOM→再起動ループになる
+        # 再学習は retrain.yml (手動) または train_and_push.py で実施すること
         hub_data_mtime = meta.get('data_mtime', '')
         local_mtime    = _get_zip_mtime()
         logger.info(f"HF Hub data_mtime={hub_data_mtime!r}, local={local_mtime!r}")
         if local_mtime != 'unknown' and local_mtime != hub_data_mtime:
-            logger.info("データ更新検出: 再学習へ")
-            return None
+            logger.warning(
+                f"⚠️ 学習データが更新されています (local={local_mtime!r} / hub={hub_data_mtime!r})。"
+                " HF Hubのモデルで継続起動します。最新データで再学習する場合は retrain.yml を手動実行してください。"
+            )
 
         logger.info("HF Hub: モデルロード完了")
         return bundle
