@@ -205,13 +205,13 @@ if _gemini_ok:
     )
     gemini_model_name = st.sidebar.selectbox(
         "モデル選択",
-        ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash"],
+        ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro", "gemini-1.5-flash"],
         index=0,
-        help="2.0-flash が速くて安定。2.5-pro は高品質だが少し遅い。"
-    ) if gemini_mode else "gemini-2.0-flash"
+        help="2.5-flash が推奨（安定・高品質）。2.5-pro は高品質だが少し遅い。"
+    ) if gemini_mode else "gemini-2.5-flash"
 else:
     gemini_mode = False
-    gemini_model_name = "gemini-2.0-flash"
+    gemini_model_name = "gemini-2.5-flash"
     st.sidebar.caption("🤖 AI思考モード: HF Secrets に `GEMINI_API_KEY` を設定してください")
 
 # ── モデル管理 (Pro + HF Hubが設定済みの場合のみ表示) ─────

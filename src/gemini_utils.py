@@ -7,10 +7,10 @@ logger = logging.getLogger('keiba_ebye')
 
 _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# 試すモデルの優先順（新しいほど上）
+# 試すモデルの優先順（2.5-flash を先頭に）
 _CANDIDATE_MODELS = [
-    "gemini-2.0-flash",
     "gemini-2.5-flash",
+    "gemini-2.0-flash",
     "gemini-2.5-pro",
     "gemini-1.5-flash",
     "gemini-1.5-flash-latest",
@@ -64,7 +64,7 @@ def _build_horses_text(df_res, n: int = 7) -> str:
 
 def generate_two_analysts(df_res, pace_text: str, confidence_text: str,
                            topics: list, reco: str,
-                           model_name: str = "gemini-2.0-flash") -> dict | None:
+                           model_name: str = "gemini-2.5-flash") -> dict | None:
     """
     本命党「伊藤ホンメ」と穴党「風穴あけるズ」の2アナリストによる
     レース展望コメント＋具体的買い目を生成する。
