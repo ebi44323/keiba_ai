@@ -74,16 +74,21 @@ def _try_load_model_from_hub():
 
     logger.info("HF Hub: モデルダウンロード開始（タイムアウト90秒）...")
     try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                _download_model_worker,
-                _HF_TOKEN, _HF_REPO_ID, _META_FILE, _MODEL_FILE
-            )
-            try:
-                bundle, meta = future.result(timeout=90)
-            except FutureTimeout:
-                logger.warning("HF Hubダウンロードが90秒でタイムアウト → 学習フォールバック")
-                return None
+        # ⚠️ with ThreadPoolExecutor を使うと、タイムアウト後も __exit__ で
+        #    shutdown(wait=True) が走りスタックしたスレッドを無限待機してしまう。
+        #    → executor を手動管理して shutdown(wait=False) で即時解放する。
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(
+            _download_model_worker,
+            _HF_TOKEN, _HF_REPO_ID, _META_FILE, _MODEL_FILE
+        )
+        try:
+            bundle, meta = future.result(timeout=90)
+        except FutureTimeout:
+            logger.warning("HF Hubダウンロードが90秒でタイムアウト → スレッドを解放してフォールバック")
+            executor.shutdown(wait=False)
+            return None
+        executor.shutdown(wait=False)
 
         # データ更新チェック（警告のみ・再学習はしない）
         # ⚠️ HF Space上でreturn Noneすると197k行の再学習が走ってOOM→再起動ループになる
@@ -170,12 +175,20 @@ def prepare_model_and_data(force_retrain=False):
             return cached  # キャッシュ済みモデルを即返す
 
     # ── 以下: 学習処理 ────────────────────────────────────────
-    # HF Space 上には学習データが存在しないため、Hubロード失敗時は即エラーにする
+    # HF Space 上では Hub ロード失敗時に再学習しない（OOMクラッシュ→再起動ループを防ぐ）
+    # SPACE_ID は HuggingFace Spaces が自動設定する環境変数
+    on_hf_space = bool(os.environ.get("SPACE_ID"))
+    if on_hf_space:
+        raise RuntimeError(
+            "HF Hub からのモデルロードに失敗しました（タイムアウトまたは接続エラー）。\n"
+            "HF Space 上での再学習は OOM クラッシュになるため実行しません。\n"
+            "しばらく待ってからページを再読み込みしてください。"
+        )
+
     zip_exists = os.path.exists('learning_data_perfect_tier.zip')
     csv_exists = os.path.exists('learning_data_perfect_tier.csv')
     if not zip_exists and not csv_exists:
-        # force_retrain=True でもローカルデータがない場合はHubから再ロード（HF Space向け）
-        logger.warning("force_retrain=True だが学習データが存在しないためHF Hubからロード試行")
+        logger.warning("学習データが存在しないためHF Hubからロード試行")
         cached = _try_load_model_from_hub()
         if cached is not None:
             return cached
