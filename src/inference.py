@@ -366,8 +366,12 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
 
         # 追加特徴量の推論時設定
         df_test['キャリア数']        = pd.to_numeric(_safe_col(df_test, 'キャリア数',        np.nan), errors='coerce')
-        # ── 新馬フラグ（初出走: キャリア数が0またはNaN）────────────────────
-        df_test['新馬フラグ'] = (df_test['キャリア数'].isna() | (df_test['キャリア数'] == 0)).astype(float)
+        # ── 新馬フラグ（初出走: キャリア数が0またはNaN かつ 前走着順も不明）──────
+        # 注意: CSVに載っていない馬はキャリア数がNaNになるが、
+        #       fetch_horse_last_race()で最新_着順が取れていれば走経験あり → フラグ立てない
+        _no_career  = df_test['キャリア数'].isna() | (df_test['キャリア数'] == 0)
+        _no_last_race = pd.to_numeric(_safe_col(df_test, '最新_着順', np.nan), errors='coerce').isna()
+        df_test['新馬フラグ'] = (_no_career & _no_last_race).astype(float)
         df_test['上り順位率']        = pd.to_numeric(_safe_col(df_test, '上り順位率',        np.nan), errors='coerce')
         df_test['前走_上り順位率']   = pd.to_numeric(_safe_col(df_test, '前走_上り順位率',   np.nan), errors='coerce')
         df_test['前走_前半ペース値'] = pd.to_numeric(_safe_col(df_test, '前走_前半ペース値', np.nan), errors='coerce')
