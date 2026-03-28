@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python -m py_compile src/discord_utils.py)",
       "Bash(python -m py_compile app.py)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(xargs grep:*)"
     ]
   }
 }

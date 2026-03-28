@@ -138,19 +138,12 @@ if not _DISCORD_WEBHOOK_URL:
     st.sidebar.caption("💡 HuggingFace Secrets に以下を設定してください")
     st.sidebar.code("DISCORD_WEBHOOK_URL        # 直前予想チャンネル\nDISCORD_REVIEW_WEBHOOK_URL # 振り返りチャンネル")
 else:
+    _discord_enabled = True  # Webhook設定済みなら常に自動投稿
     # チャンネル設定状況表示
-    _pred_ok   = bool(_DISCORD_WEBHOOK_URL)
     _review_ok = bool(_DISCORD_REVIEW_WEBHOOK_URL and
                       _DISCORD_REVIEW_WEBHOOK_URL != _DISCORD_WEBHOOK_URL)
-    st.sidebar.caption(f"📢 直前予想: {'✅ 専用ch' if _pred_ok else '❌ 未設定'}")
+    st.sidebar.caption(f"📢 直前予想: ✅ 自動投稿ON")
     st.sidebar.caption(f"📊 振り返り: {'✅ 専用ch' if _review_ok else '⚠️ 予想chと共用'}")
-
-    # 自動投稿 ON/OFF
-    _discord_enabled = st.sidebar.checkbox(
-        "📤 直前予想 自動投稿",
-        value=True,
-        help="発走15分前にDiscord通知（GitHub Actions経由）、5分前に画面を最新オッズで更新します"
-    )
 
     # 接続テストボタン
     _test_col1, _test_col2 = st.sidebar.columns(2)
@@ -746,13 +739,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                 st.info(f"👉 **{next_race['place']} {next_race['num']}R** 「{next_race['title']}」 (あと **{mins_left}** 分)")
 
                 # ── オッズ自動再取得 ─────────────────────────────────
-                # Discord通知: 発走15分前（GitHub Actionsの遅延を考慮して余裕を持たせる）
-                # 画面更新:    発走5分前（最新オッズで予想を更新）
-                auto_refresh = st.checkbox(
-                    "🔄 発走前に自動でオッズ再取得・Discord通知する",
-                    value=False,
-                    help="15分前にDiscord通知 → 5分前に画面の予想を最新オッズで更新します"
-                )
+                # 発走4〜7分前にDiscord通知、0〜6分前に画面を最新オッズで更新（常時ON）
                 col_btn1, col_btn2 = st.columns([2, 1])
                 with col_btn1:
                     manual_run = st.button("🚀 keiba-ebye 予想起動！", type="primary")
@@ -760,29 +747,27 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                     force_refresh = st.button("🔄 オッズ再取得して更新", help="最新オッズで予想を再実行します")
 
                 # 自動トリガー判定
-                # discord_triggered: 発走4〜7分前に一度だけ → Discordに直接通知（即時）
+                # discord_triggered: 発走4〜7分前に一度だけ → Discordにキュー追加（Cloudflare/GitHub Actionsが配信）
                 # auto_triggered:    発走0〜6分前に一度だけ → 画面の予想を更新
                 discord_triggered = False
                 auto_triggered = False
+                _last_discord_key = f'last_discord_{next_race["id"]}'
+                _last_refresh_key = f'last_auto_{next_race["id"]}'
 
-                if auto_refresh:
-                    _last_discord_key = f'last_discord_{next_race["id"]}'
-                    _last_refresh_key = f'last_auto_{next_race["id"]}'
+                # Discord通知: 発走4〜7分前の間に一度だけ発火
+                if 4 <= mins_left <= 7:
+                    if not st.session_state.get(_last_discord_key, False):
+                        discord_triggered = True
+                        st.session_state[_last_discord_key] = True
+                        st.info(f"📤 発走{mins_left}分前！Discordに送信します...")
 
-                    # Discord通知: 発走4〜7分前の間に一度だけ発火（直接Webhook送信で即時到達）
-                    if 4 <= mins_left <= 7:
-                        if not st.session_state.get(_last_discord_key, False):
-                            discord_triggered = True
-                            st.session_state[_last_discord_key] = True
-                            st.info(f"📤 発走{mins_left}分前！Discordに直接送信します...")
-
-                    # 画面更新: 発走0〜6分前に一度だけ発火（最新オッズ取得）
-                    if 0 <= mins_left <= 6:
-                        last_auto = st.session_state.get(_last_refresh_key, 0)
-                        if time.time() - last_auto > 300:
-                            auto_triggered = True
-                            st.session_state[_last_refresh_key] = time.time()
-                            st.warning(f"⚡ 発走{mins_left}分前！最新オッズで予想を更新します...")
+                # 画面更新: 発走0〜6分前に一度だけ発火（最新オッズ取得）
+                if 0 <= mins_left <= 6:
+                    last_auto = st.session_state.get(_last_refresh_key, 0)
+                    if time.time() - last_auto > 300:
+                        auto_triggered = True
+                        st.session_state[_last_refresh_key] = time.time()
+                        st.warning(f"⚡ 発走{mins_left}分前！最新オッズで予想を更新します...")
 
 
                 live_update = st.button("🔄 直前オッズ・馬体重で最新情報を取得し再予測", width='stretch')
@@ -883,11 +868,11 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                                 st.error("❌ Discord投稿失敗（Webhook URLを確認してください）")
                 else: display_error_log(err_log)
 
-                # 自動更新チェック用ページ再読み込み
-                if auto_refresh and mins_left > 6:
+                # 発走までの状況表示
+                if mins_left > 6:
                     if mins_left > 20:
-                        st.caption(f"発走{mins_left}分前 — 15〜20分前になるとDiscord通知、5分前に予想を更新します")
-                    elif mins_left > 6:
+                        st.caption(f"発走{mins_left}分前 — 4〜7分前になるとDiscordに自動通知、5分前に予想を更新します")
+                    else:
                         st.caption(f"発走{mins_left}分前 — Discord通知済み。5分前に最新オッズで予想を更新します")
             else:
                 st.success("🏁 本日の全レースは終了しました。")
