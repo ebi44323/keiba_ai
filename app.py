@@ -1852,6 +1852,14 @@ elif action == "🔧 Optuna チューニング":
                     mn, mx = s.min(), s.max()
                     return (s - mn) / (mx - mn + 1e-9)
 
+                # TE列をte_dictsから計算して追加
+                from src.features_engine import TE_COLS as _TE_COLS
+                _global_mean_w = bundle[13] if len(bundle) > 13 else 0.0
+                for _col in _TE_COLS:
+                    if _col in df_hold.columns:
+                        _te_d = te_dicts.get(_col, {}) if te_dicts else {}
+                        df_hold[f'{_col}_TE'] = df_hold[_col].map(_te_d).fillna(_global_mean_w)
+
                 feat_w = [f for f in features if f in df_hold.columns]
                 for c in [f for f in cat_features if f in df_hold.columns]:
                     df_hold[c] = df_hold[c].astype('category')
