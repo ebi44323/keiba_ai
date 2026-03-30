@@ -30,7 +30,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-03-28c")
+st.caption("v2026-03-30a")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -173,7 +173,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 🎯 ◎選択モード")
 ev_first_mode = st.sidebar.checkbox(
     "EV優先モード",
-    value=False,
+    value=True,
     help="ONにすると「AI勝率×オッズ(期待値)」が最大の馬を◎に選びます。穴馬が◎になりやすくなります。"
 )
 ev_first_threshold = 1.0
@@ -390,6 +390,32 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                    .format({'期待値':'{:.2f}','オッズ':'{:.1f}','枠番':'{:.0f}','馬番':'{:.0f}'}),
             width='stretch', hide_index=True
         )
+
+        # ── EV推奨候補ピックアップ（期待値上位3頭）───────────────
+        _ev_picks = df_res[df_res['期待値'] >= 1.0].nlargest(3, '期待値')
+        if not _ev_picks.empty:
+            st.markdown("#### 💎 EV推奨候補（期待値 ≥ 1.0）")
+            _ev_cols = st.columns(min(3, len(_ev_picks)))
+            for _i, (_, _row) in enumerate(_ev_picks.iterrows()):
+                with _ev_cols[_i]:
+                    _ana = _row.get('穴馬マーク', '')
+                    _mark = _row.get('印', '')
+                    _ev_val = float(_row.get('期待値', 0))
+                    _odds   = float(_row.get('単勝オッズ', 0))
+                    _prob   = float(_row.get('勝率(AI予測)', 0))
+                    _color  = "🔴" if _ev_val >= 2.0 else "🟡"
+                    st.markdown(
+                        f"<div style='padding:10px;border-radius:8px;border:2px solid "
+                        f"{'#FF4B4B' if _ev_val >= 2.0 else '#FFC107'};text-align:center;'>"
+                        f"<div style='font-size:1.3em;font-weight:bold;'>{_mark} {_row['馬名']} {_ana}</div>"
+                        f"<div style='font-size:1.1em;color:{'#FF4B4B' if _ev_val >= 2.0 else '#E6A817'};'>"
+                        f"EV <b>{_ev_val:.2f}</b></div>"
+                        f"<div style='font-size:0.85em;color:#888;'>"
+                        f"勝率 {_prob*100:.1f}% / {_odds:.1f}倍</div>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+            st.caption("💡 EV=AI勝率×オッズ。1.0超が購入検討ライン。穴馬スコア(🎯)が高い馬はさらに◎優先度が上がります。")
 
         # ── リアルタイム勝率バー（下段: グラフ）────────────────
         st.markdown("---")
