@@ -458,7 +458,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             _sc = 1.0 - model_reg.predict(df_test[features]).astype(float)
             _sc = (_sc - _sc.min()) / (_sc.max() - _sc.min() + 1e-9)
             
-            raw_scores = _sa * 0.35 + _sb * 0.50 + _sc * 0.15
+            raw_scores = _sa * 0.0581 + _sb * 0.8159 + _sc * 0.1261  # アンサンブル重み最適化 @ 2026-03-30
         except Exception as _e:
             logger.warning(f'model_win/reg予測失敗、model_aのみ使用: {_e}')
             raw_scores = _sa  # フォールバック
