@@ -26,3 +26,10 @@
   subsample:         0.8923
   min_child_samples: 77
   ※ スコア = AUC×0.7 + 正規化回収率×0.3 / AUC 0.7以上で有効
+2026-03-30 15:05:11,098 [INFO] _try_load_model_from_hub: HF Hub: モデルダウンロード開始（タイムアウト90秒）...
+2026-03-30 15:05:11,398 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 15:05:11,592 [INFO] _send_single_request: HTTP Request: GET https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 15:05:11,807 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model.pkl "HTTP/1.1 302 Found"
+2026-03-30 15:05:12,181 [INFO] _send_single_request: HTTP Request: GET https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/xet-read-token/9df001619edad45e1d48c7125c89a09d195d0891 "HTTP/1.1 200 OK"
+2026-03-30 15:05:17,350 [INFO] _try_load_model_from_hub: HF Hub data_mtime='size:35515667', local='size:35515667'
+2026-03-30 15:05:17,351 [INFO] _try_load_model_from_hub: HF Hub: モデルロード完了

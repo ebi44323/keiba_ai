@@ -1828,9 +1828,13 @@ elif action == "🔧 Optuna チューニング":
     if st.button("⚖️ 重み最適化開始", type="secondary"):
         with st.spinner(f"重み探索中 ({wopt_trials} trials)..."):
             try:
-                import lightgbm as lgb_inner
                 from src.optuna_tuner import run_weight_optimization
                 from src.features_engine import create_features as _cf
+
+                # bundle から学習済みモデルを取得（再学習不要）
+                ma_w = bundle[0]   # モデルA: LGBMRanker（複勝）
+                mb_w = bundle[1]   # モデルB: LGBMRanker（1着）
+                mc_w = bundle[2]   # モデルC: LGBMRegressor（着順回帰）
 
                 df_w = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
                 df_w['日付'] = pd.to_datetime(df_w['日付'], format='mixed', errors='coerce')
@@ -1842,28 +1846,15 @@ elif action == "🔧 Optuna チューニング":
                 # 最新20%をホールドアウトとしてスコアリング
                 df_w = df_w.sort_values('日付').reset_index(drop=True)
                 holdout_idx = int(len(df_w) * 0.8)
-                df_train_w = df_w.iloc[:holdout_idx]
-                df_hold    = df_w.iloc[holdout_idx:].copy()
+                df_hold = df_w.iloc[holdout_idx:].copy()
 
                 def _norm(s):
                     mn, mx = s.min(), s.max()
                     return (s - mn) / (mx - mn + 1e-9)
 
-                cat_feats_w = [f for f in cat_features if f in df_train_w.columns]
-                for c in cat_feats_w:
-                    df_train_w[c] = df_train_w[c].astype('category')
-                    df_hold[c]    = pd.Categorical(df_hold[c].astype(str),
-                                                   categories=df_train_w[c].cat.categories)
-
-                feat_w = [f for f in features if f in df_train_w.columns and f in df_hold.columns]
-                grp_tr = df_train_w.groupby('レースID', sort=False).size().values
-
-                ma_w = lgb.LGBMRanker(n_estimators=500, random_state=42, verbose=-1)
-                ma_w.fit(df_train_w[feat_w], (df_train_w['着順'] <= 3).astype(int), group=grp_tr, categorical_feature=cat_feats_w)
-                mb_w = lgb.LGBMRanker(n_estimators=bundle[5+1] if len(bundle) > 7 else 500, random_state=42, verbose=-1)
-                mb_w.fit(df_train_w[feat_w], (df_train_w['着順'] == 1).astype(int),  group=grp_tr, categorical_feature=cat_feats_w)
-                mc_w = lgb.LGBMRegressor(n_estimators=300, random_state=42, verbose=-1)
-                mc_w.fit(df_train_w[feat_w], pd.to_numeric(df_train_w['着順'], errors='coerce').fillna(9))
+                feat_w = [f for f in features if f in df_hold.columns]
+                for c in [f for f in cat_features if f in df_hold.columns]:
+                    df_hold[c] = df_hold[c].astype('category')
 
                 df_hold['score_a_norm'] = _norm(ma_w.predict(df_hold[feat_w]))
                 df_hold['score_b_norm'] = _norm(mb_w.predict(df_hold[feat_w]))
