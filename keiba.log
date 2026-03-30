@@ -6,3 +6,23 @@
 2026-03-24 13:54:06,560 [INFO] prepare_model_and_data: モデルAUC: 1着=0.9046 / 複勝=0.9055
 2026-03-24 13:59:12,877 [INFO] prepare_model_and_data: アンサンブル重み: 複勝=0.4 / 1着=0.6 (固定値・リーク修正後に再最適化予定)
 2026-03-24 13:59:12,895 [INFO] prepare_model_and_data: モデルAUC: 1着=0.9046 / 複勝=0.9055
+2026-03-30 11:52:07,852 [INFO] _try_load_model_from_hub: HF Hub: モデルダウンロード開始（タイムアウト90秒）...
+2026-03-30 11:52:09,156 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 11:52:09,341 [INFO] _send_single_request: HTTP Request: GET https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 11:52:09,613 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model.pkl "HTTP/1.1 302 Found"
+2026-03-30 11:52:10,161 [INFO] _send_single_request: HTTP Request: GET https://cdn-lfs-us-1.hf.co/repos/ba/5e/ba5e0f0a76bcb7c9add963b950161dbb96e3c7402c1836be39cf46ca4d663f2f/27bc3b288b607a69136f946bb7ccc83859142f939fafa9ba5f8b1bac7ccc2148?response-content-disposition=inline%3B+filename*%3DUTF-8%27%27keiba_model.pkl%3B+filename%3D%22keiba_model.pkl%22%3B&Expires=1774842732&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc3NDg0MjczMn19LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2RuLWxmcy11cy0xLmhmLmNvL3JlcG9zL2JhLzVlL2JhNWUwZjBhNzZiY2I3YzlhZGQ5NjNiOTUwMTYxZGJiOTZlM2M3NDAyYzE4MzZiZTM5Y2Y0NmNhNGQ2NjNmMmYvMjdiYzNiMjg4YjYwN2E2OTEzNmY5NDZiYjdjY2M4Mzg1OTE0MmY5MzlmYWZhOWJhNWY4YjFiYWM3Y2NjMjE0OD9yZXNwb25zZS1jb250ZW50LWRpc3Bvc2l0aW9uPSoifV19&Signature=D8O8lzVLDaObn8JFiwSVDBJ4wtRXmq0iqA06MXxVZQ7BKSPSyCu%7EV7DROrkiCpT0u0f2X8qUjZdeu4uknV68-gQGdMcvBbZgBm2dKyIWRtjg-iaZt0plBw7HsgDUtVonbrcfsTc2g9071dlA9RmtFtgRcOYfOgLp26lE6BOVj9q0swc2hDC8CTVF-u-GEbY4guR7tThplQJZaFQ9aQaiwtLn7ApohKL6l%7EW2lf%7EscXKKw%7ElBTKff64ZKg%7EZLDJqOxKU0Vi9m%7EioHqLZjr2ObEdcH0pqfmoUsuMaGbgEqyEbcZM%7Ec58MjRi%7ELTml4wHXR8lOoB6hqbafDzMocAyl%7E%7EQ__&Key-Pair-Id=K24J24Z295AEI9 "HTTP/1.1 200 OK"
+2026-03-30 11:52:12,184 [INFO] _try_load_model_from_hub: HF Hub data_mtime='size:35515667', local='size:35515667'
+2026-03-30 11:52:12,184 [INFO] _try_load_model_from_hub: HF Hub: モデルロード完了
+2026-03-30 11:59:05,797 [INFO] run_optuna_tuning: Optuna: 3fold x 50試行 で最適化開始
+2026-03-30 12:02:39,806 [INFO] run_optuna_tuning: チューニング完了 (3fold ウォークフォワードCV)
+  最適CVスコア: 0.6770  (AUC×0.7 + 回収率×0.3, 試行数: 50)
+  除外特徴量: ['市場勝率']
+  n_estimators:      700
+  learning_rate:     0.012275
+  num_leaves:        32
+  max_bin:           162
+  cat_smooth:        31.99
+  colsample_bytree:  0.7124
+  subsample:         0.8923
+  min_child_samples: 77
+  ※ スコア = AUC×0.7 + 正規化回収率×0.3 / AUC 0.7以上で有効

@@ -292,14 +292,14 @@ def prepare_model_and_data(force_retrain=False):
     # ── モデルBパラメータ: Optunaチューニング済み（3fold ウォークフォワードCV）──
     # CV AUC: 0.7615 (市場勝率除外, 50試行) @ 2026-03-26
     model_win = lgb.LGBMRanker(
-        n_estimators=235,
-        learning_rate=0.023034,
-        num_leaves=82,
-        max_bin=171,
-        cat_smooth=48.5347,
-        colsample_bytree=0.5056,
-        subsample=0.6815,
-        min_child_samples=25,
+        n_estimators=700,
+        learning_rate=0.012275,
+        num_leaves=32,
+        max_bin=162,
+        cat_smooth=31.9926,
+        colsample_bytree=0.7124,
+        subsample=0.8923,
+        min_child_samples=77,
         random_state=123,
         importance_type='gain',
     )
