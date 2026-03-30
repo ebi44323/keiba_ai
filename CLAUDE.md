@@ -9,7 +9,7 @@ HuggingFace Spaces にデプロイ。GitHub push → sync.yml → HF自動反映
 - 形式: `v年-月-日+アルファベット`（同日複数回は a→b→c と増やす）
 - 例: `v2026-03-28a`、`v2026-03-28b`
 - **用途**: HF Space Filesタブでコード到達確認・アプリ画面で起動確認に使う
-- 現在: `v2026-03-28a`
+- 現在: `v2026-03-30d`
 
 ---
 
@@ -22,6 +22,10 @@ update_data.py             週次データ更新スクリプト（python update_
 backfill_race_name.py      レース名補完スクリプト
 check_market_rate_auc.py   市場勝率のAUC寄与検証スクリプト
 train_and_push.py          ローカル再学習→HF Hub保存スクリプト（手動実行用）
+predict_auto.py            発走前自動予想スクリプト（GitHub Actions経由）
+auto_morning.py            朝8時全レース予想→Discord投稿スクリプト
+auto_review.py             当日振り返りスクリプト（17時以降）
+auto_weekend_summary.py    土日合算まとめ→Discord投稿スクリプト
 
 src/
   __init__.py              パッケージ宣言（HuggingFace Linux環境に必須）
@@ -29,15 +33,26 @@ src/
   features_engine.py       特徴量定義(NUM_FEATURES/CAT_FEATURES)＋create_features()
   core_model.py            モデル学習・HF Hub保存/ロード
   inference.py             リアルタイム推論・スクレイピング
-  optuna_tuner.py          Optunaチューニング（ウォークフォワードCV・AUC目的関数）
+  optuna_tuner.py          Optunaチューニング（ウォークフォワードCV・多目的関数）
   backtest.py              時系列バックテスト
   scraper.py               netkeiba/Yahoo競馬スクレイピング
-  discord_utils.py         Discord通知（Webhook直接送信）
+  discord_utils.py         Discord通知（キュー経由・Webhook直接送信）
   reports.py               PDF/テキストレポート生成
   utils.py                 resolve_name/classify_race_class（定数はconfig.pyから再エクスポート）
 
+.github/workflows/
+  sync.yml                 push → HF Space 自動デプロイ（CLAUDE.md等は除外）
+  retrain.yml              手動トリガーによる再学習 → HF Hub保存
+  auto_predict.yml         土日 15分ごと 発走前予想→Discord（JST 9:00〜16:45）
+  auto_morning.yml         土日 朝8時 全レース予想ファイル→Discord
+  auto_review.yml          土日 17時 振り返り→Discord
+  auto_weekend_summary.yml 日曜 20時 土日合算まとめ→Discord
+  discord_notify.yml       5分ごと Discordキューを読んで送信
+  discord_weekly_report.yml 週次レポート→Discord
+  weekly_update.yml        週次データ更新
+
 学習データ:
-  learning_data_perfect_tier.zip   34MB（HuggingFace LFSで管理）
+  learning_data_perfect_tier.zip   34MB（git管理・GitHub Actions retrain.yml が使用）
   learning_data_perfect_tier.csv   140MB・197,877行・82カラム（gitignore対象）
   pedigree_master_all.csv          血統マスター
   ped_cache.db                     血統取得sqliteキャッシュ（update_data.py使用）
@@ -47,12 +62,13 @@ src/
 
 ## モデル構成
 
-3モデルアンサンブル（重み: A×0.35 + B×0.50 + C×0.15）
+3モデルアンサンブル（重み: A×0.0581 + B×0.8159 + C×0.1261）
+※ アンサンブル重み最適化 @ 2026-03-30 で更新（EV回収率最大化方向で探索）
 
 | モデル | 種別 | 目的変数 | 備考 |
 |---|---|---|---|
 | A | LGBMRanker | 馬券内(3着以内) | n_estimators=500 |
-| B | LGBMRanker | 1着 | Optunaチューニング対象 |
+| B | LGBMRanker | 1着 | Optunaチューニング対象・重み最大 |
 | C | LGBMRegressor | 着順パーセント | n_estimators=300 |
 | D | LGBMClassifier | 穴馬(人気5以下の1着) | scale_pos_weight≈57、予想◎には影響しない・穴馬マーク専用 |
 
@@ -65,17 +81,26 @@ src/
 - Optunaは「市場勝率なし」で回すこと（UIのチェックボックスがデフォルトON）
 - 目標AUC: 0.74〜0.78（市場勝率なしの基準）
 
-## Optunaチューニング結果（最新: 2026-03-25 実施）
+## Optunaチューニング結果（最新: 2026-03-30 実施）
 
-- **CV AUC: 0.7615**（3fold ウォークフォワードCV、50試行、市場勝率除外）
-- 適用済みパラメータ（モデルB）:
+- **CVスコア: 0.6770**（AUC×0.7 + 正規化回収率×0.3、3fold ウォークフォワードCV、50試行、市場勝率除外）
+- ※ スコアは合成値のため旧AUC(0.7615)と直接比較不可。実質AUC≈0.75〜0.76
+- 適用済みパラメータ（モデルB @ 2026-03-30）:
   ```json
-  {"n_estimators":235,"learning_rate":0.023034,"num_leaves":82,
-   "max_bin":171,"cat_smooth":48.53,"colsample_bytree":0.5056,
-   "subsample":0.6815,"min_child_samples":25}
+  {"n_estimators":700,"learning_rate":0.012275,"num_leaves":32,
+   "max_bin":162,"cat_smooth":31.99,"colsample_bytree":0.7124,
+   "subsample":0.8923,"min_child_samples":77}
   ```
-- ⚠️ `min_child_samples:25`（前回96から大幅減）→ 過学習リスクあり、実戦回収率で検証推奨
-- 前回結果（2026-03-24）: CV AUC 0.7596、min_child_samples=96（より保守的）
+- `min_child_samples:77`（前回25から大幅増）→ 過学習リスク軽減 ✅
+- 前回結果（2026-03-25）: CV AUC 0.7615、n_estimators=235、min_child_samples=25
+
+## アンサンブル重み最適化結果（2026-03-30 実施）
+
+- **最適EV回収率: 74.1%**（最新20%ホールドアウトでの評価）
+- ※ 訓練データ上の評価のため絶対値より重み比率が重要
+- 結果: wa=0.0581 / wb=0.8159 / wc=0.1261
+  - モデルB（1着予測）が支配的 → EV=AI勝率×オッズ に最も直結するため理にかなっている
+- 適用箇所: `src/core_model.py` L331 と `src/inference.py` L461 の両方を更新済み
 
 ---
 
@@ -98,6 +123,7 @@ src/
 
 追加特徴量の概要（2026-03-30 追加）:
 - `斤量_前走差`: 今走斤量 - 前走斤量（ハンデ戦の斤量増減を捉える、初出走時はNaN）
+  - ⚠️ 実際には斤量が均一な場合が多く（牡55kg固定等）モデルへの寄与は限定的
 
 ⚠️ ユーザー方針: 騎手直近勝率・人気由来の特徴量は追加しない（後発情報・信頼性の問題）
 
@@ -114,6 +140,7 @@ src/
 
 - **コース統計**: `shift(1).expanding(min_periods=3).mean()` で過去データのみ使用
   - フォールバックも expanding window (min_periods=1) に修正済み（2026-03-30）→ 以前の `transform('mean')` リーク修正
+  - さらに距離を無視した場×芝ダ全体フォールバックも追加（完全新設コース用）
 - **コース適性_着順パーセント**: 同上、`min_periods=3`（データ3件未満は0.5でfillna）
 - **Target Encoding**: foldごとにtrainデータのみから計算
 - **バックテスト/振り返り**: `skip_live_scrape=True` で `fetch_horse_last_race()` をスキップ
@@ -133,6 +160,7 @@ src/
 - 血統取得は `_get_pedigree_cached()` を使う（sqlite キャッシュ: ped_cache.db）
 - **.gitignoreに必ず含めること**: `*.png`, `*.jpg`, `*.jpeg`, `learning_data_perfect_tier.csv`
   - PNG等のバイナリをコミットするとHuggingFace Spacesへのpushが拒否される
+- **CLAUDE.md は sync.yml で HF Space への push から除外済み**（ビルド不要なため）
 
 ---
 
@@ -142,7 +170,7 @@ src/
 git push origin main
   → GitHub Actions: .github/workflows/sync.yml
     → rm -rf .git && git init（履歴リセット）
-    → git lfs track "*.zip" "*.pkl" "*.joblib"
+    → CLAUDE.md / HANDOVER*.md / HF_TOKEN.txt / .claude/ を削除（HF不要ファイル）
     → git add . && git push --force hf main
       → HuggingFace Space 自動再ビルド（2〜3分）
 ```
@@ -157,7 +185,7 @@ git push origin main
 ## HuggingFace Hub モデル管理
 
 - **モデル保存先**: `ebi44323/keiba-ebye-models`（Dataset リポジトリ）
-  - `keiba_model.pkl` — 学習済みモデルbundle
+  - `keiba_model.pkl` — 学習済みモデルbundle（35.7MB）
   - `keiba_model_meta.json` — データ識別子（`data_mtime: "size:35515667"`形式）
   - `ai_daily_history.csv` — 振り返り日次成績
   - `discord_queue.json` — Discord通知キュー
@@ -167,8 +195,12 @@ git push origin main
   - ZIPを更新したら必ず再学習 → HF Hub保存が必要
 
 - **再学習が必要なタイミング**:
-  - `learning_data_perfect_tier.zip` を更新したとき
-  - 特徴量・調教師正規化など学習パイプラインを変更したとき
+  - `learning_data_perfect_tier.zip` を更新したとき（data_mtimeが変わるため自動検知）
+  - 特徴量・モデルパラメータなど学習パイプラインを変更したとき
+
+- **再学習不要なタイミング**:
+  - `inference.py` の推論ロジック変更（アンサンブル重み変更など）→ sync.yml だけで反映
+  - `app.py` の UI 変更 → 同上
 
 - **ローカル再学習コマンド**:
   ```powershell
@@ -177,81 +209,77 @@ git push origin main
   python train_and_push.py
   ```
 
+- **GitHub Actions 再学習**:
+  GitHub → Actions → 「Retrain and Push Model」→「Run workflow」
+
 - **HF SpaceのSecrets設定（必須）**:
   - `HF_TOKEN` — HuggingFace APIトークン（read/write権限）
   - `HF_REPO_ID` — `ebi44323/keiba-ebye-models`
 
 ---
 
+## Discord 自動通知システム
+
+### ワークフロー一覧
+| ワークフロー | トリガー | 内容 |
+|---|---|---|
+| auto_morning.yml | 土日 8:00 JST | 全レース予想を .txt/.html で投稿 |
+| auto_predict.yml | 土日 9:00〜16:45 JST 15分ごと | 発走10〜60分前のレースを自動予想 |
+| auto_review.yml | 土日 17:00 JST | 当日振り返りを投稿 |
+| auto_weekend_summary.yml | 日曜 20:00 JST | 土日合算まとめを投稿 |
+| discord_notify.yml | 5分ごと | HF Hub キューを読んで Discord に送信 |
+
+### ⚠️ GitHub Actions の制約
+- cron の最小間隔は5分・実行ラグが数分あるため「発走5分前通知」は不可能
+- 15分ポーリング × ウィンドウ幅50分（10〜60分前）で全レースをカバー
+
+---
+
 ## 現在の状況（2026-03-30 時点）
 
-### 完了済み修正
-- 特徴量リスト重複排除（root features_engine.py → re-export化）
-- EXTRA_NUM を NUM_FEATURES に統合（core_model.py から削除）
-- src/config.py 作成（定数一元管理）
-- src/__init__.py 作成（HuggingFace パッケージimport修正）
-- コース適性 expanding min_periods=3 追加（リーク軽減）
-- 血統取得 sqlite キャッシュ化（update_data.py）
-- Optuna 目的関数: 回収率 → AUC に変更
-- Optuna UI: 市場勝率除外スイッチ追加（デフォルトON）、コピペ用コード表示
-- 振り返り「全レース見送り推奨」バグ修正（has_unraced の誤判定）
-- **Optuna結果をモデルBに適用**（CV AUC 0.7615, 50試行 @ 2026-03-25）
-- **Isotonic Calibration追加**（bundle要素数 18→19）
-- **新特徴量5種追加**（計50特徴量）
-- **調教師名の正規化**: `[東]/[西]` プレフィックスを除去（core_model.py・load_jockey_base）
-  - 学習データの `[東] 矢作芳人` → `矢作芳人` に統一（195k行以上に影響）
-  - 再学習済み（2026-03-25 17:01 JST、HF Hub保存済み）
-- **オッズ取得の修正**: 枠順未確定時に馬名→馬番の優先順位で正確にマッピング
-- **スライダー操作で予想が消えるバグ修正**: session_stateキャッシュ方式に変更
-- **穴馬マーク詳細表示**: tab2（買い目展開）に穴馬スコアとヒント表示を追加
-- **EV優先回収率の長期追跡**: ai_daily_history.csvに `EV優先単勝回収率`/`EV優先複勝回収率` 列追加
-- **長期成績分析にEV優先比較**: 標準◎とEV優先の日別/月次比較を表示
-- **騎手データベース追加**: 15タブの詳細分析（脚質・上がり性能・馬体重・相性調教師など）
-- **Discord週次レポートにEV優先比較追加**
-- **HF Space再起動ループ修正**: data_mtimeをファイルサイズ比較に変更、PNG gitignore追加
-- **Discord完全自動化**: predict_auto.py・auto_morning.py・auto_review.py・auto_weekend_summary.py + 各GitHub Actionsワークフロー追加
-- **EV優先◎をデフォルトに変更**: app.py の EV優先モード checkbox を value=True に
-- **EV推奨候補ウィジェット追加**: EV>=1.0 の上位3馬をカード表示
-- **オッズキャッシュバスティング追加**: `&_={timestamp}` + no-cache ヘッダーでリアルタイムオッズ化
-- **コース統計フォールバックのリーク修正**: `transform('mean')` → `expanding(min_periods=1)` に変更（2026-03-30）
-- **`斤量_前走差` 特徴量追加**: 前走からの斤量増減（ハンデ戦対応）、計51特徴量（2026-03-30）
-- **Optuna多目的関数化**: AUC×weight + 回収率×weight のブレンドスコア対応（UIでウェイト調整可能）
-- **アンサンブル重み最適化追加**: Optunaで wa/wb/wc を EV回収率最大化方向で探索する機能追加
-- ⚠️ 特徴量変更（斤量_前走差追加）→ **再学習が必要**
+### 本日（2026-03-30）完了した作業
+- **コース統計フォールバックのリーク修正**: `transform('mean')` → expanding window に変更
+- **`斤量_前走差` 特徴量追加**: 計51特徴量（効果は限定的だが追加済み）
+- **Optuna多目的関数化**: AUC×0.7 + 正規化回収率×0.3 のブレンドスコア
+- **Optunaチューニング実施**: CVスコア 0.677（n_estimators=700, min_child_samples=77）
+- **アンサンブル重み最適化実施**: wa=0.058 / wb=0.816 / wc=0.126
+- **inference.py・core_model.py の重み更新**: 両ファイルに反映済み
+- **train_and_push.py 2重保存バグ修正**: `_save_model_to_hub` の重複呼び出しを削除
+- **CLAUDE.md を HF Space から除外**: sync.yml に `rm -f CLAUDE.md` 追加
 
-### 3月振り返り結果から判明した課題（2026-03-25）
-- 本命単勝回収率: 39〜88%（全日100%未満）→ 本命一辺倒では儲からない
-- 穴馬単勝回収率: 245.6%など大きいが、**0%の日が多い（穴馬をほとんど推奨しない）**
-- 穴馬複勝回収率: 185.7%・134.4% → 穴馬を複勝圏には入れているが◎にしていない
-- **根本原因**: 現在◎=max(AI勝率)。ランキングモデルは市場合意と相関するため1番人気多発
+### 過去の主要完了済み修正
+- EV優先◎をデフォルトに変更（app.py）
+- EV推奨候補ウィジェット追加（EV>=1.0 の上位3馬カード表示）
+- オッズキャッシュバスティング（リアルタイムオッズ化）
+- Discord完全自動化（4スクリプト + 4ワークフロー）
+- Isotonic Calibration追加
+- 調教師名正規化（[東]/[西] プレフィックス除去）
+- 騎手データベース追加（15タブ詳細分析）
+
+### 来週の検証事項
+- Discord自動通知が土日に正常動作するか確認（初の本番テスト）
+- 新アンサンブル重み（wb=0.816）での予想精度・回収率の変化を観察
+- EV優先 vs 標準◎ の実績比較継続
 
 ---
 
 ## 次にやること（優先度順）
 
-### 高優先度（予測精度・回収率改善）
-1. **再学習の実施**（最優先）
-   - `斤量_前走差` 特徴量追加 + コース統計フォールバックのリーク修正が入ったため再学習必須
-   - `python train_and_push.py` で HF Hub に保存
-2. **min_child_samples=25 の過学習検証**
-   - 実戦数週間後に回収率を確認し、必要なら保守的な96に戻す
-3. **Optunaの再チューニング（再学習後）**
-   - 新特徴量（斤量_前走差）追加の効果確認 + AUC/回収率ブレンド目的関数での最適化
-   - アンサンブル重み最適化も実施推奨
+### 高優先度
+1. **週次データ更新** (`python update_data.py`) → 最新レース結果を追加 → 再学習
+2. **来週末の Discord 自動通知の動作確認** → 初の本番テスト
+3. **新アンサンブル重みの実戦検証** → 数週間後に回収率を確認
 
-### 中優先度（機能拡張）
-4. **週次データ更新の実施** (`python update_data.py`)
-   - 最新レース結果を学習データに追加 → 再学習でモデル更新
+### 中優先度
+4. **Optunaの再チューニング**（数週間の実戦データ蓄積後）
+   - 新特徴量・新重みでの効果確認
 5. **EV優先データの蓄積と比較検証**
    - 今後数週間の振り返りでEV優先 vs 標準◎ の実績を比較
-6. **Discord通知の動作確認**
-   - 次の土日に GitHub Actions ワークフローが正常動作するか確認
 
-### 低優先度（将来的な改善）
-7. **騎手データベースの拡充**
-   - 現在15タブだが、さらに項目を追加する余地あり
-8. **モデルD（穴馬専用）の活用強化**
+### 低優先度
+6. **モデルD（穴馬専用）の活用強化**
    - 現在◎への影響なし。穴馬複勝推奨への活用を検討
+7. **騎手データベースの拡充**
 
 ---
 
@@ -270,10 +298,10 @@ python backfill_race_name.py
 # 市場勝率AUC検証
 python check_market_rate_auc.py
 
-# ローカル動作確認
+# ローカル動作確認（HF_TOKEN・HF_REPO_ID を環境変数にセット後）
 streamlit run app.py
 
-# ローカル再学習 → HF Hub保存（ZIPを更新した後や学習パイプライン変更後に実行）
+# ローカル再学習 → HF Hub保存
 # PowerShellで:
 #   $env:HF_TOKEN="hf_xxxxxxxxxxxx"
 #   $env:HF_REPO_ID="ebi44323/keiba-ebye-models"
