@@ -327,8 +327,8 @@ def prepare_model_and_data(force_retrain=False):
     _sb_norm = _norm_scores(score_b)
     _sc_norm = _norm_scores(score_c)
 
-    # 複勝0.35, 1着0.5, 着順回帰0.15
-    test_df['予測スコア'] = _sa_norm * 0.35 + _sb_norm * 0.50 + _sc_norm * 0.15
+    # 複勝0.058, 1着0.816, 着順回帰0.126（アンサンブル重み最適化 @ 2026-03-30）
+    test_df['予測スコア'] = _sa_norm * 0.0581 + _sb_norm * 0.8159 + _sc_norm * 0.1261
     test_df['exp_score'] = np.exp(test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max'))
     test_df['AI勝率'] = test_df['exp_score']/test_df.groupby('レースID')['exp_score'].transform('sum')
     top_preds = test_df.sort_values(['レースID','AI勝率'],ascending=[True,False]).groupby('レースID').head(1)
