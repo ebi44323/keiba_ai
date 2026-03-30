@@ -524,10 +524,12 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                 ev_cands['_ev_composite'] = ev_cands['期待値'] * (1.0 + ev_cands['穴馬スコア'] * 0.5)
                 best_ev_idx = ev_cands['_ev_composite'].idxmax()
                 if best_ev_idx != 0:  # 元の◎と異なる場合のみ入れ替え
-                    old_honmei_mark = df_test.loc[0, '印']  # '◎'
-                    old_best_mark   = df_test.loc[best_ev_idx, '印']
-                    df_test.loc[0,            '印'] = old_best_mark if old_best_mark else '〇'
-                    df_test.loc[best_ev_idx,  '印'] = old_honmei_mark
+                    old_ev_mark = df_test.loc[best_ev_idx, '印']
+                    # 印だけでなく行ごと入れ替え（以降の処理がloc[0]基準のため）
+                    idx_list = [best_ev_idx] + [i for i in df_test.index if i != best_ev_idx]
+                    df_test = df_test.loc[idx_list].reset_index(drop=True)
+                    df_test.loc[0, '印'] = '◎'
+                    df_test.loc[1, '印'] = old_ev_mark if old_ev_mark else '〇'
 
         p1,p2 = df_test.loc[0,'勝率(AI予測)'],df_test.loc[1,'勝率(AI予測)']
         score_diff = p1-p2
