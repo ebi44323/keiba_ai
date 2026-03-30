@@ -1,0 +1,65 @@
+name: 自動振り返り → Discord 通知
+
+# ================================================================
+# 土日 18:00 JST（UTC 9:00）に当日の全レースを振り返り、
+# 本命◎・期待値馬の成績を集計して Discord に送信する。
+#
+# 【必要な GitHub Secrets】
+#   HF_TOKEN        - HuggingFace APIトークン（read/write権限）
+#   HF_REPO_ID      - 例: "yourname/keiba-ebye-models"
+#   DISCORD_WEBHOOK_URL        - 予想チャンネルの Webhook URL
+#   DISCORD_REVIEW_WEBHOOK_URL - 振り返りチャンネルの Webhook URL（省略可）
+# ================================================================
+
+on:
+  schedule:
+    # 土曜・日曜 UTC 8:00（JST 17:00）
+    - cron: '0 8 * * 0,6'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 YYYYMMDD（省略時は当日 JST）'
+        default: ''
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存パッケージインストール
+        run: |
+          pip install --quiet \
+            lightgbm==4.6.0 \
+            scikit-learn==1.8.0 \
+            pandas==2.3.3 \
+            numpy==2.4.2 \
+            requests==2.32.5 \
+            beautifulsoup4==4.14.3 \
+            pytz==2026.1 \
+            huggingface_hub==1.7.2 \
+            joblib==1.5.3 \
+            streamlit==1.55.0
+
+      - name: 自動振り返り実行
+        env:
+          HF_TOKEN:                  ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID:                ${{ secrets.HF_REPO_ID }}
+          DISCORD_WEBHOOK_URL:       ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_REVIEW_WEBHOOK_URL: ${{ secrets.DISCORD_REVIEW_WEBHOOK_URL }}
+        run: |
+          DATE_ARG="${{ github.event.inputs.date }}"
+          if [ -n "$DATE_ARG" ]; then
+            python auto_review.py --date "$DATE_ARG"
+          else
+            python auto_review.py
+          fi

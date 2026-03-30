@@ -42,8 +42,10 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     html_text = ""
 
     try:
-        odds_api_url = f'https://race.netkeiba.com/api/api_get_jra_odds.html?type=1&action=init&race_id={race_id}'
-        api_headers = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36","Referer":f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}","X-Requested-With":"XMLHttpRequest"}
+        import time as _t
+        _ts = int(_t.time())
+        odds_api_url = f'https://race.netkeiba.com/api/api_get_jra_odds.html?type=1&action=init&race_id={race_id}&_={_ts}'
+        api_headers = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36","Referer":f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}","X-Requested-With":"XMLHttpRequest","Cache-Control":"no-cache, no-store","Pragma":"no-cache"}
         r_api = requests.get(odds_api_url, headers=api_headers, timeout=5)
         api_data = json.loads(r_api.text)
         if 'data' in api_data and 'odds' in api_data['data'] and '1' in api_data['data']['odds']:

@@ -1,0 +1,69 @@
+name: 朝刊予想 → Discord 投稿
+
+# ================================================================
+# 土日 8:00 JST（金曜 23:00 UTC / 土曜 23:00 UTC）に実行し
+# 当日の全開催レース予想を .txt と .html ファイルとして Discord に投稿する。
+# GitHub Actions は Discord への直接通信が可能なため、キュー経由ではなく直接送信。
+#
+# 【必要な GitHub Secrets】
+#   HF_TOKEN            - HuggingFace APIトークン（モデルロード用）
+#   HF_REPO_ID          - 例: "yourname/keiba-ebye-models"
+#   DISCORD_WEBHOOK_URL - 予想チャンネルの Webhook URL
+# ================================================================
+
+on:
+  schedule:
+    # 土曜 8:00 JST = 金曜 23:00 UTC → cron: '0 23 * * 5'
+    # 日曜 8:00 JST = 土曜 23:00 UTC → cron: '0 23 * * 6'
+    - cron: '0 23 * * 5,6'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 YYYYMMDD（省略時は実行日の翌日 JST）'
+        default: ''
+
+jobs:
+  morning-predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存パッケージインストール
+        run: |
+          pip install --quiet \
+            lightgbm==4.6.0 \
+            scikit-learn==1.8.0 \
+            pandas==2.3.3 \
+            numpy==2.4.2 \
+            requests==2.32.5 \
+            beautifulsoup4==4.14.3 \
+            pytz==2026.1 \
+            huggingface_hub==1.7.2 \
+            joblib==1.5.3 \
+            streamlit==1.55.0
+
+      - name: 朝刊予想実行
+        env:
+          HF_TOKEN:            ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID:          ${{ secrets.HF_REPO_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          # schedule 実行時は UTC 23:xx なので翌日 JST が対象日
+          # workflow_dispatch 時は inputs.date を使う（空なら auto_morning.py 側で当日扱い）
+          DATE_ARG="${{ github.event.inputs.date }}"
+          if [ -n "$DATE_ARG" ]; then
+            python auto_morning.py --date "$DATE_ARG"
+          else
+            # UTCの翌日（=JSTの当日）をYYYYMMDD形式で渡す
+            NEXT_DAY=$(date -u -d "+9 hours" +%Y%m%d)
+            python auto_morning.py --date "$NEXT_DAY"
+          fi

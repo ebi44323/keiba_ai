@@ -298,14 +298,18 @@ def fetch_odds_realtime(race_id: str) -> tuple[dict, dict]:
 
     # ── netkeiba オッズAPI（プライマリ）──────────────────────────
     try:
+        import time as _time
+        _ts = int(_time.time())  # キャッシュバスター（CDNキャッシュ回避）
         api_url = (
             f'https://race.netkeiba.com/api/api_get_jra_odds.html'
-            f'?type=1&action=init&race_id={race_id}'
+            f'?type=1&action=init&race_id={race_id}&_={_ts}'
         )
         api_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}",
             "X-Requested-With": "XMLHttpRequest",
+            "Cache-Control": "no-cache, no-store",
+            "Pragma": "no-cache",
         }
         r = requests.get(api_url, headers=api_headers, timeout=5)
         api_data = _json.loads(r.text)

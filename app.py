@@ -30,7 +30,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-03-30a")
+st.caption("v2026-03-30c")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -1137,9 +1137,13 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                         has_unraced = ('新馬' in r['title']) or ('未出走' in r['title'])
 
                         if compare_ev_mode:
-                            _ev_cands = res_df[(res_df['期待値'] >= 1.0) & (res_df['勝率(AI予測)'] >= 0.10)]
-                            ev_honmei = (_ev_cands.loc[_ev_cands['期待値'].idxmax(), '馬番']
-                                         if not _ev_cands.empty else honmei)
+                            _ev_cands = res_df[(res_df['期待値'] >= 1.0) & (res_df['勝率(AI予測)'] >= 0.10)].copy()
+                            if not _ev_cands.empty:
+                                # inference.pyと同じ複合EV（穴馬スコアを加味）で選択
+                                _ev_cands['_ev_composite'] = _ev_cands['期待値'] * (1.0 + _ev_cands.get('穴馬スコア', 0) * 0.5)
+                                ev_honmei = _ev_cands.loc[_ev_cands['_ev_composite'].idxmax(), '馬番']
+                            else:
+                                ev_honmei = honmei
                             stats_ev['races'] += 1
                             if ev_honmei in payouts['tansho']:
                                 stats_ev['tan_hits']   += 1

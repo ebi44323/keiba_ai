@@ -1,0 +1,69 @@
+name: 週末まとめ → Discord 通知
+
+# ================================================================
+# 日曜 20:00 JST（日曜 11:00 UTC）に土日両日の成績をまとめて Discord に送信。
+# discord_notify.yml（5分毎）がキューを読んで送信する。
+#
+# 【必要な GitHub Secrets】
+#   HF_TOKEN                  - HuggingFace APIトークン（read/write権限）
+#   HF_REPO_ID                - 例: "yourname/keiba-ebye-models"
+#   DISCORD_WEBHOOK_URL        - 予想チャンネルの Webhook URL
+#   DISCORD_REVIEW_WEBHOOK_URL - 振り返りチャンネルの Webhook URL（省略可）
+# ================================================================
+
+on:
+  schedule:
+    # 日曜 20:00 JST = 日曜 11:00 UTC
+    - cron: '0 11 * * 0'
+  workflow_dispatch:
+    inputs:
+      sat:
+        description: '土曜日 YYYYMMDD（省略時は直近土曜）'
+        default: ''
+      sun:
+        description: '日曜日 YYYYMMDD（省略時は直近日曜）'
+        default: ''
+
+jobs:
+  weekend-summary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存パッケージインストール
+        run: |
+          pip install --quiet \
+            lightgbm==4.6.0 \
+            scikit-learn==1.8.0 \
+            pandas==2.3.3 \
+            numpy==2.4.2 \
+            requests==2.32.5 \
+            beautifulsoup4==4.14.3 \
+            pytz==2026.1 \
+            huggingface_hub==1.7.2 \
+            joblib==1.5.3 \
+            streamlit==1.55.0
+
+      - name: 週末まとめ実行
+        env:
+          HF_TOKEN:                  ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID:                ${{ secrets.HF_REPO_ID }}
+          DISCORD_WEBHOOK_URL:       ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_REVIEW_WEBHOOK_URL: ${{ secrets.DISCORD_REVIEW_WEBHOOK_URL }}
+        run: |
+          SAT="${{ github.event.inputs.sat }}"
+          SUN="${{ github.event.inputs.sun }}"
+          if [ -n "$SAT" ] && [ -n "$SUN" ]; then
+            python auto_weekend_summary.py --sat "$SAT" --sun "$SUN"
+          else
+            python auto_weekend_summary.py
+          fi
