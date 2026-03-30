@@ -48,8 +48,12 @@ _EMPTY_STATS = lambda: {
     "honmei_races": 0, "honmei_tan_hits": 0, "honmei_tan_return": 0,
     "honmei_fuku_hits": 0, "honmei_fuku_return": 0,
     "umaren_races": 0, "umaren_invest": 0, "umaren_hits": 0, "umaren_return": 0,
-    "ev_invest": 0, "ev_tan_hits": 0, "ev_tan_return": 0,
-    "ev_fuku_hits": 0, "ev_fuku_return": 0,
+    # 超狙い馬: AI上位5頭(index<5) かつ EV>=1.5
+    "choko_invest": 0, "choko_tan_hits": 0, "choko_tan_return": 0,
+    "choko_fuku_hits": 0, "choko_fuku_return": 0,
+    # 穴馬: AI6位以下(index>=5) かつ EV>=1.5
+    "ana_invest": 0, "ana_tan_hits": 0, "ana_tan_return": 0,
+    "ana_fuku_hits": 0, "ana_fuku_return": 0,
     "shiba_races": 0, "shiba_return": 0, "dart_races": 0, "dart_return": 0,
 }
 
@@ -107,15 +111,27 @@ def collect_day_stats(date_str8: str, date_hf: str, bundle) -> dict:
                     stats["umaren_hits"]   += 1
                     stats["umaren_return"] += payouts["umaren"][key]
 
-        for _, row in res_df[(res_df.index >= 4) & (res_df["期待値"] >= 1.5)].iterrows():
+        # 超狙い馬: AI上位5頭(index<5) かつ EV>=1.5
+        for _, row in res_df[(res_df.index < 5) & (res_df["期待値"] >= 1.5)].iterrows():
             uban = row["馬番"]
-            stats["ev_invest"] += 100
+            stats["choko_invest"] += 100
             if uban in payouts["tansho"]:
-                stats["ev_tan_hits"]   += 1
-                stats["ev_tan_return"] += payouts["tansho"][uban]
+                stats["choko_tan_hits"]   += 1
+                stats["choko_tan_return"] += payouts["tansho"][uban]
             if uban in payouts["fukusho"]:
-                stats["ev_fuku_hits"]   += 1
-                stats["ev_fuku_return"] += payouts["fukusho"][uban]
+                stats["choko_fuku_hits"]   += 1
+                stats["choko_fuku_return"] += payouts["fukusho"][uban]
+
+        # 穴馬: AI6位以下(index>=5) かつ EV>=1.5
+        for _, row in res_df[(res_df.index >= 5) & (res_df["期待値"] >= 1.5)].iterrows():
+            uban = row["馬番"]
+            stats["ana_invest"] += 100
+            if uban in payouts["tansho"]:
+                stats["ana_tan_hits"]   += 1
+                stats["ana_tan_return"] += payouts["tansho"][uban]
+            if uban in payouts["fukusho"]:
+                stats["ana_fuku_hits"]   += 1
+                stats["ana_fuku_return"] += payouts["fukusho"][uban]
 
     return stats
 
@@ -132,13 +148,15 @@ def build_discord_message(stats: dict, sat_label: str, sun_label: str) -> str:
     def _r(ret, inv): return round(ret / inv * 100, 1) if inv > 0 else 0.0
     def _e(v): return "🔥" if v >= 150 else "✅" if v >= 100 else "🟡" if v >= 70 else "❌"
 
-    tan   = _r(stats["honmei_tan_return"],  races * 100)
-    fuku  = _r(stats["honmei_fuku_return"], races * 100)
-    uma   = _r(stats["umaren_return"],      max(stats["umaren_invest"], 1))
-    ev_t  = _r(stats["ev_tan_return"],      max(stats["ev_invest"], 1))
-    ev_f  = _r(stats["ev_fuku_return"],     max(stats["ev_invest"], 1))
-    shiba = _r(stats["shiba_return"],       max(stats["shiba_races"] * 100, 1))
-    dart  = _r(stats["dart_return"],        max(stats["dart_races"]  * 100, 1))
+    tan    = _r(stats["honmei_tan_return"],  races * 100)
+    fuku   = _r(stats["honmei_fuku_return"], races * 100)
+    uma    = _r(stats["umaren_return"],      max(stats["umaren_invest"], 1))
+    choko_t = _r(stats["choko_tan_return"], max(stats["choko_invest"], 1))
+    choko_f = _r(stats["choko_fuku_return"], max(stats["choko_invest"], 1))
+    ana_t  = _r(stats["ana_tan_return"],    max(stats["ana_invest"], 1))
+    ana_f  = _r(stats["ana_fuku_return"],   max(stats["ana_invest"], 1))
+    shiba  = _r(stats["shiba_return"],      max(stats["shiba_races"] * 100, 1))
+    dart   = _r(stats["dart_return"],       max(stats["dart_races"]  * 100, 1))
 
     tan_hi  = stats["honmei_tan_hits"]
     fuku_hi = stats["honmei_fuku_hits"]
@@ -155,10 +173,16 @@ def build_discord_message(stats: dict, sat_label: str, sun_label: str) -> str:
         f"馬連  {_e(uma)} {uma:6.1f}%   的中 {uma_hi}回",
         "```",
         "",
-        "**【期待値馬(EV1.5+) ベタ買い】**",
+        "**【超狙い馬(AI上位5頭 EV1.5+) ベタ買い】**",
         "```",
-        f"単勝  {_e(ev_t)} {ev_t:6.1f}%   的中 {stats['ev_tan_hits']}/{int(stats['ev_invest']//100)}頭",
-        f"複勝  {_e(ev_f)} {ev_f:6.1f}%   的中 {stats['ev_fuku_hits']}/{int(stats['ev_invest']//100)}頭",
+        f"単勝  {_e(choko_t)} {choko_t:6.1f}%   的中 {stats['choko_tan_hits']}/{int(stats['choko_invest']//100)}頭",
+        f"複勝  {_e(choko_f)} {choko_f:6.1f}%   的中 {stats['choko_fuku_hits']}/{int(stats['choko_invest']//100)}頭",
+        "```",
+        "",
+        "**【穴馬(AI6位以下 EV1.5+) ベタ買い】**",
+        "```",
+        f"単勝  {_e(ana_t)} {ana_t:6.1f}%   的中 {stats['ana_tan_hits']}/{int(stats['ana_invest']//100)}頭",
+        f"複勝  {_e(ana_f)} {ana_f:6.1f}%   的中 {stats['ana_fuku_hits']}/{int(stats['ana_invest']//100)}頭",
         "```",
         "",
         f"🌱 芝: {shiba:.1f}%  🏜️ ダート: {dart:.1f}%",

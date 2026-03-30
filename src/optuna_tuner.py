@@ -316,7 +316,7 @@ def run_weight_optimization(df_scored, n_trials=200):
         f"  wa (モデルA 複勝): {wa:.4f}\n"
         f"  wb (モデルB 1着):  {wb:.4f}\n"
         f"  wc (モデルC 着順回帰): {wc:.4f}\n"
-        f"  ※ core_model.py L331 の 0.35/0.50/0.15 を上記に変更して再学習してください"
+        f"  ※ core_model.py L331 と inference.py L461 と backtest.py L78/L221 の重みを上記に変更して再学習してください"
     )
 
     logger.info(summary)

@@ -75,7 +75,7 @@ def run_longterm_ev_backtest(df, bundle, ev_threshold=1.0, min_win_prob=0.10,
     score_a = pd.Series(model.predict(X), index=df.index)
     score_b = pd.Series(model_win.predict(X), index=df.index)
     score_c = pd.Series(1.0 - model_reg.predict(X), index=df.index)
-    df['予測スコア'] = _norm(score_a) * 0.35 + _norm(score_b) * 0.50 + _norm(score_c) * 0.15
+    df['予測スコア'] = _norm(score_a) * 0.0581 + _norm(score_b) * 0.8159 + _norm(score_c) * 0.1261  # アンサンブル重み最適化 @ 2026-03-30
 
     grp = df.groupby('レースID')
     df['exp_s']  = np.exp(df['予測スコア'] - grp['予測スコア'].transform('max'))
@@ -218,7 +218,7 @@ def run_timeseries_backtest(df, features, cat_features, te_cols, n_splits=3, tes
         def _norm(s):
             return (s - s.min()) / (s.max() - s.min() + 1e-9)
         
-        test_df['予測スコア'] = _norm(score_a)*0.35 + _norm(score_b)*0.50 + _norm(score_c)*0.15
+        test_df['予測スコア'] = _norm(score_a)*0.0581 + _norm(score_b)*0.8159 + _norm(score_c)*0.1261  # アンサンブル重み最適化 @ 2026-03-30
         test_df['exp_score'] = np.exp(test_df['予測スコア'] - test_df.groupby('レースID')['予測スコア'].transform('max'))
         test_df['AI勝率'] = test_df['exp_score'] / test_df.groupby('レースID')['exp_score'].transform('sum')
         

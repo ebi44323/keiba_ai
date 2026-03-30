@@ -436,7 +436,7 @@ def prepare_model_and_data(force_retrain=False):
     except Exception as _e:
         logger.warning(f'血統距離適性辞書 構築失敗: {_e}')
 
-    best_weight = 0.35  # 後方互換性および参照用
+    best_weight = 0.8159  # 後方互換性用（bundle位置保持のため残存・inference.pyでは未使用、実重みはcore_model.py L331/inference.py L461参照）
     bundle = (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,

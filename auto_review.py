@@ -74,8 +74,12 @@ def run(date_str: str = None):
         "honmei_races": 0, "honmei_tan_hits": 0, "honmei_tan_return": 0,
         "honmei_fuku_hits": 0, "honmei_fuku_return": 0,
         "umaren_races": 0, "umaren_invest": 0, "umaren_hits": 0, "umaren_return": 0,
-        "ev_invest": 0, "ev_tan_hits": 0, "ev_tan_return": 0,
-        "ev_fuku_hits": 0, "ev_fuku_return": 0,
+        # 超狙い馬: AI上位5頭(index<5) かつ EV>=1.5
+        "choko_invest": 0, "choko_tan_hits": 0, "choko_tan_return": 0,
+        "choko_fuku_hits": 0, "choko_fuku_return": 0,
+        # 穴馬: AI6位以下(index>=5) かつ EV>=1.5
+        "ana_invest": 0, "ana_tan_hits": 0, "ana_tan_return": 0,
+        "ana_fuku_hits": 0, "ana_fuku_return": 0,
         "shiba_races": 0, "shiba_return": 0, "dart_races": 0, "dart_return": 0,
     }
 
@@ -137,17 +141,29 @@ def run(date_str: str = None):
                     stats["umaren_hits"] += 1
                     stats["umaren_return"] += payouts["umaren"][key]
 
-        # EV1.5以上のベタ買い集計
-        ana_df = res_df[(res_df.index >= 4) & (res_df["期待値"] >= 1.5)]
+        # 超狙い馬: AI上位5頭(index<5) かつ EV>=1.5
+        choko_df = res_df[(res_df.index < 5) & (res_df["期待値"] >= 1.5)]
+        for _, row in choko_df.iterrows():
+            uban = row["馬番"]
+            stats["choko_invest"] += 100
+            if uban in payouts["tansho"]:
+                stats["choko_tan_hits"] += 1
+                stats["choko_tan_return"] += payouts["tansho"][uban]
+            if uban in payouts["fukusho"]:
+                stats["choko_fuku_hits"] += 1
+                stats["choko_fuku_return"] += payouts["fukusho"][uban]
+
+        # 穴馬: AI6位以下(index>=5) かつ EV>=1.5
+        ana_df = res_df[(res_df.index >= 5) & (res_df["期待値"] >= 1.5)]
         for _, row in ana_df.iterrows():
             uban = row["馬番"]
-            stats["ev_invest"] += 100
+            stats["ana_invest"] += 100
             if uban in payouts["tansho"]:
-                stats["ev_tan_hits"] += 1
-                stats["ev_tan_return"] += payouts["tansho"][uban]
+                stats["ana_tan_hits"] += 1
+                stats["ana_tan_return"] += payouts["tansho"][uban]
             if uban in payouts["fukusho"]:
-                stats["ev_fuku_hits"] += 1
-                stats["ev_fuku_return"] += payouts["fukusho"][uban]
+                stats["ana_fuku_hits"] += 1
+                stats["ana_fuku_return"] += payouts["fukusho"][uban]
 
         logger.info(
             f"  {r['place']} {r['num']}R: ◎{honmei}番 "
@@ -164,11 +180,13 @@ def run(date_str: str = None):
         return round(ret / inv * 100, 1) if inv > 0 else 0.0
 
     rates = {
-        "tan_rate":  _rate(stats["honmei_tan_return"],  races_n * 100),
-        "fuku_rate": _rate(stats["honmei_fuku_return"], races_n * 100),
-        "ev_tan_rate":  _rate(stats["ev_tan_return"],  stats["ev_invest"]),
-        "ev_fuku_rate": _rate(stats["ev_fuku_return"], stats["ev_invest"]),
-        "uma_rate": _rate(stats["umaren_return"], max(stats["umaren_invest"], 1)),
+        "tan_rate":       _rate(stats["honmei_tan_return"],  races_n * 100),
+        "fuku_rate":      _rate(stats["honmei_fuku_return"], races_n * 100),
+        "choko_tan_rate": _rate(stats["choko_tan_return"], stats["choko_invest"]),
+        "choko_fuku_rate":_rate(stats["choko_fuku_return"], stats["choko_invest"]),
+        "ana_tan_rate":   _rate(stats["ana_tan_return"],  stats["ana_invest"]),
+        "ana_fuku_rate":  _rate(stats["ana_fuku_return"], stats["ana_invest"]),
+        "uma_rate":   _rate(stats["umaren_return"], max(stats["umaren_invest"], 1)),
         "shiba_rate": _rate(stats["shiba_return"], max(stats["shiba_races"] * 100, 1)),
         "dart_rate":  _rate(stats["dart_return"],  max(stats["dart_races"] * 100, 1)),
     }

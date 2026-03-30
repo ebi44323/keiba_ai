@@ -56,7 +56,7 @@ def load_bundle():
     return bundle
 
 
-def run(window_min: int = 15, window_max: int = 50):
+def run(window_min: int = 10, window_max: int = 60):
     now = datetime.datetime.now(JST)
     date_str = now.strftime("%Y-%m-%d")
     logger.info(f"実行日時: {now.strftime('%Y-%m-%d %H:%M')} JST")

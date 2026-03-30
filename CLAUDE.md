@@ -9,7 +9,7 @@ HuggingFace Spaces にデプロイ。GitHub push → sync.yml → HF自動反映
 - 形式: `v年-月-日+アルファベット`（同日複数回は a→b→c と増やす）
 - 例: `v2026-03-28a`、`v2026-03-28b`
 - **用途**: HF Space Filesタブでコード到達確認・アプリ画面で起動確認に使う
-- 現在: `v2026-03-30d`
+- 現在: `v2026-03-30e`
 
 ---
 
@@ -57,6 +57,20 @@ src/
   pedigree_master_all.csv          血統マスター
   ped_cache.db                     血統取得sqliteキャッシュ（update_data.py使用）
 ```
+
+---
+
+## 馬カテゴリ定義（全ファイル共通・2026-03-30 統一）
+
+| カテゴリ | 定義 | 使用箇所 |
+|---|---|---|
+| **超狙い馬** | AIランク上位5頭（`index < 5`）かつ `期待値 >= 1.5` | app.py / auto_review.py / auto_weekend_summary.py / discord_utils.py |
+| **穴馬** | AIランク6位以下（`index >= 5`）かつ `期待値 >= 1.5` | 同上 |
+
+- `index` は `res_df` の行インデックス（`reset_index(drop=True)` 後の0始まり）
+- **注意**: `index < 5` は0〜4（上位5頭）、`index >= 5` は5以降（6位以下）
+- ai_daily_history.csv の列名: `超狙い馬単勝回収率` / `超狙い馬複勝回収率` / `穴馬単勝回収率` / `穴馬複勝回収率`
+- **旧名称**: `ev_invest` / `ev_tan_hits` 等は廃止。`choko_*` (超狙い馬) / `ana_*` (穴馬) に統一
 
 ---
 
