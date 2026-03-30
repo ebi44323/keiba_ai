@@ -7,7 +7,7 @@
 # （現状のapp.pyの学習・推論で使っているものと完全一致させます）
 NUM_FEATURES = [
     '枠番', '馬番', '年齢', '距離', '斤量', '出走頭数', '馬体重_num', '馬体重増減',
-    '斤量差', '休養日数', '前走_着順', '2走前_着順', '3走前_着順', '過去3走平均着順',
+    '斤量差', '斤量_前走差', '休養日数', '前走_着順', '2走前_着順', '3走前_着順', '過去3走平均着順',
     '前走着順パーセント', '直近3走着順パーセント', '前走_スピード指数', '2走前_スピード指数',
     '3走前_スピード指数', '過去3走平均スピード指数', '近5走_中央値スピード指数',
     '近5走_最高スピード指数', '上昇度_スピード指数', '前走距離補正タイム差', '前走上り偏差',
@@ -110,10 +110,18 @@ def create_features(df, te_dicts=None):
         .transform(lambda x: x.shift(1).expanding(min_periods=3).std())
     )
 
-    # 過去実績3件未満（新設コース・距離）の場合は同コース全体平均でフォールバック
-    _fb_mean = df.groupby(['競馬場', '芝/ダート', '距離'])['走破タイム秒'].transform('mean')
-    _fb_std  = df.groupby(['競馬場', '芝/ダート', '距離'])['走破タイム秒'].transform('std')
-    df['コース平均']       = df['コース平均'].fillna(_fb_mean)
+    # 過去実績3件未満（新設コース・距離）の場合は expanding window フォールバック（リーク防止）
+    _fb_mean = df.groupby(['競馬場', '芝/ダート', '距離'])['走破タイム秒'].transform(
+        lambda x: x.shift(1).expanding(min_periods=1).mean()
+    )
+    _fb_std  = df.groupby(['競馬場', '芝/ダート', '距離'])['走破タイム秒'].transform(
+        lambda x: x.shift(1).expanding(min_periods=1).std()
+    )
+    # さらに距離を無視した場×芝ダ全体の expanding 平均（完全新設コース用）
+    _fb_mean2 = df.groupby(['競馬場', '芝/ダート'])['走破タイム秒'].transform(
+        lambda x: x.shift(1).expanding(min_periods=1).mean()
+    )
+    df['コース平均']     = df['コース平均'].fillna(_fb_mean).fillna(_fb_mean2)
     df['コース標準偏差'] = df['コース標準偏差'].fillna(_fb_std).fillna(1.0)
 
     # 距離を数値型に戻す（後続処理用）
@@ -169,6 +177,9 @@ def create_features(df, te_dicts=None):
         df['血統距離適性スコア'] = 0.5
 
     df = df.sort_values(['馬ID','日付']).reset_index(drop=True)
+
+    # ── 斤量_前走差（前走からの斤量増減: ハンデ戦の増減を捉える）──────────
+    df['斤量_前走差'] = pd.to_numeric(df['斤量'], errors='coerce') - df.groupby('馬ID')['斤量'].shift(1)
 
     # ── 新特徴量1: キャリア数（累計出走回数）─────────────────────
     # 新馬・キャリア浅い馬の識別に使う（スピード指数等がNaNの馬を正しく評価）

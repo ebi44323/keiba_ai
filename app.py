@@ -30,7 +30,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-03-30c")
+st.caption("v2026-03-30d")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -1747,6 +1747,15 @@ elif action == "🔧 Optuna チューニング":
     with col_op2:
         n_folds = st.number_input("CV分割数 (Folds)", min_value=2, max_value=6, value=3, step=1)
 
+    st.markdown("**目的関数ウェイト**")
+    col_ow1, col_ow2 = st.columns([1, 1])
+    with col_ow1:
+        auc_weight = st.slider("AUCウェイト", 0.0, 1.0, 0.7, 0.05,
+                               help="AUC（予測精度）と回収率の重みをここで調整します。")
+    with col_ow2:
+        ret_weight = round(1.0 - auc_weight, 2)
+        st.metric("回収率ウェイト", f"{ret_weight:.2f}")
+
     exclude_market = st.checkbox(
         "🎯 市場勝率を除外してチューニング（推奨）",
         value=True,
@@ -1775,6 +1784,7 @@ elif action == "🔧 Optuna チューニング":
                     df_op, features, cat_features, list(TE_COLS),
                     n_trials=int(n_trials), n_folds=int(n_folds),
                     exclude_features=exclude_list if exclude_list else None,
+                    auc_weight=float(auc_weight), return_weight=float(ret_weight),
                 )
 
                 st.success(msg)
@@ -1808,6 +1818,72 @@ elif action == "🔧 Optuna チューニング":
             except Exception as e:
                 import traceback
                 st.error(f"Optunaチューニングエラー: {e}")
+                st.code(traceback.format_exc())
+
+    st.divider()
+    st.markdown("#### ⚖️ アンサンブル重み最適化")
+    st.caption("モデルA・B・Cの重み (wa, wb, wc) をOptunaで探索し、EV優先単勝回収率を最大化します。")
+    wopt_trials = st.number_input("重み探索回数", min_value=50, max_value=1000, value=200, step=50)
+
+    if st.button("⚖️ 重み最適化開始", type="secondary"):
+        with st.spinner(f"重み探索中 ({wopt_trials} trials)..."):
+            try:
+                import lightgbm as lgb_inner
+                from src.optuna_tuner import run_weight_optimization
+                from src.features_engine import create_features as _cf
+
+                df_w = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+                df_w['日付'] = pd.to_datetime(df_w['日付'], format='mixed', errors='coerce')
+                df_w = df_w.dropna(subset=['日付', '着順', '単勝'])
+                for col in ['着順', '単勝', '人気']:
+                    df_w[col] = pd.to_numeric(df_w[col], errors='coerce')
+                df_w, _ = _cf(df_w, te_dicts)
+
+                # 最新20%をホールドアウトとしてスコアリング
+                df_w = df_w.sort_values('日付').reset_index(drop=True)
+                holdout_idx = int(len(df_w) * 0.8)
+                df_train_w = df_w.iloc[:holdout_idx]
+                df_hold    = df_w.iloc[holdout_idx:].copy()
+
+                def _norm(s):
+                    mn, mx = s.min(), s.max()
+                    return (s - mn) / (mx - mn + 1e-9)
+
+                cat_feats_w = [f for f in cat_features if f in df_train_w.columns]
+                for c in cat_feats_w:
+                    df_train_w[c] = df_train_w[c].astype('category')
+                    df_hold[c]    = pd.Categorical(df_hold[c].astype(str),
+                                                   categories=df_train_w[c].cat.categories)
+
+                feat_w = [f for f in features if f in df_train_w.columns and f in df_hold.columns]
+                grp_tr = df_train_w.groupby('レースID', sort=False).size().values
+
+                ma_w = lgb.LGBMRanker(n_estimators=500, random_state=42, verbose=-1)
+                ma_w.fit(df_train_w[feat_w], (df_train_w['着順'] <= 3).astype(int), group=grp_tr, categorical_feature=cat_feats_w)
+                mb_w = lgb.LGBMRanker(n_estimators=bundle[5+1] if len(bundle) > 7 else 500, random_state=42, verbose=-1)
+                mb_w.fit(df_train_w[feat_w], (df_train_w['着順'] == 1).astype(int),  group=grp_tr, categorical_feature=cat_feats_w)
+                mc_w = lgb.LGBMRegressor(n_estimators=300, random_state=42, verbose=-1)
+                mc_w.fit(df_train_w[feat_w], pd.to_numeric(df_train_w['着順'], errors='coerce').fillna(9))
+
+                df_hold['score_a_norm'] = _norm(ma_w.predict(df_hold[feat_w]))
+                df_hold['score_b_norm'] = _norm(mb_w.predict(df_hold[feat_w]))
+                df_hold['score_c_norm'] = _norm(1.0 - mc_w.predict(df_hold[feat_w]))
+
+                best_w, wmsg, wtdf = run_weight_optimization(df_hold, n_trials=int(wopt_trials))
+                st.success(wmsg)
+                if best_w:
+                    st.json(best_w)
+                    st.code(
+                        f"# src/core_model.py L331 を以下に置き換えて再学習してください\n"
+                        f"test_df['予測スコア'] = _sa_norm * {best_w['wa']} + _sb_norm * {best_w['wb']} + _sc_norm * {best_w['wc']}",
+                        language="python"
+                    )
+                if wtdf is not None and not wtdf.empty:
+                    st.subheader("重み探索結果 (上位10件)")
+                    st.dataframe(wtdf.head(10), width='stretch')
+            except Exception as e:
+                import traceback
+                st.error(f"重み最適化エラー: {e}")
                 st.code(traceback.format_exc())
 
 elif action == "🏇 騎手・調教師フォーム分析":

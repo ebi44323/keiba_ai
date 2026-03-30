@@ -252,7 +252,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                          '前走_着順','2走前_着順','3走前_着順',
                          '前走_スピード指数','2走前_スピード指数','3走前_スピード指数',
                          '4走前_スピード指数','5走前_スピード指数',
-                         '前走_最終コーナー','2走前_最終コーナー']
+                         '前走_最終コーナー','2走前_最終コーナー','最新_斤量']
             for col in leak_cols:
                 if col in df_test.columns:
                     df_test.loc[future_mask, col] = np.nan
@@ -380,6 +380,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['前走_後半ペース値'] = pd.to_numeric(_safe_col(df_test, '前走_後半ペース値', np.nan), errors='coerce')
         df_test['馬体重増減']            = df_test['馬体重_num'] - pd.to_numeric(_safe_col(df_test, '最新_馬体重', np.nan), errors='coerce')
         df_test['斤量差'] = pd.to_numeric(df_test['斤量'],errors='coerce') - pd.to_numeric(df_test['斤量'],errors='coerce').mean()
+        _prev_kinryo = pd.to_numeric(_safe_col(df_test, '最新_斤量', np.nan), errors='coerce')
+        df_test['斤量_前走差'] = pd.to_numeric(df_test['斤量'], errors='coerce') - _prev_kinryo
         df_test['穴馬_距離変更一変']     = ((df_test['距離変更フラグ']==1)&(df_test['直近3走着順パーセント']<0.4)).astype(int)
         df_test['穴馬_馬場替わり一変']   = ((df_test['馬場替わりフラグ']==1)&(df_test['直近3走着順パーセント']<0.4)).astype(int)
         df_test['穴馬_勝負の乗り替わり'] = ((df_test['乗り替わりフラグ']==1)&(df_test['直近3走着順パーセント']<0.5)).astype(int)
