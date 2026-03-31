@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-03-30e")
+st.caption("v2026-03-31a")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -41,9 +41,9 @@ from src.inference import run_real_prediction
 from src.gemini_utils import generate_two_analysts, check_gemini_available, generate_review_analysis
 
 @st.cache_data(ttl=3600*12, show_spinner=False)
-def get_morning_prediction(race_id, race_date_str, _bundle):
+def get_morning_prediction(race_id, race_date_str, _bundle, ev_first=False, ev_threshold=1.0, min_win_prob=0.10):
     # 朝版（直前版と同じくfetch_horse_last_race()を呼んで前走情報を最新化）
-    return run_real_prediction(race_id, race_date_str, _bundle, skip_live_scrape=False)
+    return run_real_prediction(race_id, race_date_str, _bundle, skip_live_scrape=False, ev_first=ev_first, ev_threshold=ev_threshold, min_win_prob=min_win_prob)
 
 
 
@@ -843,7 +843,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                         conf_text = st.session_state.get(f'cached_conf_{next_race["id"]}')
                         err_log   = []
                     else:
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
 
                 if res_df is not None:
                     display_result(res_df, topics, reco, pace_text, conf_text)
@@ -914,7 +914,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                     if live_update:
                         res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
                     else:
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
 
                     if res_df is not None:
                         st.session_state[f'spec_res_{_spec_key}']    = res_df.copy()
@@ -972,7 +972,7 @@ elif action == "📅 今週末の全レース予想":
             for _i, _r in enumerate(_races):
                 _bar.progress((_i + 0.5) / len(_races), text=f"推論中... {_r['place']} {_r['num']}R")
                 _res_df, _topics, _reco, _pace, _conf, _track, _place, _dist, _elog = run_real_prediction(
-                    _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}", bundle)
+                    _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}", bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
                 if _res_df is not None:
                     _max_ev   = float(_res_df['期待値'].max()) if '期待値' in _res_df.columns else 0.0
                     _top_row  = _res_df.iloc[0]
@@ -1117,7 +1117,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                 race_items = []
 
                 for i, r in enumerate(races):
-                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False)
+                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
                     payouts = get_all_payouts(r['id'])
 
                     honmei_name = res_df.iloc[0]['馬名'] if res_df is not None else "不明"
