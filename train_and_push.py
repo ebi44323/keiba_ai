@@ -46,11 +46,9 @@ print("  ※ 197k行 × 4モデル。完了まで10〜30分かかります。")
 
 bundle = prepare_model_and_data(force_retrain=True)
 
-print(f"[{datetime.datetime.now():%H:%M:%S}] 学習完了。HF Hubへ保存中...")
-ok = _save_model_to_hub(bundle)
-
-if ok:
-    print(f"[{datetime.datetime.now():%H:%M:%S}] ✅ HF Hubへ保存完了！")
+# prepare_model_and_data 内部で _save_model_to_hub を呼んでいるため追加呼び出し不要
+if bundle is not None:
+    print(f"[{datetime.datetime.now():%H:%M:%S}] ✅ 学習・HF Hub保存完了！")
     print("  → HuggingFace Spaceを再起動すると正常に動作するはずです。")
 else:
-    print(f"[{datetime.datetime.now():%H:%M:%S}] ❌ HF Hub保存失敗。トークン・リポジトリIDを確認してください。")
+    print(f"[{datetime.datetime.now():%H:%M:%S}] ❌ 学習失敗。ログを確認してください。")

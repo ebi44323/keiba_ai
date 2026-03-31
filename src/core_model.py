@@ -292,14 +292,14 @@ def prepare_model_and_data(force_retrain=False):
     # ── モデルBパラメータ: Optunaチューニング済み（3fold ウォークフォワードCV）──
     # CV AUC: 0.7615 (市場勝率除外, 50試行) @ 2026-03-26
     model_win = lgb.LGBMRanker(
-        n_estimators=235,
-        learning_rate=0.023034,
-        num_leaves=82,
-        max_bin=171,
-        cat_smooth=48.5347,
-        colsample_bytree=0.5056,
-        subsample=0.6815,
-        min_child_samples=25,
+        n_estimators=700,
+        learning_rate=0.012275,
+        num_leaves=32,
+        max_bin=162,
+        cat_smooth=31.9926,
+        colsample_bytree=0.7124,
+        subsample=0.8923,
+        min_child_samples=77,
         random_state=123,
         importance_type='gain',
     )
@@ -327,8 +327,8 @@ def prepare_model_and_data(force_retrain=False):
     _sb_norm = _norm_scores(score_b)
     _sc_norm = _norm_scores(score_c)
 
-    # 複勝0.35, 1着0.5, 着順回帰0.15
-    test_df['予測スコア'] = _sa_norm * 0.35 + _sb_norm * 0.50 + _sc_norm * 0.15
+    # 複勝0.058, 1着0.816, 着順回帰0.126（アンサンブル重み最適化 @ 2026-03-30）
+    test_df['予測スコア'] = _sa_norm * 0.0581 + _sb_norm * 0.8159 + _sc_norm * 0.1261
     test_df['exp_score'] = np.exp(test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max'))
     test_df['AI勝率'] = test_df['exp_score']/test_df.groupby('レースID')['exp_score'].transform('sum')
     top_preds = test_df.sort_values(['レースID','AI勝率'],ascending=[True,False]).groupby('レースID').head(1)
@@ -436,7 +436,7 @@ def prepare_model_and_data(force_retrain=False):
     except Exception as _e:
         logger.warning(f'血統距離適性辞書 構築失敗: {_e}')
 
-    best_weight = 0.35  # 後方互換性および参照用
+    best_weight = 0.8159  # 後方互換性用（bundle位置保持のため残存・inference.pyでは未使用、実重みはcore_model.py L331/inference.py L461参照）
     bundle = (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,

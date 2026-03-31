@@ -185,14 +185,16 @@ def send_discord_review(stats: dict, rates: dict, target_date_str: str,
                         webhook_url: str = "") -> bool:
     """振り返り結果を Discord キュー経由で送信する（Cloudflare Workers cron が配送）"""
     try:
-        tan_rate     = rates.get('tan_rate', 0)
-        fuku_rate    = rates.get('fuku_rate', 0)
-        ev_tan_rate  = rates.get('ev_tan_rate', 0)
-        ev_fuku_rate = rates.get('ev_fuku_rate', 0)
-        uma_rate     = rates.get('uma_rate', 0)
-        shiba_rate   = rates.get('shiba_rate', 0)
-        dart_rate    = rates.get('dart_rate', 0)
-        races        = stats.get('honmei_races', 0)
+        tan_rate      = rates.get('tan_rate', 0)
+        fuku_rate     = rates.get('fuku_rate', 0)
+        choko_tan     = rates.get('choko_tan_rate', 0)
+        choko_fuku    = rates.get('choko_fuku_rate', 0)
+        ana_tan       = rates.get('ana_tan_rate', 0)
+        ana_fuku      = rates.get('ana_fuku_rate', 0)
+        uma_rate      = rates.get('uma_rate', 0)
+        shiba_rate    = rates.get('shiba_rate', 0)
+        dart_rate     = rates.get('dart_rate', 0)
+        races         = stats.get('honmei_races', 0)
 
         def _emoji(v):
             if v >= 150: return "🔥"
@@ -210,13 +212,20 @@ def send_discord_review(stats: dict, rates: dict, target_date_str: str,
             f"複勝  {_emoji(fuku_rate)} {fuku_rate:6.1f}%   的中 {stats.get('honmei_fuku_hits',0)}/{races}R",
             "```",
             "",
-            "**【期待値馬(EV1.5+) ベタ買い】**",
+            "**【超狙い馬(AI上位5頭 EV1.5+) ベタ買い】**",
             "```",
-            f"単勝  {_emoji(ev_tan_rate)} {ev_tan_rate:6.1f}%   的中 {stats.get('ev_tan_hits',0)}/{int(stats.get('ev_invest',0)//100)}頭",
-            f"複勝  {_emoji(ev_fuku_rate)} {ev_fuku_rate:6.1f}%   的中 {stats.get('ev_fuku_hits',0)}/{int(stats.get('ev_invest',0)//100)}頭",
+            f"単勝  {_emoji(choko_tan)} {choko_tan:6.1f}%   的中 {stats.get('choko_tan_hits',0)}/{int(stats.get('choko_invest',0)//100)}頭",
+            f"複勝  {_emoji(choko_fuku)} {choko_fuku:6.1f}%   的中 {stats.get('choko_fuku_hits',0)}/{int(stats.get('choko_invest',0)//100)}頭",
             "```",
             "",
-            f"🌱 芝: {shiba_rate:.1f}%  🏜️ ダート: {dart_rate:.1f}%  🔗 馬連: {uma_rate:.1f}%",
+            "**【穴馬(AI6位以下 EV1.5+) ベタ買い】**",
+            "```",
+            f"単勝  {_emoji(ana_tan)} {ana_tan:6.1f}%   的中 {stats.get('ana_tan_hits',0)}/{int(stats.get('ana_invest',0)//100)}頭",
+            f"複勝  {_emoji(ana_fuku)} {ana_fuku:6.1f}%   的中 {stats.get('ana_fuku_hits',0)}/{int(stats.get('ana_invest',0)//100)}頭",
+            "```",
+            "",
+            f"🌱 芝: {shiba_rate:.1f}%  🏜️ ダート: {dart_rate:.1f}%",
+            f"🔗 馬連: {uma_rate:.1f}%  📐 穴馬ワイド: {rates.get('wide_rate', 0):.1f}%",
             "",
             "-# keiba-ebye / 結果は参考情報です",
         ]

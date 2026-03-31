@@ -23,7 +23,7 @@ def _safe_col(df, col, default=np.nan):
     return pd.Series([val] * len(df), index=df.index)
 
 # ==========================================
-def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.0, min_win_prob=0.10):
+def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.0, min_win_prob=0.15):
     """
     skip_live_scrape=True: バックテスト時に使用。
       fetch_horse_last_race()を呼ばない（速度維持＆日付ズレ防止）
@@ -42,8 +42,10 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     html_text = ""
 
     try:
-        odds_api_url = f'https://race.netkeiba.com/api/api_get_jra_odds.html?type=1&action=init&race_id={race_id}'
-        api_headers = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36","Referer":f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}","X-Requested-With":"XMLHttpRequest"}
+        import time as _t
+        _ts = int(_t.time())
+        odds_api_url = f'https://race.netkeiba.com/api/api_get_jra_odds.html?type=1&action=init&race_id={race_id}&_={_ts}'
+        api_headers = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36","Referer":f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}","X-Requested-With":"XMLHttpRequest","Cache-Control":"no-cache, no-store","Pragma":"no-cache"}
         r_api = requests.get(odds_api_url, headers=api_headers, timeout=5)
         api_data = json.loads(r_api.text)
         if 'data' in api_data and 'odds' in api_data['data'] and '1' in api_data['data']['odds']:
@@ -95,6 +97,13 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     if not race_data_box: return None,None,None,None,None,None,None,None,["❌ レース条件が見つかりません。"]
 
     race_text = race_data_box.text.replace('\n','')
+    # レース名（クラス判定用）: RaceName > RaceData02 > pageTitle の順で補完
+    _race_name_tag = (soup.find(class_='RaceName') or soup.find(class_='race_name')
+                      or soup.find('h1', class_=re.compile(r'Race', re.I)))
+    _race_name_text = _race_name_tag.get_text(' ', strip=True) if _race_name_tag else ''
+    _race_data02 = soup.find('div', class_='RaceData02')
+    _race_data02_text = _race_data02.get_text(' ', strip=True) if _race_data02 else ''
+    race_class_text = _race_name_text + ' ' + _race_data02_text + ' ' + race_text
     baba_match = re.search(r'馬場:([良稍重不良]+)', race_text)
     todays_baba = baba_match.group(1) if baba_match else '良'
     tdm = re.search(r'(芝|ダ|障|障害).*?(\d+)m', race_text)
@@ -250,7 +259,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                          '前走_着順','2走前_着順','3走前_着順',
                          '前走_スピード指数','2走前_スピード指数','3走前_スピード指数',
                          '4走前_スピード指数','5走前_スピード指数',
-                         '前走_最終コーナー','2走前_最終コーナー']
+                         '前走_最終コーナー','2走前_最終コーナー','最新_斤量']
             for col in leak_cols:
                 if col in df_test.columns:
                     df_test.loc[future_mask, col] = np.nan
@@ -378,6 +387,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['前走_後半ペース値'] = pd.to_numeric(_safe_col(df_test, '前走_後半ペース値', np.nan), errors='coerce')
         df_test['馬体重増減']            = df_test['馬体重_num'] - pd.to_numeric(_safe_col(df_test, '最新_馬体重', np.nan), errors='coerce')
         df_test['斤量差'] = pd.to_numeric(df_test['斤量'],errors='coerce') - pd.to_numeric(df_test['斤量'],errors='coerce').mean()
+        _prev_kinryo = pd.to_numeric(_safe_col(df_test, '最新_斤量', np.nan), errors='coerce')
+        df_test['斤量_前走差'] = pd.to_numeric(df_test['斤量'], errors='coerce') - _prev_kinryo
         df_test['穴馬_距離変更一変']     = ((df_test['距離変更フラグ']==1)&(df_test['直近3走着順パーセント']<0.4)).astype(int)
         df_test['穴馬_馬場替わり一変']   = ((df_test['馬場替わりフラグ']==1)&(df_test['直近3走着順パーセント']<0.4)).astype(int)
         df_test['穴馬_勝負の乗り替わり'] = ((df_test['乗り替わりフラグ']==1)&(df_test['直近3走着順パーセント']<0.5)).astype(int)
@@ -394,8 +405,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             df_test['馬場指数'] = TRACK_CONDITION_MAP.get(todays_baba, 0)
 
         # ── 新特徴量: レースクラスコード ───────────────────────────
-        # レース情報からクラスを取得（全馬共通値）
-        _race_class = classify_race_class(race_text)
+        # RaceName + RaceData02 + RaceData01 を結合してクラス判定（RaceData01だけだとクラス情報がない）
+        _race_class = classify_race_class(race_class_text)
         df_test['レースクラスコード'] = float(_race_class)
 
         # ── 新特徴量: 市場勝率（オッズの逆数） ─────────────────────
@@ -454,7 +465,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             _sc = 1.0 - model_reg.predict(df_test[features]).astype(float)
             _sc = (_sc - _sc.min()) / (_sc.max() - _sc.min() + 1e-9)
             
-            raw_scores = _sa * 0.35 + _sb * 0.50 + _sc * 0.15
+            raw_scores = _sa * 0.0581 + _sb * 0.8159 + _sc * 0.1261  # アンサンブル重み最適化 @ 2026-03-30
         except Exception as _e:
             logger.warning(f'model_win/reg予測失敗、model_aのみ使用: {_e}')
             raw_scores = _sa  # フォールバック
@@ -486,22 +497,16 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['複勝率(AI予測)'] = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
         df_test['期待値'] = df_test['勝率(AI予測)']*df_test['単勝オッズ']
         df_test['期待値'] = df_test['期待値'].clip(upper=50.0)  # 取消馬などの異常EV防止
-        df_test = df_test.sort_values('勝率(AI予測)', ascending=False).reset_index(drop=True)
+        # 未出走馬（新馬フラグ==1）は必ず上位5頭の外へ（ソートキー先頭に新馬フラグ昇順を追加）
+        _unraced_col = df_test['新馬フラグ'].fillna(0).astype(int)
+        df_test = df_test.assign(_unraced_sort=_unraced_col)\
+                         .sort_values(['_unraced_sort', '勝率(AI予測)'], ascending=[True, False])\
+                         .drop(columns=['_unraced_sort'])\
+                         .reset_index(drop=True)
         marks = ['◎','〇','▲','△','☆']+['']*(len(df_test)-5)
         df_test['印'] = marks[:len(df_test)]
-        # EV優先モード: EV>=閾値 かつ AI勝率>=min_win_prob の馬を◎に昇格
-        if ev_first:
-            ev_cands = df_test[(df_test['期待値'] >= ev_threshold) & (df_test['勝率(AI予測)'] >= min_win_prob)]
-            if not ev_cands.empty:
-                # EVが最大の候補を◎に
-                best_ev_idx = ev_cands['期待値'].idxmax()
-                if best_ev_idx != 0:  # 元の◎と異なる場合のみ入れ替え
-                    old_honmei_mark = df_test.loc[0, '印']  # '◎'
-                    old_best_mark   = df_test.loc[best_ev_idx, '印']
-                    df_test.loc[0,            '印'] = old_best_mark if old_best_mark else '〇'
-                    df_test.loc[best_ev_idx,  '印'] = old_honmei_mark
 
-        # ── モデルD: 穴馬スコア計算 ──────────────────────────────────
+        # ── モデルD: 穴馬スコア計算（EV優先判定より先に行う）──────────────────────
         df_test['穴馬スコア'] = 0.0
         df_test['穴馬マーク'] = ''
         if model_d is not None:
@@ -509,7 +514,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                 d_features = [f for f in features if f != '市場勝率' and f in df_test.columns]
                 d_proba = model_d.predict_proba(df_test[d_features])[:, 1]
                 df_test['穴馬スコア'] = d_proba
-                # マーク条件: レース内スコア上位2頭 AND オッズ8倍以上
+                # マーク条件: レース内スコア上位30% AND スコア>=0.05 AND オッズ8倍以上
                 score_threshold = df_test['穴馬スコア'].quantile(0.70)
                 df_test['穴馬マーク'] = df_test.apply(
                     lambda r: '🎯' if (
@@ -521,6 +526,26 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                 )
             except Exception as _e:
                 logger.warning(f'モデルD推論失敗（スキップ）: {_e}')
+
+        # EV優先モード: EV>=閾値 かつ AI勝率>=min_win_prob の馬を◎に昇格
+        # 穴馬スコアが高い馬は複合EVスコア(EV × (1 + 穴馬スコア×0.5))で優先される
+        if ev_first:
+            ev_cands = df_test[
+                (df_test['期待値'] >= ev_threshold) &
+                (df_test['勝率(AI予測)'] >= min_win_prob) &
+                (df_test['新馬フラグ'].fillna(0) == 0)  # 未出走馬はEV優先◎昇格の対象外
+            ]
+            if not ev_cands.empty:
+                ev_cands = ev_cands.copy()
+                ev_cands['_ev_composite'] = ev_cands['期待値'] * (1.0 + ev_cands['穴馬スコア'] * 0.5)
+                best_ev_idx = ev_cands['_ev_composite'].idxmax()
+                if best_ev_idx != 0:  # 元の◎と異なる場合のみ入れ替え
+                    old_ev_mark = df_test.loc[best_ev_idx, '印']
+                    # 印だけでなく行ごと入れ替え（以降の処理がloc[0]基準のため）
+                    idx_list = [best_ev_idx] + [i for i in df_test.index if i != best_ev_idx]
+                    df_test = df_test.loc[idx_list].reset_index(drop=True)
+                    df_test.loc[0, '印'] = '◎'
+                    df_test.loc[1, '印'] = old_ev_mark if old_ev_mark else '〇'
 
         p1,p2 = df_test.loc[0,'勝率(AI予測)'],df_test.loc[1,'勝率(AI予測)']
         score_diff = p1-p2

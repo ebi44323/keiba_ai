@@ -13,7 +13,6 @@ import time
 import json
 import random
 
-from features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 
 # ── ロギング設定 ────────────────────────────────────────────────
 import logging
@@ -30,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-03-28c")
+st.caption("v2026-03-31f")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -42,9 +41,9 @@ from src.inference import run_real_prediction
 from src.gemini_utils import generate_two_analysts, check_gemini_available, generate_review_analysis
 
 @st.cache_data(ttl=3600*12, show_spinner=False)
-def get_morning_prediction(race_id, race_date_str, _bundle):
+def get_morning_prediction(race_id, race_date_str, _bundle, ev_first=False, ev_threshold=1.0, min_win_prob=0.10):
     # 朝版（直前版と同じくfetch_horse_last_race()を呼んで前走情報を最新化）
-    return run_real_prediction(race_id, race_date_str, _bundle, skip_live_scrape=False)
+    return run_real_prediction(race_id, race_date_str, _bundle, skip_live_scrape=False, ev_first=ev_first, ev_threshold=ev_threshold, min_win_prob=min_win_prob)
 
 
 
@@ -173,15 +172,15 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 🎯 ◎選択モード")
 ev_first_mode = st.sidebar.checkbox(
     "EV優先モード",
-    value=False,
+    value=True,
     help="ONにすると「AI勝率×オッズ(期待値)」が最大の馬を◎に選びます。穴馬が◎になりやすくなります。"
 )
 ev_first_threshold = 1.0
-ev_first_min_prob  = 0.10
+ev_first_min_prob  = 0.15
 if ev_first_mode:
     ev_first_threshold = st.sidebar.slider("◎昇格の最低期待値", 1.0, 3.0, 1.0, 0.1,
                            help="この期待値以上の馬の中からEV最大を◎にします。")
-    ev_first_min_prob  = st.sidebar.slider("◎昇格の最低AI勝率", 0.05, 0.30, 0.10, 0.01,
+    ev_first_min_prob  = st.sidebar.slider("◎昇格の最低AI勝率", 0.05, 0.30, 0.15, 0.01,
                            help="AI勝率がこれ未満の馬はEV優先でも◎になりません。")
 
 st.sidebar.markdown("---")
@@ -390,6 +389,32 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                    .format({'期待値':'{:.2f}','オッズ':'{:.1f}','枠番':'{:.0f}','馬番':'{:.0f}'}),
             width='stretch', hide_index=True
         )
+
+        # ── EV推奨候補ピックアップ（期待値上位3頭）───────────────
+        _ev_picks = df_res[df_res['期待値'] >= 1.0].nlargest(3, '期待値')
+        if not _ev_picks.empty:
+            st.markdown("#### 💎 EV推奨候補（期待値 ≥ 1.0）")
+            _ev_cols = st.columns(min(3, len(_ev_picks)))
+            for _i, (_, _row) in enumerate(_ev_picks.iterrows()):
+                with _ev_cols[_i]:
+                    _ana = _row.get('穴馬マーク', '')
+                    _mark = _row.get('印', '')
+                    _ev_val = float(_row.get('期待値', 0))
+                    _odds   = float(_row.get('単勝オッズ', 0))
+                    _prob   = float(_row.get('勝率(AI予測)', 0))
+                    _color  = "🔴" if _ev_val >= 2.0 else "🟡"
+                    st.markdown(
+                        f"<div style='padding:10px;border-radius:8px;border:2px solid "
+                        f"{'#FF4B4B' if _ev_val >= 2.0 else '#FFC107'};text-align:center;'>"
+                        f"<div style='font-size:1.3em;font-weight:bold;'>{_mark} {_row['馬名']} {_ana}</div>"
+                        f"<div style='font-size:1.1em;color:{'#FF4B4B' if _ev_val >= 2.0 else '#E6A817'};'>"
+                        f"EV <b>{_ev_val:.2f}</b></div>"
+                        f"<div style='font-size:0.85em;color:#888;'>"
+                        f"勝率 {_prob*100:.1f}% / {_odds:.1f}倍</div>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+            st.caption("💡 EV=AI勝率×オッズ。1.0超が購入検討ライン。穴馬スコア(🎯)が高い馬はさらに◎優先度が上がります。")
 
         # ── リアルタイム勝率バー（下段: グラフ）────────────────
         st.markdown("---")
@@ -818,7 +843,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                         conf_text = st.session_state.get(f'cached_conf_{next_race["id"]}')
                         err_log   = []
                     else:
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
 
                 if res_df is not None:
                     display_result(res_df, topics, reco, pace_text, conf_text)
@@ -889,7 +914,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                     if live_update:
                         res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
                     else:
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
 
                     if res_df is not None:
                         st.session_state[f'spec_res_{_spec_key}']    = res_df.copy()
@@ -947,7 +972,7 @@ elif action == "📅 今週末の全レース予想":
             for _i, _r in enumerate(_races):
                 _bar.progress((_i + 0.5) / len(_races), text=f"推論中... {_r['place']} {_r['num']}R")
                 _res_df, _topics, _reco, _pace, _conf, _track, _place, _dist, _elog = run_real_prediction(
-                    _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}", bundle)
+                    _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}", bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
                 if _res_df is not None:
                     _max_ev   = float(_res_df['期待値'].max()) if '期待値' in _res_df.columns else 0.0
                     _top_row  = _res_df.iloc[0]
@@ -1041,12 +1066,7 @@ elif action == "📅 今週末の全レース予想":
 
 elif action == "📝 1日の振り返り (答え合わせ)":
     st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
-    _rev_col1, _rev_col2 = st.columns([3, 1])
-    with _rev_col1:
-        target_date = st.date_input("振り返りたい日付を選択", datetime.date.today() - datetime.timedelta(days=1))
-    with _rev_col2:
-        compare_ev_mode = st.checkbox("🎯 EV優先◎と比較", value=False,
-                                       help="標準◎（AI勝率最大）とEV優先◎（期待値最大）の成績を並べて比較します")
+    target_date = st.date_input("振り返りたい日付を選択", datetime.date.today() - datetime.timedelta(days=1))
 
     # 日付が変わったら前のキャッシュをクリア
     _review_key = f'review_data_{target_date}'
@@ -1071,23 +1091,28 @@ elif action == "📝 1日の振り返り (答え合わせ)":
             else:
                 my_bar = st.progress(0, text="集計中...")
 
+                _ds_init = lambda: {'R数': 0, '的中': 0, '単勝回収': 0}
                 stats = {
                     'honmei_races': 0, 'honmei_tan_hits': 0, 'honmei_tan_return': 0,
                     'honmei_fuku_hits': 0, 'honmei_fuku_return': 0,
                     'umaren_races': 0, 'umaren_invest': 0, 'umaren_hits': 0, 'umaren_return': 0,
                     'wide_ana_races': 0, 'wide_ana_invest': 0, 'wide_ana_hits': 0, 'wide_ana_return': 0,
-                    'ev_invest': 0, 'ev_tan_hits': 0, 'ev_tan_return': 0, 'ev_fuku_hits': 0, 'ev_fuku_return': 0,
+                    'choko_invest': 0, 'choko_tan_hits': 0, 'choko_tan_return': 0,
+                    'choko_fuku_hits': 0, 'choko_fuku_return': 0,
+                    'ana_invest': 0, 'ana_tan_hits': 0, 'ana_tan_return': 0,
+                    'ana_fuku_hits': 0, 'ana_fuku_return': 0,
+                    'sanrenpuku_invest': 0, 'sanrenpuku_hits': 0, 'sanrenpuku_return': 0,
                     'shiba_races': 0, 'shiba_return': 0, 'dart_races': 0, 'dart_return': 0,
-                    'exp_races': 0, 'exp_return': 0, 'new_races': 0, 'new_return': 0,
-                }
-                stats_ev = {
-                    'races': 0, 'tan_hits': 0, 'tan_return': 0,
-                    'fuku_hits': 0, 'fuku_return': 0,
+                    'honmei_ai_probs': [], 'winner_ai_probs': [],
+                    'venue_stats': {},
+                    'dist_stats': {'短距離': _ds_init(), 'マイル': _ds_init(),
+                                   '中距離': _ds_init(), '長距離': _ds_init()},
+                    'class_stats': {'低クラス': _ds_init(), '高クラス': _ds_init()},
                 }
                 race_items = []
 
                 for i, r in enumerate(races):
-                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False)
+                    res_df, topics, reco, pace_text, conf_text, track_type, place, dist, err_log = run_real_prediction(r['id'], target_date.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
                     payouts = get_all_payouts(r['id'])
 
                     honmei_name = res_df.iloc[0]['馬名'] if res_df is not None else "不明"
@@ -1108,38 +1133,60 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                     # 集計処理
                     if res_df is not None and payouts['tansho']:
                         honmei = res_df.iloc[0]['馬番']
-                        has_unraced = ('新馬' in r['title']) or ('未出走' in r['title'])
-
-                        if compare_ev_mode:
-                            _ev_cands = res_df[(res_df['期待値'] >= 1.0) & (res_df['勝率(AI予測)'] >= 0.10)]
-                            ev_honmei = (_ev_cands.loc[_ev_cands['期待値'].idxmax(), '馬番']
-                                         if not _ev_cands.empty else honmei)
-                            stats_ev['races'] += 1
-                            if ev_honmei in payouts['tansho']:
-                                stats_ev['tan_hits']   += 1
-                                stats_ev['tan_return'] += payouts['tansho'][ev_honmei]
-                            if ev_honmei in payouts['fukusho']:
-                                stats_ev['fuku_hits']   += 1
-                                stats_ev['fuku_return'] += payouts['fukusho'][ev_honmei]
-
+                        honmei_ai_prob = float(res_df.iloc[0]['勝率(AI予測)'])
                         stats['honmei_races'] += 1
+                        stats['honmei_ai_probs'].append(honmei_ai_prob)
+
+                        # Calibration: 実際勝者のAI勝率
+                        winner_nums = list(payouts['tansho'].keys())
+                        if winner_nums:
+                            wr = res_df[res_df['馬番'] == winner_nums[0]]
+                            if not wr.empty:
+                                stats['winner_ai_probs'].append(float(wr.iloc[0]['勝率(AI予測)']))
+
+                        # 芝/ダート
                         if track_type == "芝": stats['shiba_races'] += 1
                         elif track_type == "ダート": stats['dart_races'] += 1
-                        if has_unraced: stats['new_races'] += 1
-                        else: stats['exp_races'] += 1
 
+                        # 競馬場別
+                        venue = place or r.get('place', '不明')
+                        vs = stats['venue_stats'].setdefault(venue, {'R数': 0, '的中': 0, '単勝回収': 0})
+                        vs['R数'] += 1
+
+                        # 距離帯別
+                        try: dist_val = int(dist) if dist else 0
+                        except (ValueError, TypeError): dist_val = 0
+                        if dist_val <= 1400:   dist_key = '短距離'
+                        elif dist_val <= 1800: dist_key = 'マイル'
+                        elif dist_val <= 2200: dist_key = '中距離'
+                        else:                  dist_key = '長距離'
+                        ds = stats['dist_stats'][dist_key]
+                        ds['R数'] += 1
+
+                        # クラス別
+                        from src.utils import classify_race_class as _crc
+                        race_cc = float(res_df.iloc[0].get('レースクラスコード', 5)) \
+                            if 'レースクラスコード' in res_df.columns else float(_crc(r.get('title', '')))
+                        class_key = '低クラス' if race_cc <= 2 else '高クラス'
+                        cs = stats['class_stats'][class_key]
+                        cs['R数'] += 1
+
+                        # 本命◎結果
                         if honmei in payouts['tansho']:
                             stats['honmei_tan_hits'] += 1
-                            stats['honmei_tan_return'] += payouts['tansho'][honmei]
-                            if track_type == "芝": stats['shiba_return'] += payouts['tansho'][honmei]
-                            elif track_type == "ダート": stats['dart_return'] += payouts['tansho'][honmei]
-                            if has_unraced: stats['new_return'] += payouts['tansho'][honmei]
-                            else: stats['exp_return'] += payouts['tansho'][honmei]
+                            pay = payouts['tansho'][honmei]
+                            stats['honmei_tan_return'] += pay
+                            if track_type == "芝": stats['shiba_return'] += pay
+                            elif track_type == "ダート": stats['dart_return'] += pay
+                            vs['的中'] += 1; vs['単勝回収'] += pay
+                            ds['的中'] += 1; ds['単勝回収'] += pay
+                            cs['的中'] += 1; cs['単勝回収'] += pay
 
                         if honmei in payouts['fukusho']:
                             stats['honmei_fuku_hits'] += 1
                             stats['honmei_fuku_return'] += payouts['fukusho'][honmei]
 
+                        # 馬連
                         if len(res_df) >= 5:
                             himo_list = res_df.iloc[1:5]['馬番'].tolist()
                             stats['umaren_races'] += 1
@@ -1150,7 +1197,17 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                                     stats['umaren_hits'] += 1
                                     stats['umaren_return'] += payouts['umaren'][key]
 
-                        ana_list = res_df[(res_df.index >= 4) & (res_df['期待値'] >= 1.5)]['馬番'].tolist()
+                        # 三連複◎〇▲
+                        if len(res_df) >= 3:
+                            top3 = res_df.iloc[:3]['馬番'].tolist()
+                            key3 = tuple(sorted(top3))
+                            stats['sanrenpuku_invest'] += 100
+                            if key3 in payouts.get('sanrenpuku', {}):
+                                stats['sanrenpuku_hits'] += 1
+                                stats['sanrenpuku_return'] += payouts['sanrenpuku'][key3]
+
+                        # 穴馬ワイド流し
+                        ana_list = res_df[(res_df.index >= 5) & (res_df['期待値'] >= 1.5)]['馬番'].tolist()
                         if ana_list:
                             stats['wide_ana_races'] += 1
                             stats['wide_ana_invest'] += len(ana_list) * 100
@@ -1160,55 +1217,105 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                                     stats['wide_ana_hits'] += 1
                                     stats['wide_ana_return'] += payouts['wide'][key]
 
-                        ev_list = res_df[(res_df.index < 5) & (res_df['期待値'] >= 1.5)]['馬番'].tolist()
-                        if ev_list:
-                            stats['ev_invest'] += len(ev_list) * 100
-                            for ev in ev_list:
-                                if ev in payouts['tansho']:
-                                    stats['ev_tan_hits'] += 1
-                                    stats['ev_tan_return'] += payouts['tansho'][ev]
-                                if ev in payouts['fukusho']:
-                                    stats['ev_fuku_hits'] += 1
-                                    stats['ev_fuku_return'] += payouts['fukusho'][ev]
+                        # 超狙い馬ベタ買い
+                        for _, row in res_df[(res_df.index < 5) & (res_df['期待値'] >= 1.5)].iterrows():
+                            uban = row['馬番']
+                            stats['choko_invest'] += 100
+                            if uban in payouts['tansho']:
+                                stats['choko_tan_hits'] += 1
+                                stats['choko_tan_return'] += payouts['tansho'][uban]
+                            if uban in payouts['fukusho']:
+                                stats['choko_fuku_hits'] += 1
+                                stats['choko_fuku_return'] += payouts['fukusho'][uban]
+
+                        # 穴馬ベタ買い
+                        for _, row in res_df[(res_df.index >= 5) & (res_df['期待値'] >= 1.5)].iterrows():
+                            uban = row['馬番']
+                            stats['ana_invest'] += 100
+                            if uban in payouts['tansho']:
+                                stats['ana_tan_hits'] += 1
+                                stats['ana_tan_return'] += payouts['tansho'][uban]
+                            if uban in payouts['fukusho']:
+                                stats['ana_fuku_hits'] += 1
+                                stats['ana_fuku_return'] += payouts['fukusho'][uban]
 
                     time.sleep(0.5)
                     my_bar.progress((i + 1) / len(races))
 
                 # 回収率計算
-                tan_rate = (stats['honmei_tan_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
-                fuku_rate = (stats['honmei_fuku_return'] / (stats['honmei_races'] * 100) * 100) if stats['honmei_races'] > 0 else 0
-                uma_rate = (stats['umaren_return'] / stats['umaren_invest'] * 100) if stats['umaren_invest'] > 0 else 0
-                wide_rate = (stats['wide_ana_return'] / stats['wide_ana_invest'] * 100) if stats['wide_ana_invest'] > 0 else 0
-                ev_tan_rate = (stats['ev_tan_return'] / stats['ev_invest'] * 100) if stats['ev_invest'] > 0 else 0
-                ev_fuku_rate = (stats['ev_fuku_return'] / stats['ev_invest'] * 100) if stats['ev_invest'] > 0 else 0
-                shiba_rate = (stats['shiba_return'] / (stats['shiba_races'] * 100) * 100) if stats['shiba_races'] > 0 else 0
-                dart_rate = (stats['dart_return'] / (stats['dart_races'] * 100) * 100) if stats['dart_races'] > 0 else 0
-                exp_rate = (stats['exp_return'] / (stats['exp_races'] * 100) * 100) if stats['exp_races'] > 0 else 0
-                new_rate = (stats['new_return'] / (stats['new_races'] * 100) * 100) if stats['new_races'] > 0 else 0
+                def _r(ret, inv): return round(ret / inv * 100, 1) if inv > 0 else 0.0
+                races_n = stats['honmei_races']
+                tan_rate    = _r(stats['honmei_tan_return'],  races_n * 100)
+                fuku_rate   = _r(stats['honmei_fuku_return'], races_n * 100)
+                uma_rate    = _r(stats['umaren_return'],  stats['umaren_invest'])
+                wide_rate   = _r(stats['wide_ana_return'], stats['wide_ana_invest'])
+                san_rate    = _r(stats['sanrenpuku_return'], stats['sanrenpuku_invest'])
+                choko_tan_rate  = _r(stats['choko_tan_return'], stats['choko_invest'])
+                choko_fuku_rate = _r(stats['choko_fuku_return'], stats['choko_invest'])
+                ana_tan_rate    = _r(stats['ana_tan_return'], stats['ana_invest'])
+                ana_fuku_rate   = _r(stats['ana_fuku_return'], stats['ana_invest'])
+                shiba_rate  = _r(stats['shiba_return'], stats['shiba_races'] * 100)
+                dart_rate   = _r(stats['dart_return'],  stats['dart_races'] * 100)
+                def _dr(key): ds=stats['dist_stats'][key]; return _r(ds['単勝回収'], ds['R数']*100)
+                def _cr(key): cs=stats['class_stats'][key]; return _r(cs['単勝回収'], cs['R数']*100)
+                honmei_avg_ai  = round(sum(stats['honmei_ai_probs']) / len(stats['honmei_ai_probs']) * 100, 1) if stats['honmei_ai_probs'] else 0.0
+                winner_avg_ai  = round(sum(stats['winner_ai_probs']) / len(stats['winner_ai_probs']) * 100, 1) if stats['winner_ai_probs'] else 0.0
 
                 # CSVセーブ
+                import json as _json
                 csv_file = "ai_daily_history.csv"
-                _ev_tan_rate_ev  = round((stats_ev['tan_return']  / (stats_ev['races'] * 100) * 100), 1) if stats_ev['races'] > 0 else None
-                _ev_fuku_rate_ev = round((stats_ev['fuku_return'] / (stats_ev['races'] * 100) * 100), 1) if stats_ev['races'] > 0 else None
                 daily_data = pd.DataFrame([{
                     '日付': target_date.strftime('%Y/%m/%d'),
-                    '本命単勝回収率': round(tan_rate, 1),
-                    '本命複勝回収率': round(fuku_rate, 1),
-                    '穴馬単勝回収率': round(ev_tan_rate, 1),
-                    '穴馬複勝回収率': round(ev_fuku_rate, 1),
-                    '本命レース数': stats['honmei_races'],
+                    '本命レース数': races_n,
                     '本命単勝的中数': stats['honmei_tan_hits'],
+                    '本命単勝回収率': tan_rate,
                     '本命複勝的中数': stats['honmei_fuku_hits'],
-                    'EV馬数': int(stats['ev_invest'] // 100),
-                    'EV単勝的中数': stats['ev_tan_hits'],
-                    'EV優先単勝回収率': _ev_tan_rate_ev,
-                    'EV優先複勝回収率': _ev_fuku_rate_ev,
+                    '本命複勝回収率': fuku_rate,
+                    '馬連的中数': stats['umaren_hits'],
+                    '馬連回収率': uma_rate,
+                    '三連複的中数': stats['sanrenpuku_hits'],
+                    '三連複回収率': san_rate,
+                    '超狙い馬数': int(stats['choko_invest'] // 100),
+                    '超狙い馬単勝的中数': stats['choko_tan_hits'],
+                    '超狙い馬単勝回収率': choko_tan_rate,
+                    '超狙い馬複勝的中数': stats['choko_fuku_hits'],
+                    '超狙い馬複勝回収率': choko_fuku_rate,
+                    '穴馬数': int(stats['ana_invest'] // 100),
+                    '穴馬単勝的中数': stats['ana_tan_hits'],
+                    '穴馬単勝回収率': ana_tan_rate,
+                    '穴馬複勝的中数': stats['ana_fuku_hits'],
+                    '穴馬複勝回収率': ana_fuku_rate,
+                    '穴馬ワイド対象R': stats['wide_ana_races'],
+                    '穴馬ワイド的中数': stats['wide_ana_hits'],
+                    '穴馬ワイド回収率': wide_rate,
+                    '芝レース数': stats['shiba_races'],
+                    '芝単勝回収率': shiba_rate,
+                    'ダートレース数': stats['dart_races'],
+                    'ダート単勝回収率': dart_rate,
+                    '短距離_R数': stats['dist_stats']['短距離']['R数'],
+                    '短距離_的中': stats['dist_stats']['短距離']['的中'],
+                    '短距離_単勝回収率': _dr('短距離'),
+                    'マイル_R数': stats['dist_stats']['マイル']['R数'],
+                    'マイル_的中': stats['dist_stats']['マイル']['的中'],
+                    'マイル_単勝回収率': _dr('マイル'),
+                    '中距離_R数': stats['dist_stats']['中距離']['R数'],
+                    '中距離_的中': stats['dist_stats']['中距離']['的中'],
+                    '中距離_単勝回収率': _dr('中距離'),
+                    '長距離_R数': stats['dist_stats']['長距離']['R数'],
+                    '長距離_的中': stats['dist_stats']['長距離']['的中'],
+                    '長距離_単勝回収率': _dr('長距離'),
+                    '低クラス_R数': stats['class_stats']['低クラス']['R数'],
+                    '低クラス_的中': stats['class_stats']['低クラス']['的中'],
+                    '低クラス_単勝回収率': _cr('低クラス'),
+                    '高クラス_R数': stats['class_stats']['高クラス']['R数'],
+                    '高クラス_的中': stats['class_stats']['高クラス']['的中'],
+                    '高クラス_単勝回収率': _cr('高クラス'),
+                    '本命平均AIスコア': honmei_avg_ai,
+                    '実際勝者の平均AI勝率': winner_avg_ai,
+                    '競馬場別': _json.dumps(stats['venue_stats'], ensure_ascii=False),
                 }])
                 if os.path.exists(csv_file):
                     existing_df = pd.read_csv(csv_file)
-                    for col in ['本命単勝回収率', '本命複勝回収率', '穴馬単勝回収率', '穴馬複勝回収率',
-                                'EV優先単勝回収率', 'EV優先複勝回収率']:
-                        if col not in existing_df.columns: existing_df[col] = None
                     existing_df = existing_df[existing_df['日付'] != target_date.strftime('%Y/%m/%d')]
                     updated_df = pd.concat([existing_df, daily_data])
                     updated_df.to_csv(csv_file, index=False)
@@ -1230,18 +1337,21 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                         )
                     except Exception: pass
 
-                # 結果をsession_stateに保存（Geminiボタン押下後のrerunで消えないように）
+                # 結果をsession_stateに保存
                 st.session_state[_review_key] = {
                     'race_items': race_items,
-                    'stats': stats, 'stats_ev': stats_ev,
+                    'stats': stats,
                     'rates': {
                         'tan_rate': tan_rate, 'fuku_rate': fuku_rate,
                         'uma_rate': uma_rate, 'wide_rate': wide_rate,
-                        'ev_tan_rate': ev_tan_rate, 'ev_fuku_rate': ev_fuku_rate,
+                        'san_rate': san_rate,
+                        'choko_tan_rate': choko_tan_rate, 'choko_fuku_rate': choko_fuku_rate,
+                        'ana_tan_rate': ana_tan_rate, 'ana_fuku_rate': ana_fuku_rate,
                         'shiba_rate': shiba_rate, 'dart_rate': dart_rate,
-                        'exp_rate': exp_rate, 'new_rate': new_rate,
+                        'honmei_avg_ai': honmei_avg_ai, 'winner_avg_ai': winner_avg_ai,
+                        'dist_rates': {k: _dr(k) for k in stats['dist_stats']},
+                        'class_rates': {k: _cr(k) for k in stats['class_stats']},
                     },
-                    'compare_ev_mode': compare_ev_mode,
                 }
 
     # ── 結果表示（session_stateから。Geminiボタン押下後も消えない）──
@@ -1249,20 +1359,23 @@ elif action == "📝 1日の振り返り (答え合わせ)":
     if _review_data:
         _race_items   = _review_data['race_items']
         _stats        = _review_data['stats']
-        _stats_ev     = _review_data['stats_ev']
         _rates        = _review_data['rates']
-        _cmp_ev_mode  = _review_data['compare_ev_mode']
 
-        tan_rate     = _rates['tan_rate']
-        fuku_rate    = _rates['fuku_rate']
-        uma_rate     = _rates['uma_rate']
-        wide_rate    = _rates['wide_rate']
-        ev_tan_rate  = _rates['ev_tan_rate']
-        ev_fuku_rate = _rates['ev_fuku_rate']
-        shiba_rate   = _rates['shiba_rate']
-        dart_rate    = _rates['dart_rate']
-        exp_rate     = _rates['exp_rate']
-        new_rate     = _rates['new_rate']
+        tan_rate        = _rates['tan_rate']
+        fuku_rate       = _rates['fuku_rate']
+        uma_rate        = _rates['uma_rate']
+        wide_rate       = _rates['wide_rate']
+        san_rate        = _rates.get('san_rate', 0.0)
+        choko_tan_rate  = _rates['choko_tan_rate']
+        choko_fuku_rate = _rates['choko_fuku_rate']
+        ana_tan_rate    = _rates['ana_tan_rate']
+        ana_fuku_rate   = _rates['ana_fuku_rate']
+        shiba_rate      = _rates['shiba_rate']
+        dart_rate       = _rates['dart_rate']
+        honmei_avg_ai   = _rates.get('honmei_avg_ai', 0.0)
+        winner_avg_ai   = _rates.get('winner_avg_ai', 0.0)
+        dist_rates      = _rates.get('dist_rates', {})
+        class_rates     = _rates.get('class_rates', {})
 
         # レースごとのexpander
         for _item in _race_items:
@@ -1307,8 +1420,16 @@ elif action == "📝 1日の振り返り (答え合わせ)":
             st.write(f"🌱 **芝** 回収率: {shiba_rate:.1f}% ({_stats['shiba_races']}R)")
             st.write(f"🏜️ **ダート** 回収率: {dart_rate:.1f}% ({_stats['dart_races']}R)")
             st.markdown("---")
-            st.write(f"📚 **既走馬のみ** 回収率: **{exp_rate:.1f}%** ({_stats['exp_races']}R)")
-            st.write(f"🔰 **未出走混在** 回収率: **{new_rate:.1f}%** ({_stats['new_races']}R)")
+            _def_emoji = lambda v: "🔥" if v>=150 else ("✅" if v>=100 else ("🟡" if v>=70 else "❌"))
+            st.write(f"**📐 距離帯別 単勝回収率**")
+            for _dk, _dv in dist_rates.items():
+                _dn = _stats['dist_stats'].get(_dk, {}).get('R数', 0)
+                st.write(f"  {_def_emoji(_dv)} {_dk}: **{_dv:.1f}%** ({_dn}R)")
+            st.markdown("---")
+            st.write(f"**🏷️ クラス別 単勝回収率**")
+            for _ck, _cv in class_rates.items():
+                _cn = _stats['class_stats'].get(_ck, {}).get('R数', 0)
+                st.write(f"  {_def_emoji(_cv)} {_ck}: **{_cv:.1f}%** ({_cn}R)")
 
         with col2:
             st.info("🔗 【馬券シミュレーション】")
@@ -1316,44 +1437,36 @@ elif action == "📝 1日の振り返り (答え合わせ)":
             st.write(f"  投資: ¥{_stats['umaren_invest']:,} / 回収率: **{uma_rate:.1f}%** (的中 {_stats['umaren_hits']}R)")
             st.write(f"- **穴馬ワイド (◎ → 期待値特大の穴馬へ)**")
             st.write(f"  該当: {_stats['wide_ana_races']}R / 回収率: **{wide_rate:.1f}%** (的中 {_stats['wide_ana_hits']}回)")
+            st.write(f"- **三連複 (◎〇▲ 1点)**")
+            st.write(f"  投資: ¥{_stats['sanrenpuku_invest']:,} / 回収率: **{san_rate:.1f}%** (的中 {_stats['sanrenpuku_hits']}R)")
             st.markdown("---")
-            st.warning("🔥 【上位5頭内 期待値1.5以上馬 ベタ買い】")
-            st.write(f"- 該当数: {int(_stats['ev_invest']/100)} 頭")
-            st.write(f"- **単勝 回収率**: **{ev_tan_rate:.1f}%** (的中 {_stats['ev_tan_hits']}頭)")
-            st.write(f"- **複勝 回収率**: **{ev_fuku_rate:.1f}%** (的中 {_stats['ev_fuku_hits']}頭)")
+            st.warning("🔥 【超狙い馬 (AI上位5頭 EV1.5+) ベタ買い】")
+            st.write(f"- 該当数: {int(_stats['choko_invest']/100)} 頭")
+            st.write(f"- **単勝 回収率**: **{choko_tan_rate:.1f}%** (的中 {_stats['choko_tan_hits']}頭)")
+            st.write(f"- **複勝 回収率**: **{choko_fuku_rate:.1f}%** (的中 {_stats['choko_fuku_hits']}頭)")
+            st.markdown("---")
+            st.info("💣 【穴馬 (AI6位以下 EV1.5+) ベタ買い】")
+            st.write(f"- 該当数: {int(_stats['ana_invest']/100)} 頭")
+            st.write(f"- **単勝 回収率**: **{ana_tan_rate:.1f}%** (的中 {_stats['ana_tan_hits']}頭)")
+            st.write(f"- **複勝 回収率**: **{ana_fuku_rate:.1f}%** (的中 {_stats['ana_fuku_hits']}頭)")
+            st.markdown("---")
+            st.write("**🤖 Calibration（本命AIスコア精度）**")
+            st.write(f"  本命の平均AI勝率: **{honmei_avg_ai:.1f}%**")
+            st.write(f"  実際の勝者の平均AI勝率: **{winner_avg_ai:.1f}%**")
 
-        # EV優先◎ 比較表示
-        if _cmp_ev_mode and _stats_ev['races'] > 0:
+        # 競馬場別成績
+        _venue_stats = _stats.get('venue_stats', {})
+        if _venue_stats:
             st.markdown("---")
-            st.markdown("### 🎯 EV優先◎ vs 標準◎ 比較")
-            ev_tan_rate_ev  = (_stats_ev['tan_return']  / (_stats_ev['races'] * 100) * 100) if _stats_ev['races'] > 0 else 0
-            ev_fuku_rate_ev = (_stats_ev['fuku_return'] / (_stats_ev['races'] * 100) * 100) if _stats_ev['races'] > 0 else 0
-            _cmp_data = {
-                '指標': ['単勝 的中率', '単勝 回収率', '複勝 的中率', '複勝 回収率'],
-                '標準◎ (AI勝率最大)': [
-                    f"{_stats['honmei_tan_hits'] / _stats['honmei_races'] * 100:.1f}%",
-                    f"{tan_rate:.1f}%",
-                    f"{_stats['honmei_fuku_hits'] / _stats['honmei_races'] * 100:.1f}%",
-                    f"{fuku_rate:.1f}%",
-                ],
-                'EV優先◎ (期待値最大)': [
-                    f"{_stats_ev['tan_hits'] / _stats_ev['races'] * 100:.1f}%",
-                    f"{ev_tan_rate_ev:.1f}%",
-                    f"{_stats_ev['fuku_hits'] / _stats_ev['races'] * 100:.1f}%",
-                    f"{ev_fuku_rate_ev:.1f}%",
-                ],
-            }
-            def _cmp_color(row):
-                std_val  = float(row['標準◎ (AI勝率最大)'].replace('%',''))
-                ev_val   = float(row['EV優先◎ (期待値最大)'].replace('%',''))
-                color_ev = 'background-color:rgba(75,200,75,0.15)' if ev_val > std_val else ''
-                color_std = 'background-color:rgba(75,75,255,0.10)' if std_val >= ev_val else ''
-                return ['', color_std, color_ev]
-            st.dataframe(
-                pd.DataFrame(_cmp_data).style.apply(_cmp_color, axis=1),
-                width='stretch', hide_index=True
-            )
-            st.caption(f"対象: {_stats_ev['races']}レース。EV優先◎が標準◎と同じ馬の場合は同結果になります。")
+            st.markdown("**🏟️ 競馬場別 本命単勝回収率**")
+            _def_emoji = lambda v: "🔥" if v>=150 else ("✅" if v>=100 else ("🟡" if v>=70 else "❌"))
+            _venue_cols = st.columns(min(len(_venue_stats), 5))
+            for _vi, (_vname, _vdata) in enumerate(_venue_stats.items()):
+                _vr = _vdata.get('R数', 0)
+                _vret = _vdata.get('単勝回収', 0)
+                _vrate = round(_vret / (_vr * 100) * 100, 1) if _vr > 0 else 0.0
+                with _venue_cols[_vi % len(_venue_cols)]:
+                    st.metric(_vname, f"{_vrate:.0f}%", delta=f"{_vr}R", delta_color="off")
 
         # Gemini 敗因分析エリア
         if _gemini_ok and gemini_mode:
@@ -1383,8 +1496,10 @@ elif action == "📝 1日の振り返り (答え合わせ)":
             st.markdown("---")
             _review_rates = {
                 'tan_rate': tan_rate, 'fuku_rate': fuku_rate,
-                'ev_tan_rate': ev_tan_rate, 'ev_fuku_rate': ev_fuku_rate,
-                'uma_rate': uma_rate, 'shiba_rate': shiba_rate, 'dart_rate': dart_rate,
+                'choko_tan_rate': choko_tan_rate, 'choko_fuku_rate': choko_fuku_rate,
+                'ana_tan_rate': ana_tan_rate, 'ana_fuku_rate': ana_fuku_rate,
+                'uma_rate': uma_rate, 'wide_rate': wide_rate,
+                'shiba_rate': shiba_rate, 'dart_rate': dart_rate,
             }
             _review_date_str = target_date.strftime('%Y/%m/%d')
 
@@ -1427,10 +1542,11 @@ elif action == "📈 長期成績分析":
         target_rate = st.number_input("目標回収率 (%)", 80, 200, 100, 5,
             help="このラインをグラフに表示します。損益分岐点=100%")
         focus_col = st.selectbox("重点分析指標",
-            ['本命単勝回収率','本命複勝回収率','穴馬単勝回収率','穴馬複勝回収率'],
+            ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率',
+             '穴馬単勝回収率','穴馬複勝回収率','三連複回収率','馬連回収率'],
             help="累積損益グラフで比較する主指標")
 
-    # 起動時にGitHubからai_daily_history.csvを取得（再起動でリセット防止）
+    # 起動時にHF HubからCSVを取得（再起動でリセット防止）
     if not os.path.exists(csv_file) and _HF_TOKEN and _HF_REPO_ID:
         try:
             from huggingface_hub import hf_hub_download
@@ -1446,60 +1562,55 @@ elif action == "📈 長期成績分析":
         st.info("まだデータがありません。「1日の振り返り」を実行するとここにデータが蓄積されます。")
     else:
         history_df = pd.read_csv(csv_file)
-        for col in ['本命単勝回収率','本命複勝回収率','穴馬単勝回収率','穴馬複勝回収率']:
+        # 旧CSVとの後方互換 — 存在しない列は0/Noneで補完
+        for col in ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率',
+                    '穴馬単勝回収率','穴馬複勝回収率','三連複回収率','馬連回収率','穴馬ワイド回収率']:
             if col not in history_df.columns: history_df[col] = 0.0
-        for col in ['EV優先単勝回収率','EV優先複勝回収率']:
+        for col in ['本命平均AIスコア','実際勝者の平均AI勝率']:
+            if col not in history_df.columns: history_df[col] = None
+        for col in ['短距離_単勝回収率','マイル_単勝回収率','中距離_単勝回収率','長距離_単勝回収率']:
+            if col not in history_df.columns: history_df[col] = None
+        for col in ['低クラス_単勝回収率','高クラス_単勝回収率']:
             if col not in history_df.columns: history_df[col] = None
         history_df['日付'] = pd.to_datetime(history_df['日付'], errors='coerce')
         history_df = history_df.dropna(subset=['日付']).sort_values('日付').reset_index(drop=True)
-
-        # EV優先データがある行だけ抽出
-        ev_df = history_df.dropna(subset=['EV優先単勝回収率']).copy()
-        has_ev = len(ev_df) > 0
 
         if len(history_df) == 0:
             st.warning("有効なデータがありません。")
         else:
             # ── KPI サマリー ─────────────────────────────────
             n  = len(history_df)
-            avg_tan  = history_df['本命単勝回収率'].mean()
-            avg_fuku = history_df['本命複勝回収率'].mean()
-            avg_ana  = history_df['穴馬単勝回収率'].mean()
-            over100_tan  = (history_df['本命単勝回収率'] >= 100).sum()
-            over100_fuku = (history_df['本命複勝回収率'] >= 100).sum()
+            avg_tan    = history_df['本命単勝回収率'].mean()
+            avg_fuku   = history_df['本命複勝回収率'].mean()
+            avg_choko  = history_df['超狙い馬単勝回収率'].mean()
+            avg_ana    = history_df['穴馬単勝回収率'].mean()
+            avg_san    = history_df['三連複回収率'].mean()
+            avg_uma    = history_df['馬連回収率'].mean()
+            over100_tan = (history_df['本命単勝回収率'] >= 100).sum()
 
-            k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("📅 集計日数",     f"{n}日")
-            k2.metric("📈 本命単勝 平均", f"{avg_tan:.1f}%",
+            k1, k2, k3, k4, k5, k6 = st.columns(6)
+            k1.metric("📅 集計日数",          f"{n}日")
+            k2.metric("📈 本命単勝 平均",      f"{avg_tan:.1f}%",
                       delta=f"{avg_tan-100:+.1f}%", delta_color="normal")
-            k3.metric("📊 本命複勝 平均", f"{avg_fuku:.1f}%",
+            k3.metric("📊 本命複勝 平均",      f"{avg_fuku:.1f}%",
                       delta=f"{avg_fuku-100:+.1f}%", delta_color="normal")
-            k4.metric("🔥 穴馬単勝 平均", f"{avg_ana:.1f}%",
-                      delta=f"{avg_ana-100:+.1f}%", delta_color="normal")
-            k5.metric("✅ 単勝100%超え日", f"{over100_tan}日 / {n}日",
+            k4.metric("🔥 超狙い馬単勝 平均",  f"{avg_choko:.1f}%",
+                      delta=f"{avg_choko-100:+.1f}%", delta_color="normal")
+            k5.metric("🎯 三連複 平均",        f"{avg_san:.1f}%",
+                      delta=f"{avg_san-100:+.1f}%", delta_color="normal")
+            k6.metric("✅ 単勝100%超え日",     f"{over100_tan}日/{n}日",
                       f"{over100_tan/n*100:.0f}%")
 
-            # EV優先 KPI（データがある場合のみ）
-            if has_ev:
-                n_ev = len(ev_df)
-                avg_ev_tan  = ev_df['EV優先単勝回収率'].mean()
-                avg_ev_fuku = ev_df['EV優先複勝回収率'].mean()
-                diff_tan  = avg_ev_tan  - ev_df['本命単勝回収率'].mean()
-                diff_fuku = avg_ev_fuku - ev_df['本命複勝回収率'].mean()
-                st.markdown("**🎯 EV優先◎ vs 標準◎ 比較サマリー** "
-                            f"<span style='font-size:0.85em;color:#888'>({n_ev}日分のデータ)</span>",
-                            unsafe_allow_html=True)
-                ek1, ek2, ek3, ek4 = st.columns(4)
-                ek1.metric("標準◎ 単勝(同期間)",
-                           f"{ev_df['本命単勝回収率'].mean():.1f}%")
-                ek2.metric("🎯 EV優先 単勝",
-                           f"{avg_ev_tan:.1f}%",
-                           delta=f"{diff_tan:+.1f}%", delta_color="normal")
-                ek3.metric("標準◎ 複勝(同期間)",
-                           f"{ev_df['本命複勝回収率'].mean():.1f}%")
-                ek4.metric("🎯 EV優先 複勝",
-                           f"{avg_ev_fuku:.1f}%",
-                           delta=f"{diff_fuku:+.1f}%", delta_color="normal")
+            # Calibration KPI（データある場合のみ）
+            _cal_df = history_df.dropna(subset=['本命平均AIスコア'])
+            if len(_cal_df) > 0:
+                avg_honmei_ai = _cal_df['本命平均AIスコア'].mean()
+                avg_winner_ai = _cal_df['実際勝者の平均AI勝率'].mean()
+                st.caption(
+                    f"🤖 Calibration平均 — 本命AI勝率: **{avg_honmei_ai:.1f}%** / "
+                    f"実際勝者のAI勝率: **{avg_winner_ai:.1f}%**"
+                    f"（{len(_cal_df)}日分）"
+                )
 
             st.markdown("---")
 
@@ -1516,7 +1627,8 @@ elif action == "📈 長期成績分析":
                 ma_window = st.slider("移動平均ウィンドウ (日)", 1, _ma_max, _ma_def, 1)
 
             # ── 折れ線グラフ ─────────────────────────────────
-            plot_cols = ['本命単勝回収率','本命複勝回収率','穴馬単勝回収率','穴馬複勝回収率']
+            plot_cols = ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率',
+                         '穴馬単勝回収率','穴馬複勝回収率','三連複回収率','馬連回収率']
             history_df['日付_str'] = history_df['日付'].dt.strftime('%Y/%m/%d')
 
             for col in plot_cols:
@@ -1527,9 +1639,9 @@ elif action == "📈 長期成績分析":
                 value_vars=[f'{c}_MA' for c in plot_cols],
                 var_name='指標', value_name='回収率(%)'
             )
-            melted['指標'] = melted['指標'].str.replace('_MA','')
+            melted['指標'] = melted['指標'].str.replace('_MA','', regex=False)
 
-            rule100 = alt.Chart(pd.DataFrame({'y':[100]})).mark_rule(
+            rule_target = alt.Chart(pd.DataFrame({'y':[target_rate]})).mark_rule(
                 color='gray', strokeDash=[4,4], opacity=0.6
             ).encode(y='y:Q')
 
@@ -1540,28 +1652,8 @@ elif action == "📈 長期成績分析":
                 tooltip=['日付_str','指標','回収率(%)']
             ).properties(height=300)
 
-            # EV優先ラインをオーバーレイ（データある日のみ点線）
-            ev_layers = rule100
-            if has_ev:
-                ev_df['日付_str'] = ev_df['日付'].dt.strftime('%Y/%m/%d')
-                ev_melted = ev_df.melt(
-                    '日付_str',
-                    value_vars=['EV優先単勝回収率','EV優先複勝回収率'],
-                    var_name='指標', value_name='回収率(%)'
-                )
-                ev_line = alt.Chart(ev_melted).mark_line(
-                    point=True, strokeDash=[5, 3], strokeWidth=2
-                ).encode(
-                    x=alt.X('日付_str:N', sort=None),
-                    y=alt.Y('回収率(%):Q'),
-                    color=alt.Color('指標:N', legend=alt.Legend(orient='bottom')),
-                    tooltip=['日付_str','指標','回収率(%)']
-                )
-                ev_layers = rule100 + ev_line
-
-            st.altair_chart(line + ev_layers, width='stretch')
-            _ev_note = "　破線 = EV優先◎" if has_ev else ""
-            st.caption(f"灰色破線 = 損益分岐点 / {ma_window}日移動平均を表示中{_ev_note}")
+            st.altair_chart(line + rule_target, use_container_width=True)
+            st.caption(f"灰色破線 = 目標{target_rate}% / {ma_window}日移動平均を表示中")
 
             st.markdown("---")
             st.markdown("#### 📋 日別詳細テーブル")
@@ -1575,76 +1667,60 @@ elif action == "📈 長期成績分析":
                 except: pass
                 return ''
 
-            # EV優先列を含む詳細テーブル
-            _tbl_cols = plot_cols.copy()
-            _ev_tbl_cols = []
-            if has_ev:
-                _ev_tbl_cols = ['EV優先単勝回収率','EV優先複勝回収率']
-                _tbl_cols += _ev_tbl_cols
-            show_table = history_df[['日付_str'] + _tbl_cols].copy()
+            _tbl_cols = ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率',
+                         '穴馬単勝回収率','穴馬複勝回収率','三連複回収率','馬連回収率','穴馬ワイド回収率',
+                         '本命平均AIスコア','実際勝者の平均AI勝率']
+            _tbl_avail = [c for c in _tbl_cols if c in history_df.columns]
+            show_table = history_df[['日付_str'] + _tbl_avail].copy()
             show_table = show_table.rename(columns={'日付_str':'日付'}).sort_values('日付', ascending=False)
-            _fmt = {c:'{:.1f}%' for c in _tbl_cols}
+            _rate_cols = [c for c in _tbl_avail if '回収率' in c or 'AI' in c]
+            _fmt = {c:'{:.1f}%' for c in _rate_cols}
             st.dataframe(
-                show_table.style.applymap(color_rate, subset=_tbl_cols)
+                show_table.style.applymap(color_rate, subset=_rate_cols)
                           .format(_fmt, na_rep='-'),
-                width='stretch', hide_index=True
+                use_container_width=True, hide_index=True
             )
-            if has_ev:
-                st.caption("🎯 EV優先列は「振り返り」でEV優先比較チェックをONにした日のみ記録されます。「-」は未集計。")
 
-            # ── EV優先 vs 標準◎ 日別比較テーブル ──────────────
-            if has_ev:
+            # ── 距離帯別・クラス別 集計 ──────────────────────
+            _dist_cols  = ['短距離_単勝回収率','マイル_単勝回収率','中距離_単勝回収率','長距離_単勝回収率']
+            _class_cols = ['低クラス_単勝回収率','高クラス_単勝回収率']
+            _dist_avail  = [c for c in _dist_cols  if c in history_df.columns and history_df[c].notna().any()]
+            _class_avail = [c for c in _class_cols if c in history_df.columns and history_df[c].notna().any()]
+            if _dist_avail or _class_avail:
                 st.markdown("---")
-                st.markdown("#### 🎯 EV優先◎ vs 標準◎ 日別比較")
-                _cmp = ev_df[['日付_str','本命単勝回収率','EV優先単勝回収率',
-                               '本命複勝回収率','EV優先複勝回収率']].copy()
-                _cmp['単勝差'] = _cmp['EV優先単勝回収率'] - _cmp['本命単勝回収率']
-                _cmp['複勝差'] = _cmp['EV優先複勝回収率'] - _cmp['本命複勝回収率']
-                _cmp = _cmp.rename(columns={
-                    '日付_str':'日付',
-                    '本命単勝回収率':'標準◎単勝%', 'EV優先単勝回収率':'EV優先単勝%',
-                    '本命複勝回収率':'標準◎複勝%', 'EV優先複勝回収率':'EV優先複勝%',
-                }).sort_values('日付', ascending=False)
-
-                def color_diff(val):
-                    try:
-                        v = float(val)
-                        if v > 0: return 'color:#c00;font-weight:bold'
-                        if v < 0: return 'color:#4B8BFF'
-                    except: pass
-                    return ''
-
-                _cmp_cols_rate = ['標準◎単勝%','EV優先単勝%','標準◎複勝%','EV優先複勝%']
-                _cmp_cols_diff = ['単勝差','複勝差']
-                st.dataframe(
-                    _cmp.style
-                        .applymap(color_rate, subset=_cmp_cols_rate)
-                        .applymap(color_diff, subset=_cmp_cols_diff)
-                        .format({c:'{:.1f}%' for c in _cmp_cols_rate + _cmp_cols_diff}, na_rep='-'),
-                    width='stretch', hide_index=True
-                )
-                # 平均差サマリー
-                avg_diff_tan  = _cmp['単勝差'].mean()
-                avg_diff_fuku = _cmp['複勝差'].mean()
-                _sign_t = "+" if avg_diff_tan  >= 0 else ""
-                _sign_f = "+" if avg_diff_fuku >= 0 else ""
-                st.caption(
-                    f"平均差: 単勝 {_sign_t}{avg_diff_tan:.1f}pt　複勝 {_sign_f}{avg_diff_fuku:.1f}pt　"
-                    f"(正=EV優先が上回った日が多い / 負=標準◎が上回った日が多い)"
-                )
+                st.markdown("#### 📐 距離帯別 / クラス別 本命単勝回収率（累計平均）")
+                _dc1, _dc2 = st.columns(2)
+                with _dc1:
+                    if _dist_avail:
+                        st.write("**距離帯別**")
+                        for _dc in _dist_avail:
+                            _dv = history_df[_dc].dropna()
+                            if len(_dv):
+                                _emo = "🔥" if _dv.mean()>=150 else ("✅" if _dv.mean()>=100 else ("🟡" if _dv.mean()>=70 else "❌"))
+                                st.write(f"  {_emo} {_dc.replace('_単勝回収率','')}: **{_dv.mean():.1f}%** ({len(_dv)}日)")
+                with _dc2:
+                    if _class_avail:
+                        st.write("**クラス別**")
+                        for _cc in _class_avail:
+                            _cv = history_df[_cc].dropna()
+                            if len(_cv):
+                                _emo = "🔥" if _cv.mean()>=150 else ("✅" if _cv.mean()>=100 else ("🟡" if _cv.mean()>=70 else "❌"))
+                                st.write(f"  {_emo} {_cc.replace('_単勝回収率','')}: **{_cv.mean():.1f}%** ({len(_cv)}日)")
 
             # ── 月別集計 ─────────────────────────────────────
             if len(history_df) >= 2:
                 st.markdown("---")
                 st.markdown("#### 📅 月別集計")
                 history_df['年月'] = history_df['日付'].dt.to_period('M').astype(str)
-                _monthly_cols = plot_cols + (_ev_tbl_cols if has_ev else [])
-                monthly = history_df.groupby('年月')[_monthly_cols].mean().round(1)
+                _monthly_rate_cols = [c for c in ['本命単勝回収率','本命複勝回収率',
+                    '超狙い馬単勝回収率','超狙い馬複勝回収率','穴馬単勝回収率','穴馬複勝回収率',
+                    '三連複回収率','馬連回収率'] if c in history_df.columns]
+                monthly = history_df.groupby('年月')[_monthly_rate_cols].mean().round(1)
                 monthly['対象日数'] = history_df.groupby('年月').size()
                 st.dataframe(
-                    monthly.style.applymap(color_rate, subset=_monthly_cols)
-                           .format({c:'{:.1f}%' for c in _monthly_cols}, na_rep='-'),
-                    width='stretch'
+                    monthly.style.applymap(color_rate, subset=_monthly_rate_cols)
+                           .format({c:'{:.1f}%' for c in _monthly_rate_cols}, na_rep='-'),
+                    use_container_width=True
                 )
 
             # ── 累積損益シミュレーション ────────────────────
@@ -1717,6 +1793,15 @@ elif action == "🔧 Optuna チューニング":
     with col_op2:
         n_folds = st.number_input("CV分割数 (Folds)", min_value=2, max_value=6, value=3, step=1)
 
+    st.markdown("**目的関数ウェイト**")
+    col_ow1, col_ow2 = st.columns([1, 1])
+    with col_ow1:
+        auc_weight = st.slider("AUCウェイト", 0.0, 1.0, 0.7, 0.05,
+                               help="AUC（予測精度）と回収率の重みをここで調整します。")
+    with col_ow2:
+        ret_weight = round(1.0 - auc_weight, 2)
+        st.metric("回収率ウェイト", f"{ret_weight:.2f}")
+
     exclude_market = st.checkbox(
         "🎯 市場勝率を除外してチューニング（推奨）",
         value=True,
@@ -1745,6 +1830,7 @@ elif action == "🔧 Optuna チューニング":
                     df_op, features, cat_features, list(TE_COLS),
                     n_trials=int(n_trials), n_folds=int(n_folds),
                     exclude_features=exclude_list if exclude_list else None,
+                    auc_weight=float(auc_weight), return_weight=float(ret_weight),
                 )
 
                 st.success(msg)
@@ -1778,6 +1864,71 @@ elif action == "🔧 Optuna チューニング":
             except Exception as e:
                 import traceback
                 st.error(f"Optunaチューニングエラー: {e}")
+                st.code(traceback.format_exc())
+
+    st.divider()
+    st.markdown("#### ⚖️ アンサンブル重み最適化")
+    st.caption("モデルA・B・Cの重み (wa, wb, wc) をOptunaで探索し、EV優先単勝回収率を最大化します。")
+    wopt_trials = st.number_input("重み探索回数", min_value=50, max_value=1000, value=200, step=50)
+
+    if st.button("⚖️ 重み最適化開始", type="secondary"):
+        with st.spinner(f"重み探索中 ({wopt_trials} trials)..."):
+            try:
+                from src.optuna_tuner import run_weight_optimization
+                from src.features_engine import create_features as _cf
+
+                # bundle から学習済みモデルを取得（再学習不要）
+                ma_w = bundle[0]   # モデルA: LGBMRanker（複勝）
+                mb_w = bundle[1]   # モデルB: LGBMRanker（1着）
+                mc_w = bundle[2]   # モデルC: LGBMRegressor（着順回帰）
+
+                df_w = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+                df_w['日付'] = pd.to_datetime(df_w['日付'], format='mixed', errors='coerce')
+                df_w = df_w.dropna(subset=['日付', '着順', '単勝'])
+                for col in ['着順', '単勝', '人気']:
+                    df_w[col] = pd.to_numeric(df_w[col], errors='coerce')
+                df_w, _ = _cf(df_w, te_dicts)
+
+                # 最新20%をホールドアウトとしてスコアリング
+                df_w = df_w.sort_values('日付').reset_index(drop=True)
+                holdout_idx = int(len(df_w) * 0.8)
+                df_hold = df_w.iloc[holdout_idx:].copy()
+
+                def _norm(s):
+                    mn, mx = s.min(), s.max()
+                    return (s - mn) / (mx - mn + 1e-9)
+
+                # TE列をte_dictsから計算して追加
+                from src.features_engine import TE_COLS as _TE_COLS
+                _global_mean_w = bundle[13] if len(bundle) > 13 else 0.0
+                for _col in _TE_COLS:
+                    if _col in df_hold.columns:
+                        _te_d = te_dicts.get(_col, {}) if te_dicts else {}
+                        df_hold[f'{_col}_TE'] = df_hold[_col].map(_te_d).fillna(_global_mean_w)
+
+                feat_w = [f for f in features if f in df_hold.columns]
+                for c in [f for f in cat_features if f in df_hold.columns]:
+                    df_hold[c] = df_hold[c].astype('category')
+
+                df_hold['score_a_norm'] = _norm(ma_w.predict(df_hold[feat_w]))
+                df_hold['score_b_norm'] = _norm(mb_w.predict(df_hold[feat_w]))
+                df_hold['score_c_norm'] = _norm(1.0 - mc_w.predict(df_hold[feat_w]))
+
+                best_w, wmsg, wtdf = run_weight_optimization(df_hold, n_trials=int(wopt_trials))
+                st.success(wmsg)
+                if best_w:
+                    st.json(best_w)
+                    st.code(
+                        f"# src/core_model.py L331 を以下に置き換えて再学習してください\n"
+                        f"test_df['予測スコア'] = _sa_norm * {best_w['wa']} + _sb_norm * {best_w['wb']} + _sc_norm * {best_w['wc']}",
+                        language="python"
+                    )
+                if wtdf is not None and not wtdf.empty:
+                    st.subheader("重み探索結果 (上位10件)")
+                    st.dataframe(wtdf.head(10), width='stretch')
+            except Exception as e:
+                import traceback
+                st.error(f"重み最適化エラー: {e}")
                 st.code(traceback.format_exc())
 
 elif action == "🏇 騎手・調教師フォーム分析":

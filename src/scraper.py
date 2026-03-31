@@ -123,7 +123,7 @@ def get_payouts(race_id):
     return tansho_dict, fukusho_dict
 
 def get_all_payouts(race_id):
-    payouts = {'tansho': {}, 'fukusho': {}, 'umaren': {}, 'wide': {}}
+    payouts = {'tansho': {}, 'fukusho': {}, 'umaren': {}, 'wide': {}, 'sanrenpuku': {}}
     headers = {"User-Agent": "Mozilla/5.0"}
     
     # 🌟 どんなHTMLタグも確実に「改行」に粉砕してリスト化する最強の関数
@@ -158,9 +158,10 @@ def get_all_payouts(race_id):
                         elif 'fukusho' in th_class or '複勝' in th_text: current_kind = '複勝'
                         elif 'umaren' in th_class or '馬連' in th_text: current_kind = '馬連'
                         elif 'wide' in th_class or 'ワイド' in th_text: current_kind = 'ワイド'
+                        elif 'sanrenpuku' in th_class or '三連複' in th_text: current_kind = '三連複'
                         else: current_kind = None
-                    
-                    if not current_kind: continue # 単勝・複勝・馬連・ワイド以外は無視
+
+                    if not current_kind: continue
                     
                     tds = tr.find_all('td')
                     if not tds: continue
@@ -199,6 +200,7 @@ def get_all_payouts(race_id):
                         elif current_kind == '複勝' and len(nums) >= 1: payouts['fukusho'][nums[0]] = pay
                         elif current_kind == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
                         elif current_kind == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
+                        elif current_kind == '三連複' and len(nums) >= 3: payouts['sanrenpuku'][tuple(sorted(nums[:3]))] = pay
 
             if payouts['tansho'] and payouts['wide']: return payouts
         except Exception as _e:
@@ -216,7 +218,7 @@ def get_all_payouts(race_id):
             th = tr.find('th')
             if th:
                 th_text = th.text.strip()
-                if th_text in ['単勝', '複勝', '馬連', 'ワイド']: current_kind = th_text
+                if th_text in ['単勝', '複勝', '馬連', 'ワイド', '三連複']: current_kind = th_text
                 else: current_kind = None
             
             if not current_kind: continue
@@ -248,6 +250,7 @@ def get_all_payouts(race_id):
                 elif current_kind == '複勝' and len(nums) >= 1: payouts['fukusho'][nums[0]] = pay
                 elif current_kind == '馬連' and len(nums) >= 2: payouts['umaren'][tuple(sorted(nums[:2]))] = pay
                 elif current_kind == 'ワイド' and len(nums) >= 2: payouts['wide'][tuple(sorted(nums[:2]))] = pay
+                elif current_kind == '三連複' and len(nums) >= 3: payouts['sanrenpuku'][tuple(sorted(nums[:3]))] = pay
     except Exception as _e:
         logger.warning(f'get_all_payouts Yahoo解析失敗: {_e}')
 
@@ -296,14 +299,18 @@ def fetch_odds_realtime(race_id: str) -> tuple[dict, dict]:
 
     # ── netkeiba オッズAPI（プライマリ）──────────────────────────
     try:
+        import time as _time
+        _ts = int(_time.time())  # キャッシュバスター（CDNキャッシュ回避）
         api_url = (
             f'https://race.netkeiba.com/api/api_get_jra_odds.html'
-            f'?type=1&action=init&race_id={race_id}'
+            f'?type=1&action=init&race_id={race_id}&_={_ts}'
         )
         api_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}",
             "X-Requested-With": "XMLHttpRequest",
+            "Cache-Control": "no-cache, no-store",
+            "Pragma": "no-cache",
         }
         r = requests.get(api_url, headers=api_headers, timeout=5)
         api_data = _json.loads(r.text)

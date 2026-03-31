@@ -6,3 +6,70 @@
 2026-03-24 13:54:06,560 [INFO] prepare_model_and_data: モデルAUC: 1着=0.9046 / 複勝=0.9055
 2026-03-24 13:59:12,877 [INFO] prepare_model_and_data: アンサンブル重み: 複勝=0.4 / 1着=0.6 (固定値・リーク修正後に再最適化予定)
 2026-03-24 13:59:12,895 [INFO] prepare_model_and_data: モデルAUC: 1着=0.9046 / 複勝=0.9055
+2026-03-30 11:52:07,852 [INFO] _try_load_model_from_hub: HF Hub: モデルダウンロード開始（タイムアウト90秒）...
+2026-03-30 11:52:09,156 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 11:52:09,341 [INFO] _send_single_request: HTTP Request: GET https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 11:52:09,613 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model.pkl "HTTP/1.1 302 Found"
+2026-03-30 11:52:10,161 [INFO] _send_single_request: HTTP Request: GET https://cdn-lfs-us-1.hf.co/repos/ba/5e/ba5e0f0a76bcb7c9add963b950161dbb96e3c7402c1836be39cf46ca4d663f2f/27bc3b288b607a69136f946bb7ccc83859142f939fafa9ba5f8b1bac7ccc2148?response-content-disposition=inline%3B+filename*%3DUTF-8%27%27keiba_model.pkl%3B+filename%3D%22keiba_model.pkl%22%3B&Expires=1774842732&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc3NDg0MjczMn19LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2RuLWxmcy11cy0xLmhmLmNvL3JlcG9zL2JhLzVlL2JhNWUwZjBhNzZiY2I3YzlhZGQ5NjNiOTUwMTYxZGJiOTZlM2M3NDAyYzE4MzZiZTM5Y2Y0NmNhNGQ2NjNmMmYvMjdiYzNiMjg4YjYwN2E2OTEzNmY5NDZiYjdjY2M4Mzg1OTE0MmY5MzlmYWZhOWJhNWY4YjFiYWM3Y2NjMjE0OD9yZXNwb25zZS1jb250ZW50LWRpc3Bvc2l0aW9uPSoifV19&Signature=D8O8lzVLDaObn8JFiwSVDBJ4wtRXmq0iqA06MXxVZQ7BKSPSyCu%7EV7DROrkiCpT0u0f2X8qUjZdeu4uknV68-gQGdMcvBbZgBm2dKyIWRtjg-iaZt0plBw7HsgDUtVonbrcfsTc2g9071dlA9RmtFtgRcOYfOgLp26lE6BOVj9q0swc2hDC8CTVF-u-GEbY4guR7tThplQJZaFQ9aQaiwtLn7ApohKL6l%7EW2lf%7EscXKKw%7ElBTKff64ZKg%7EZLDJqOxKU0Vi9m%7EioHqLZjr2ObEdcH0pqfmoUsuMaGbgEqyEbcZM%7Ec58MjRi%7ELTml4wHXR8lOoB6hqbafDzMocAyl%7E%7EQ__&Key-Pair-Id=K24J24Z295AEI9 "HTTP/1.1 200 OK"
+2026-03-30 11:52:12,184 [INFO] _try_load_model_from_hub: HF Hub data_mtime='size:35515667', local='size:35515667'
+2026-03-30 11:52:12,184 [INFO] _try_load_model_from_hub: HF Hub: モデルロード完了
+2026-03-30 11:59:05,797 [INFO] run_optuna_tuning: Optuna: 3fold x 50試行 で最適化開始
+2026-03-30 12:02:39,806 [INFO] run_optuna_tuning: チューニング完了 (3fold ウォークフォワードCV)
+  最適CVスコア: 0.6770  (AUC×0.7 + 回収率×0.3, 試行数: 50)
+  除外特徴量: ['市場勝率']
+  n_estimators:      700
+  learning_rate:     0.012275
+  num_leaves:        32
+  max_bin:           162
+  cat_smooth:        31.99
+  colsample_bytree:  0.7124
+  subsample:         0.8923
+  min_child_samples: 77
+  ※ スコア = AUC×0.7 + 正規化回収率×0.3 / AUC 0.7以上で有効
+2026-03-30 15:05:11,098 [INFO] _try_load_model_from_hub: HF Hub: モデルダウンロード開始（タイムアウト90秒）...
+2026-03-30 15:05:11,398 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 15:05:11,592 [INFO] _send_single_request: HTTP Request: GET https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 15:05:11,807 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model.pkl "HTTP/1.1 302 Found"
+2026-03-30 15:05:12,181 [INFO] _send_single_request: HTTP Request: GET https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/xet-read-token/9df001619edad45e1d48c7125c89a09d195d0891 "HTTP/1.1 200 OK"
+2026-03-30 15:05:17,350 [INFO] _try_load_model_from_hub: HF Hub data_mtime='size:35515667', local='size:35515667'
+2026-03-30 15:05:17,351 [INFO] _try_load_model_from_hub: HF Hub: モデルロード完了
+2026-03-30 15:13:28,187 [INFO] _try_load_model_from_hub: HF Hub: モデルダウンロード開始（タイムアウト90秒）...
+2026-03-30 15:13:29,326 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 15:13:29,512 [INFO] _send_single_request: HTTP Request: GET https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 15:13:29,705 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model.pkl "HTTP/1.1 302 Found"
+2026-03-30 15:13:29,884 [INFO] _send_single_request: HTTP Request: GET https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/xet-read-token/9df001619edad45e1d48c7125c89a09d195d0891 "HTTP/1.1 200 OK"
+2026-03-30 15:13:33,275 [INFO] _try_load_model_from_hub: HF Hub data_mtime='size:35515667', local='size:35515667'
+2026-03-30 15:13:33,275 [INFO] _try_load_model_from_hub: HF Hub: モデルロード完了
+2026-03-30 15:21:15,609 [INFO] run_weight_optimization: アンサンブル重み最適化完了 (200試行)
+  最適EV回収率: 74.1%
+  wa (モデルA 複勝): 0.0581
+  wb (モデルB 1着):  0.8159
+  wc (モデルC 着順回帰): 0.1261
+  ※ core_model.py L331 の 0.35/0.50/0.15 を上記に変更して再学習してください
+2026-03-30 15:37:54,162 [INFO] _try_load_model_from_hub: HF Hub: モデルダウンロード開始（タイムアウト90秒）...
+2026-03-30 15:37:54,385 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 15:37:54,612 [INFO] _send_single_request: HTTP Request: GET https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 15:37:54,822 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model.pkl "HTTP/1.1 302 Found"
+2026-03-30 15:37:55,311 [INFO] _send_single_request: HTTP Request: GET https://cdn-lfs-us-1.hf.co/repos/ba/5e/ba5e0f0a76bcb7c9add963b950161dbb96e3c7402c1836be39cf46ca4d663f2f/567d27b2de0f2ceb5db7f72808bcb818347b8db8494bc77d7c55a97d5a6a9aaf?response-content-disposition=inline%3B+filename*%3DUTF-8%27%27keiba_model.pkl%3B+filename%3D%22keiba_model.pkl%22%3B&Expires=1774856277&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc3NDg1NjI3N319LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2RuLWxmcy11cy0xLmhmLmNvL3JlcG9zL2JhLzVlL2JhNWUwZjBhNzZiY2I3YzlhZGQ5NjNiOTUwMTYxZGJiOTZlM2M3NDAyYzE4MzZiZTM5Y2Y0NmNhNGQ2NjNmMmYvNTY3ZDI3YjJkZTBmMmNlYjVkYjdmNzI4MDhiY2I4MTgzNDdiOGRiODQ5NGJjNzdkN2M1NWE5N2Q1YTZhOWFhZj9yZXNwb25zZS1jb250ZW50LWRpc3Bvc2l0aW9uPSoifV19&Signature=lBV00alXyUADtKPv9YBabI-OCDpCvF4mNk79hyPS7aUzz0vJu9lOqSPnOyYF%7Eybah0knOyO9XZPr1TdN3tSbnxOs294gjOjptrxefamm8ik0rx5A5JPS0t91DnUBRLovQYtqEBrY3pj-qgEejpGqSTBDz-UIqBZJPk2q6eyvTJDCyZVGWxZQO3Fhk0S2Z80r0daUaUGvBA8DVLSgxZP5lyJ-oB1zQOHgN0CewcDxRWYtZRplKDZcPYn8Dk7RhOlqAfAsCfofxvUGYpUSFXCluadzzpl3ZA0ERbXdKBGCo-2mH5PlMy5Xp-u-fL80TuORgF4M7g2KvLo9p7I-H3TdwA__&Key-Pair-Id=K24J24Z295AEI9 "HTTP/1.1 200 OK"
+2026-03-30 15:37:57,428 [INFO] _try_load_model_from_hub: HF Hub data_mtime='size:35515667', local='size:35515667'
+2026-03-30 15:37:57,428 [INFO] _try_load_model_from_hub: HF Hub: モデルロード完了
+2026-03-30 16:33:33,397 [INFO] _try_load_model_from_hub: HF_TOKEN/HF_REPO_IDが未設定のためHubロードをスキップ
+2026-03-30 16:34:35,552 [INFO] _try_load_model_from_hub: HF Hub: モデルダウンロード開始（タイムアウト90秒）...
+2026-03-30 16:34:36,760 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 16:34:36,982 [INFO] _send_single_request: HTTP Request: GET https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model_meta.json "HTTP/1.1 200 OK"
+2026-03-30 16:34:37,198 [INFO] _send_single_request: HTTP Request: HEAD https://huggingface.co/datasets/ebi44323/keiba-ebye-models/resolve/main/keiba_model.pkl "HTTP/1.1 302 Found"
+2026-03-30 16:34:37,351 [INFO] _send_single_request: HTTP Request: GET https://cdn-lfs-us-1.hf.co/repos/ba/5e/ba5e0f0a76bcb7c9add963b950161dbb96e3c7402c1836be39cf46ca4d663f2f/567d27b2de0f2ceb5db7f72808bcb818347b8db8494bc77d7c55a97d5a6a9aaf?response-content-disposition=inline%3B+filename*%3DUTF-8%27%27keiba_model.pkl%3B+filename%3D%22keiba_model.pkl%22%3B&Expires=1774859679&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc3NDg1OTY3OX19LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2RuLWxmcy11cy0xLmhmLmNvL3JlcG9zL2JhLzVlL2JhNWUwZjBhNzZiY2I3YzlhZGQ5NjNiOTUwMTYxZGJiOTZlM2M3NDAyYzE4MzZiZTM5Y2Y0NmNhNGQ2NjNmMmYvNTY3ZDI3YjJkZTBmMmNlYjVkYjdmNzI4MDhiY2I4MTgzNDdiOGRiODQ5NGJjNzdkN2M1NWE5N2Q1YTZhOWFhZj9yZXNwb25zZS1jb250ZW50LWRpc3Bvc2l0aW9uPSoifV19&Signature=ru8Kul4VEyuUpf0HgeUBjsxrYM8Wjq0zJw2anyzDkwdGbSbbpRnupnqT7LkX2oa%7EYWOmGbpvWQIXKuEgA%7E9a636laKiUJ3GQDga0sZ7hgdDBUyKuEOKbreLlYWg4ntndqMLeAd8EdiJQIgObBCLujCxcghSlaODrNYMY3jTF5wS1x2L5TUjexy0XRmdmHzvpVvYIVWKSkhqJSp40qKbnuutBiugVFns5wYmza0IZ8uErCZamRHPXAmCC8MpbAstNyJpa32I1V6qtqDxWcg3yIC6yIuVB6w93tc1FbmGjbXCVwpDjtqftNQMbNYW6vqEKPx4T3WfTKteAT2Xm1IF3iw__&Key-Pair-Id=K24J24Z295AEI9 "HTTP/1.1 200 OK"
+2026-03-30 16:34:38,686 [INFO] _try_load_model_from_hub: HF Hub data_mtime='size:35515667', local='size:35515667'
+2026-03-30 16:34:38,687 [INFO] _try_load_model_from_hub: HF Hub: モデルロード完了
+2026-03-30 16:42:05,153 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/preupload/main "HTTP/1.1 200 OK"
+2026-03-30 16:42:05,668 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/commit/main "HTTP/1.1 200 OK"
+2026-03-30 16:50:41,863 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/preupload/main "HTTP/1.1 200 OK"
+2026-03-30 16:50:42,492 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/commit/main "HTTP/1.1 200 OK"
+2026-03-30 16:58:53,990 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/preupload/main "HTTP/1.1 200 OK"
+2026-03-30 16:58:54,439 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/commit/main "HTTP/1.1 200 OK"
+2026-03-30 17:07:47,488 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/preupload/main "HTTP/1.1 200 OK"
+2026-03-30 17:07:48,172 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/commit/main "HTTP/1.1 200 OK"
+2026-03-30 17:17:35,846 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/preupload/main "HTTP/1.1 200 OK"
+2026-03-30 17:17:36,561 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/commit/main "HTTP/1.1 200 OK"
+2026-03-30 17:29:11,753 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/preupload/main "HTTP/1.1 200 OK"
+2026-03-30 17:29:12,337 [INFO] _send_single_request: HTTP Request: POST https://huggingface.co/api/datasets/ebi44323/keiba-ebye-models/commit/main "HTTP/1.1 200 OK"
