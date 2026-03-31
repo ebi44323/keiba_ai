@@ -25,7 +25,7 @@ def get_todays_races(date_str=None):
     for url in urls_to_try:
         try:
             res = requests.get(url, headers=get_headers(), timeout=10)
-            soup = BeautifulSoup(res.content, 'html.parser', from_encoding='euc-jp')
+            soup = BeautifulSoup(res.content.decode('euc-jp', errors='replace'), 'html.parser')
             
             for a_tag in soup.find_all('a', href=re.compile(r'race_id=(\d{12})')):
                 r_id = re.search(r'race_id=(\d{12})', a_tag.get('href')).group(1)
@@ -58,9 +58,9 @@ def get_todays_races(date_str=None):
         url = f'https://db.netkeiba.com/race/list/{target_date_str}/'
         try:
             res = requests.get(url, headers=get_headers(), timeout=10)
-            res.encoding = 'euc-jp'
-            soup = BeautifulSoup(res.content, 'html.parser', from_encoding='euc-jp')
-            ids = set(re.findall(r'/race/(\d{12})', res.text))
+            html_text = res.content.decode('euc-jp', errors='replace')
+            soup = BeautifulSoup(html_text, 'html.parser')
+            ids = set(re.findall(r'/race/(\d{12})', html_text))
             for r_id in ids:
                 if not (1 <= int(r_id[4:6]) <= 10): continue
                 place = PLACE_DICT.get(r_id[4:6], '不明')
