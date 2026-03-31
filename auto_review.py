@@ -90,7 +90,7 @@ def run(date_str: str = None):
                 skip_live_scrape=True,  # 振り返りは高速モード
                 ev_first=True,
                 ev_threshold=1.0,
-                min_win_prob=0.10,
+                min_win_prob=0.15,
             )
         except Exception as e:
             logger.warning(f"推論失敗 {r['id']}: {e}")

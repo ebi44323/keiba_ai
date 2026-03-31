@@ -23,7 +23,7 @@ def _safe_col(df, col, default=np.nan):
     return pd.Series([val] * len(df), index=df.index)
 
 # ==========================================
-def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.0, min_win_prob=0.10):
+def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.0, min_win_prob=0.15):
     """
     skip_live_scrape=True: バックテスト時に使用。
       fetch_horse_last_race()を呼ばない（速度維持＆日付ズレ防止）
@@ -490,7 +490,12 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['複勝率(AI予測)'] = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
         df_test['期待値'] = df_test['勝率(AI予測)']*df_test['単勝オッズ']
         df_test['期待値'] = df_test['期待値'].clip(upper=50.0)  # 取消馬などの異常EV防止
-        df_test = df_test.sort_values('勝率(AI予測)', ascending=False).reset_index(drop=True)
+        # 未出走馬（新馬フラグ==1）は必ず上位5頭の外へ（ソートキー先頭に新馬フラグ昇順を追加）
+        _unraced_col = df_test['新馬フラグ'].fillna(0).astype(int)
+        df_test = df_test.assign(_unraced_sort=_unraced_col)\
+                         .sort_values(['_unraced_sort', '勝率(AI予測)'], ascending=[True, False])\
+                         .drop(columns=['_unraced_sort'])\
+                         .reset_index(drop=True)
         marks = ['◎','〇','▲','△','☆']+['']*(len(df_test)-5)
         df_test['印'] = marks[:len(df_test)]
 
@@ -518,7 +523,11 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         # EV優先モード: EV>=閾値 かつ AI勝率>=min_win_prob の馬を◎に昇格
         # 穴馬スコアが高い馬は複合EVスコア(EV × (1 + 穴馬スコア×0.5))で優先される
         if ev_first:
-            ev_cands = df_test[(df_test['期待値'] >= ev_threshold) & (df_test['勝率(AI予測)'] >= min_win_prob)]
+            ev_cands = df_test[
+                (df_test['期待値'] >= ev_threshold) &
+                (df_test['勝率(AI予測)'] >= min_win_prob) &
+                (df_test['新馬フラグ'].fillna(0) == 0)  # 未出走馬はEV優先◎昇格の対象外
+            ]
             if not ev_cands.empty:
                 ev_cands = ev_cands.copy()
                 ev_cands['_ev_composite'] = ev_cands['期待値'] * (1.0 + ev_cands['穴馬スコア'] * 0.5)
