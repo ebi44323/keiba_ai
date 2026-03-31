@@ -24,10 +24,8 @@ def get_todays_races(date_str=None):
     ]
     for url in urls_to_try:
         try:
-            # 🌟 文字化け対策: encodingの強制指定を削除
             res = requests.get(url, headers=get_headers(), timeout=10)
-            # 🌟 res.textではなく、res.content(生データ)を渡してAIに自動判定させる！
-            soup = BeautifulSoup(res.content, 'html.parser')
+            soup = BeautifulSoup(res.content, 'html.parser', from_encoding='euc-jp')
             
             for a_tag in soup.find_all('a', href=re.compile(r'race_id=(\d{12})')):
                 r_id = re.search(r'race_id=(\d{12})', a_tag.get('href')).group(1)
@@ -59,9 +57,9 @@ def get_todays_races(date_str=None):
     if not races:
         url = f'https://db.netkeiba.com/race/list/{target_date_str}/'
         try:
-            # 🌟 ここも同様に文字化け対策
             res = requests.get(url, headers=get_headers(), timeout=10)
-            soup = BeautifulSoup(res.content, 'html.parser')
+            res.encoding = 'euc-jp'
+            soup = BeautifulSoup(res.content, 'html.parser', from_encoding='euc-jp')
             ids = set(re.findall(r'/race/(\d{12})', res.text))
             for r_id in ids:
                 if not (1 <= int(r_id[4:6]) <= 10): continue
