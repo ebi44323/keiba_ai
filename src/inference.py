@@ -97,6 +97,13 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     if not race_data_box: return None,None,None,None,None,None,None,None,["❌ レース条件が見つかりません。"]
 
     race_text = race_data_box.text.replace('\n','')
+    # レース名（クラス判定用）: RaceName > RaceData02 > pageTitle の順で補完
+    _race_name_tag = (soup.find(class_='RaceName') or soup.find(class_='race_name')
+                      or soup.find('h1', class_=re.compile(r'Race', re.I)))
+    _race_name_text = _race_name_tag.get_text(' ', strip=True) if _race_name_tag else ''
+    _race_data02 = soup.find('div', class_='RaceData02')
+    _race_data02_text = _race_data02.get_text(' ', strip=True) if _race_data02 else ''
+    race_class_text = _race_name_text + ' ' + _race_data02_text + ' ' + race_text
     baba_match = re.search(r'馬場:([良稍重不良]+)', race_text)
     todays_baba = baba_match.group(1) if baba_match else '良'
     tdm = re.search(r'(芝|ダ|障|障害).*?(\d+)m', race_text)
@@ -398,8 +405,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             df_test['馬場指数'] = TRACK_CONDITION_MAP.get(todays_baba, 0)
 
         # ── 新特徴量: レースクラスコード ───────────────────────────
-        # レース情報からクラスを取得（全馬共通値）
-        _race_class = classify_race_class(race_text)
+        # RaceName + RaceData02 + RaceData01 を結合してクラス判定（RaceData01だけだとクラス情報がない）
+        _race_class = classify_race_class(race_class_text)
         df_test['レースクラスコード'] = float(_race_class)
 
         # ── 新特徴量: 市場勝率（オッズの逆数） ─────────────────────
