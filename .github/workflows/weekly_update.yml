@@ -53,4 +53,5 @@ jobs:
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
           git add learning_data_perfect_tier.zip pedigree_master_all.csv || true
           git diff --staged --quiet || git commit -m "データ更新 $(date '+%Y-%m-%d')"
+          git pull --rebase origin main
           git push
