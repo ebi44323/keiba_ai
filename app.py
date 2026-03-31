@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-03-31e")
+st.caption("v2026-03-31f")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -1542,10 +1542,11 @@ elif action == "📈 長期成績分析":
         target_rate = st.number_input("目標回収率 (%)", 80, 200, 100, 5,
             help="このラインをグラフに表示します。損益分岐点=100%")
         focus_col = st.selectbox("重点分析指標",
-            ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率','穴馬単勝回収率','穴馬複勝回収率'],
+            ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率',
+             '穴馬単勝回収率','穴馬複勝回収率','三連複回収率','馬連回収率'],
             help="累積損益グラフで比較する主指標")
 
-    # 起動時にGitHubからai_daily_history.csvを取得（再起動でリセット防止）
+    # 起動時にHF HubからCSVを取得（再起動でリセット防止）
     if not os.path.exists(csv_file) and _HF_TOKEN and _HF_REPO_ID:
         try:
             from huggingface_hub import hf_hub_download
@@ -1561,61 +1562,55 @@ elif action == "📈 長期成績分析":
         st.info("まだデータがありません。「1日の振り返り」を実行するとここにデータが蓄積されます。")
     else:
         history_df = pd.read_csv(csv_file)
-        for col in ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率','穴馬単勝回収率','穴馬複勝回収率']:
+        # 旧CSVとの後方互換 — 存在しない列は0/Noneで補完
+        for col in ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率',
+                    '穴馬単勝回収率','穴馬複勝回収率','三連複回収率','馬連回収率','穴馬ワイド回収率']:
             if col not in history_df.columns: history_df[col] = 0.0
-        for col in ['EV優先単勝回収率','EV優先複勝回収率']:
+        for col in ['本命平均AIスコア','実際勝者の平均AI勝率']:
+            if col not in history_df.columns: history_df[col] = None
+        for col in ['短距離_単勝回収率','マイル_単勝回収率','中距離_単勝回収率','長距離_単勝回収率']:
+            if col not in history_df.columns: history_df[col] = None
+        for col in ['低クラス_単勝回収率','高クラス_単勝回収率']:
             if col not in history_df.columns: history_df[col] = None
         history_df['日付'] = pd.to_datetime(history_df['日付'], errors='coerce')
         history_df = history_df.dropna(subset=['日付']).sort_values('日付').reset_index(drop=True)
-
-        # EV優先データがある行だけ抽出
-        ev_df = history_df.dropna(subset=['EV優先単勝回収率']).copy()
-        has_ev = len(ev_df) > 0
 
         if len(history_df) == 0:
             st.warning("有効なデータがありません。")
         else:
             # ── KPI サマリー ─────────────────────────────────
             n  = len(history_df)
-            avg_tan   = history_df['本命単勝回収率'].mean()
-            avg_fuku  = history_df['本命複勝回収率'].mean()
-            avg_choko = history_df['超狙い馬単勝回収率'].mean()
-            avg_ana   = history_df['穴馬単勝回収率'].mean()
-            over100_tan  = (history_df['本命単勝回収率'] >= 100).sum()
-            over100_fuku = (history_df['本命複勝回収率'] >= 100).sum()
+            avg_tan    = history_df['本命単勝回収率'].mean()
+            avg_fuku   = history_df['本命複勝回収率'].mean()
+            avg_choko  = history_df['超狙い馬単勝回収率'].mean()
+            avg_ana    = history_df['穴馬単勝回収率'].mean()
+            avg_san    = history_df['三連複回収率'].mean()
+            avg_uma    = history_df['馬連回収率'].mean()
+            over100_tan = (history_df['本命単勝回収率'] >= 100).sum()
 
-            k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("📅 集計日数",       f"{n}日")
-            k2.metric("📈 本命単勝 平均",   f"{avg_tan:.1f}%",
+            k1, k2, k3, k4, k5, k6 = st.columns(6)
+            k1.metric("📅 集計日数",          f"{n}日")
+            k2.metric("📈 本命単勝 平均",      f"{avg_tan:.1f}%",
                       delta=f"{avg_tan-100:+.1f}%", delta_color="normal")
-            k3.metric("📊 本命複勝 平均",   f"{avg_fuku:.1f}%",
+            k3.metric("📊 本命複勝 平均",      f"{avg_fuku:.1f}%",
                       delta=f"{avg_fuku-100:+.1f}%", delta_color="normal")
-            k4.metric("🔥 超狙い馬単勝 平均", f"{avg_choko:.1f}%",
+            k4.metric("🔥 超狙い馬単勝 平均",  f"{avg_choko:.1f}%",
                       delta=f"{avg_choko-100:+.1f}%", delta_color="normal")
-            k5.metric("✅ 単勝100%超え日",  f"{over100_tan}日 / {n}日",
+            k5.metric("🎯 三連複 平均",        f"{avg_san:.1f}%",
+                      delta=f"{avg_san-100:+.1f}%", delta_color="normal")
+            k6.metric("✅ 単勝100%超え日",     f"{over100_tan}日/{n}日",
                       f"{over100_tan/n*100:.0f}%")
 
-            # EV優先 KPI（データがある場合のみ）
-            if has_ev:
-                n_ev = len(ev_df)
-                avg_ev_tan  = ev_df['EV優先単勝回収率'].mean()
-                avg_ev_fuku = ev_df['EV優先複勝回収率'].mean()
-                diff_tan  = avg_ev_tan  - ev_df['本命単勝回収率'].mean()
-                diff_fuku = avg_ev_fuku - ev_df['本命複勝回収率'].mean()
-                st.markdown("**🎯 EV優先◎ vs 標準◎ 比較サマリー** "
-                            f"<span style='font-size:0.85em;color:#888'>({n_ev}日分のデータ)</span>",
-                            unsafe_allow_html=True)
-                ek1, ek2, ek3, ek4 = st.columns(4)
-                ek1.metric("標準◎ 単勝(同期間)",
-                           f"{ev_df['本命単勝回収率'].mean():.1f}%")
-                ek2.metric("🎯 EV優先 単勝",
-                           f"{avg_ev_tan:.1f}%",
-                           delta=f"{diff_tan:+.1f}%", delta_color="normal")
-                ek3.metric("標準◎ 複勝(同期間)",
-                           f"{ev_df['本命複勝回収率'].mean():.1f}%")
-                ek4.metric("🎯 EV優先 複勝",
-                           f"{avg_ev_fuku:.1f}%",
-                           delta=f"{diff_fuku:+.1f}%", delta_color="normal")
+            # Calibration KPI（データある場合のみ）
+            _cal_df = history_df.dropna(subset=['本命平均AIスコア'])
+            if len(_cal_df) > 0:
+                avg_honmei_ai = _cal_df['本命平均AIスコア'].mean()
+                avg_winner_ai = _cal_df['実際勝者の平均AI勝率'].mean()
+                st.caption(
+                    f"🤖 Calibration平均 — 本命AI勝率: **{avg_honmei_ai:.1f}%** / "
+                    f"実際勝者のAI勝率: **{avg_winner_ai:.1f}%**"
+                    f"（{len(_cal_df)}日分）"
+                )
 
             st.markdown("---")
 
@@ -1632,7 +1627,8 @@ elif action == "📈 長期成績分析":
                 ma_window = st.slider("移動平均ウィンドウ (日)", 1, _ma_max, _ma_def, 1)
 
             # ── 折れ線グラフ ─────────────────────────────────
-            plot_cols = ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率','穴馬単勝回収率','穴馬複勝回収率']
+            plot_cols = ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率',
+                         '穴馬単勝回収率','穴馬複勝回収率','三連複回収率','馬連回収率']
             history_df['日付_str'] = history_df['日付'].dt.strftime('%Y/%m/%d')
 
             for col in plot_cols:
@@ -1643,9 +1639,9 @@ elif action == "📈 長期成績分析":
                 value_vars=[f'{c}_MA' for c in plot_cols],
                 var_name='指標', value_name='回収率(%)'
             )
-            melted['指標'] = melted['指標'].str.replace('_MA','')
+            melted['指標'] = melted['指標'].str.replace('_MA','', regex=False)
 
-            rule100 = alt.Chart(pd.DataFrame({'y':[100]})).mark_rule(
+            rule_target = alt.Chart(pd.DataFrame({'y':[target_rate]})).mark_rule(
                 color='gray', strokeDash=[4,4], opacity=0.6
             ).encode(y='y:Q')
 
@@ -1656,28 +1652,8 @@ elif action == "📈 長期成績分析":
                 tooltip=['日付_str','指標','回収率(%)']
             ).properties(height=300)
 
-            # EV優先ラインをオーバーレイ（データある日のみ点線）
-            ev_layers = rule100
-            if has_ev:
-                ev_df['日付_str'] = ev_df['日付'].dt.strftime('%Y/%m/%d')
-                ev_melted = ev_df.melt(
-                    '日付_str',
-                    value_vars=['EV優先単勝回収率','EV優先複勝回収率'],
-                    var_name='指標', value_name='回収率(%)'
-                )
-                ev_line = alt.Chart(ev_melted).mark_line(
-                    point=True, strokeDash=[5, 3], strokeWidth=2
-                ).encode(
-                    x=alt.X('日付_str:N', sort=None),
-                    y=alt.Y('回収率(%):Q'),
-                    color=alt.Color('指標:N', legend=alt.Legend(orient='bottom')),
-                    tooltip=['日付_str','指標','回収率(%)']
-                )
-                ev_layers = rule100 + ev_line
-
-            st.altair_chart(line + ev_layers, width='stretch')
-            _ev_note = "　破線 = EV優先◎" if has_ev else ""
-            st.caption(f"灰色破線 = 損益分岐点 / {ma_window}日移動平均を表示中{_ev_note}")
+            st.altair_chart(line + rule_target, use_container_width=True)
+            st.caption(f"灰色破線 = 目標{target_rate}% / {ma_window}日移動平均を表示中")
 
             st.markdown("---")
             st.markdown("#### 📋 日別詳細テーブル")
@@ -1691,76 +1667,60 @@ elif action == "📈 長期成績分析":
                 except: pass
                 return ''
 
-            # EV優先列を含む詳細テーブル
-            _tbl_cols = plot_cols.copy()
-            _ev_tbl_cols = []
-            if has_ev:
-                _ev_tbl_cols = ['EV優先単勝回収率','EV優先複勝回収率']
-                _tbl_cols += _ev_tbl_cols
-            show_table = history_df[['日付_str'] + _tbl_cols].copy()
+            _tbl_cols = ['本命単勝回収率','本命複勝回収率','超狙い馬単勝回収率','超狙い馬複勝回収率',
+                         '穴馬単勝回収率','穴馬複勝回収率','三連複回収率','馬連回収率','穴馬ワイド回収率',
+                         '本命平均AIスコア','実際勝者の平均AI勝率']
+            _tbl_avail = [c for c in _tbl_cols if c in history_df.columns]
+            show_table = history_df[['日付_str'] + _tbl_avail].copy()
             show_table = show_table.rename(columns={'日付_str':'日付'}).sort_values('日付', ascending=False)
-            _fmt = {c:'{:.1f}%' for c in _tbl_cols}
+            _rate_cols = [c for c in _tbl_avail if '回収率' in c or 'AI' in c]
+            _fmt = {c:'{:.1f}%' for c in _rate_cols}
             st.dataframe(
-                show_table.style.applymap(color_rate, subset=_tbl_cols)
+                show_table.style.applymap(color_rate, subset=_rate_cols)
                           .format(_fmt, na_rep='-'),
-                width='stretch', hide_index=True
+                use_container_width=True, hide_index=True
             )
-            if has_ev:
-                st.caption("🎯 EV優先列は「振り返り」でEV優先比較チェックをONにした日のみ記録されます。「-」は未集計。")
 
-            # ── EV優先 vs 標準◎ 日別比較テーブル ──────────────
-            if has_ev:
+            # ── 距離帯別・クラス別 集計 ──────────────────────
+            _dist_cols  = ['短距離_単勝回収率','マイル_単勝回収率','中距離_単勝回収率','長距離_単勝回収率']
+            _class_cols = ['低クラス_単勝回収率','高クラス_単勝回収率']
+            _dist_avail  = [c for c in _dist_cols  if c in history_df.columns and history_df[c].notna().any()]
+            _class_avail = [c for c in _class_cols if c in history_df.columns and history_df[c].notna().any()]
+            if _dist_avail or _class_avail:
                 st.markdown("---")
-                st.markdown("#### 🎯 EV優先◎ vs 標準◎ 日別比較")
-                _cmp = ev_df[['日付_str','本命単勝回収率','EV優先単勝回収率',
-                               '本命複勝回収率','EV優先複勝回収率']].copy()
-                _cmp['単勝差'] = _cmp['EV優先単勝回収率'] - _cmp['本命単勝回収率']
-                _cmp['複勝差'] = _cmp['EV優先複勝回収率'] - _cmp['本命複勝回収率']
-                _cmp = _cmp.rename(columns={
-                    '日付_str':'日付',
-                    '本命単勝回収率':'標準◎単勝%', 'EV優先単勝回収率':'EV優先単勝%',
-                    '本命複勝回収率':'標準◎複勝%', 'EV優先複勝回収率':'EV優先複勝%',
-                }).sort_values('日付', ascending=False)
-
-                def color_diff(val):
-                    try:
-                        v = float(val)
-                        if v > 0: return 'color:#c00;font-weight:bold'
-                        if v < 0: return 'color:#4B8BFF'
-                    except: pass
-                    return ''
-
-                _cmp_cols_rate = ['標準◎単勝%','EV優先単勝%','標準◎複勝%','EV優先複勝%']
-                _cmp_cols_diff = ['単勝差','複勝差']
-                st.dataframe(
-                    _cmp.style
-                        .applymap(color_rate, subset=_cmp_cols_rate)
-                        .applymap(color_diff, subset=_cmp_cols_diff)
-                        .format({c:'{:.1f}%' for c in _cmp_cols_rate + _cmp_cols_diff}, na_rep='-'),
-                    width='stretch', hide_index=True
-                )
-                # 平均差サマリー
-                avg_diff_tan  = _cmp['単勝差'].mean()
-                avg_diff_fuku = _cmp['複勝差'].mean()
-                _sign_t = "+" if avg_diff_tan  >= 0 else ""
-                _sign_f = "+" if avg_diff_fuku >= 0 else ""
-                st.caption(
-                    f"平均差: 単勝 {_sign_t}{avg_diff_tan:.1f}pt　複勝 {_sign_f}{avg_diff_fuku:.1f}pt　"
-                    f"(正=EV優先が上回った日が多い / 負=標準◎が上回った日が多い)"
-                )
+                st.markdown("#### 📐 距離帯別 / クラス別 本命単勝回収率（累計平均）")
+                _dc1, _dc2 = st.columns(2)
+                with _dc1:
+                    if _dist_avail:
+                        st.write("**距離帯別**")
+                        for _dc in _dist_avail:
+                            _dv = history_df[_dc].dropna()
+                            if len(_dv):
+                                _emo = "🔥" if _dv.mean()>=150 else ("✅" if _dv.mean()>=100 else ("🟡" if _dv.mean()>=70 else "❌"))
+                                st.write(f"  {_emo} {_dc.replace('_単勝回収率','')}: **{_dv.mean():.1f}%** ({len(_dv)}日)")
+                with _dc2:
+                    if _class_avail:
+                        st.write("**クラス別**")
+                        for _cc in _class_avail:
+                            _cv = history_df[_cc].dropna()
+                            if len(_cv):
+                                _emo = "🔥" if _cv.mean()>=150 else ("✅" if _cv.mean()>=100 else ("🟡" if _cv.mean()>=70 else "❌"))
+                                st.write(f"  {_emo} {_cc.replace('_単勝回収率','')}: **{_cv.mean():.1f}%** ({len(_cv)}日)")
 
             # ── 月別集計 ─────────────────────────────────────
             if len(history_df) >= 2:
                 st.markdown("---")
                 st.markdown("#### 📅 月別集計")
                 history_df['年月'] = history_df['日付'].dt.to_period('M').astype(str)
-                _monthly_cols = plot_cols + (_ev_tbl_cols if has_ev else [])
-                monthly = history_df.groupby('年月')[_monthly_cols].mean().round(1)
+                _monthly_rate_cols = [c for c in ['本命単勝回収率','本命複勝回収率',
+                    '超狙い馬単勝回収率','超狙い馬複勝回収率','穴馬単勝回収率','穴馬複勝回収率',
+                    '三連複回収率','馬連回収率'] if c in history_df.columns]
+                monthly = history_df.groupby('年月')[_monthly_rate_cols].mean().round(1)
                 monthly['対象日数'] = history_df.groupby('年月').size()
                 st.dataframe(
-                    monthly.style.applymap(color_rate, subset=_monthly_cols)
-                           .format({c:'{:.1f}%' for c in _monthly_cols}, na_rep='-'),
-                    width='stretch'
+                    monthly.style.applymap(color_rate, subset=_monthly_rate_cols)
+                           .format({c:'{:.1f}%' for c in _monthly_rate_cols}, na_rep='-'),
+                    use_container_width=True
                 )
 
             # ── 累積損益シミュレーション ────────────────────
