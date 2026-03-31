@@ -725,7 +725,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             if df_uma.empty:
                 st.info(f"EV {ev4_threshold:.1f}以上の組み合わせはありません。下限を下げてみてください。")
             else:
-                st.dataframe(df_uma.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
+                st.dataframe(df_uma.style.map(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
         with sub2:
             df_wid = (pd.DataFrame(wide_rows)
                         .sort_values('推定EV', ascending=False)
@@ -734,7 +734,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             if df_wid.empty:
                 st.info(f"EV {ev4_threshold:.1f}以上の組み合わせはありません。")
             else:
-                st.dataframe(df_wid.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
+                st.dataframe(df_wid.style.map(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
         with sub3:
             df_san = (pd.DataFrame(sanrenpuku_rows)
                         .sort_values('推定EV', ascending=False)
@@ -743,7 +743,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             if df_san.empty:
                 st.info(f"EV {ev4_threshold:.1f}以上の組み合わせはありません。")
             else:
-                st.dataframe(df_san.style.applymap(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
+                st.dataframe(df_san.style.map(color_ev, subset=['推定EV']).format({'推定EV': '{:.2f}'}), width='stretch', hide_index=True)
 
     with tab5:
         _render_gemini_tab(df_res, pace_text, confidence_text, topics, reco,
@@ -1652,7 +1652,7 @@ elif action == "📈 長期成績分析":
                 tooltip=['日付_str','指標','回収率(%)']
             ).properties(height=300)
 
-            st.altair_chart(line + rule_target, use_container_width=True)
+            st.altair_chart(line + rule_target, width='stretch')
             st.caption(f"灰色破線 = 目標{target_rate}% / {ma_window}日移動平均を表示中")
 
             st.markdown("---")
@@ -1676,9 +1676,9 @@ elif action == "📈 長期成績分析":
             _rate_cols = [c for c in _tbl_avail if '回収率' in c or 'AI' in c]
             _fmt = {c:'{:.1f}%' for c in _rate_cols}
             st.dataframe(
-                show_table.style.applymap(color_rate, subset=_rate_cols)
+                show_table.style.map(color_rate, subset=_rate_cols)
                           .format(_fmt, na_rep='-'),
-                use_container_width=True, hide_index=True
+                width='stretch', hide_index=True
             )
 
             # ── 距離帯別・クラス別 集計 ──────────────────────
@@ -1718,9 +1718,9 @@ elif action == "📈 長期成績分析":
                 monthly = history_df.groupby('年月')[_monthly_rate_cols].mean().round(1)
                 monthly['対象日数'] = history_df.groupby('年月').size()
                 st.dataframe(
-                    monthly.style.applymap(color_rate, subset=_monthly_rate_cols)
+                    monthly.style.map(color_rate, subset=_monthly_rate_cols)
                            .format({c:'{:.1f}%' for c in _monthly_rate_cols}, na_rep='-'),
-                    use_container_width=True
+                    width='stretch'
                 )
 
             # ── 累積損益シミュレーション ────────────────────
