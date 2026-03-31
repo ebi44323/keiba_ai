@@ -80,7 +80,10 @@ def run(date_str: str = None):
         # 穴馬: AI6位以下(index>=5) かつ EV>=1.5
         "ana_invest": 0, "ana_tan_hits": 0, "ana_tan_return": 0,
         "ana_fuku_hits": 0, "ana_fuku_return": 0,
+        # 穴馬ワイド流し (◎ → 穴馬EV1.5+)
+        "wide_ana_races": 0, "wide_ana_invest": 0, "wide_ana_hits": 0, "wide_ana_return": 0,
         "shiba_races": 0, "shiba_return": 0, "dart_races": 0, "dart_return": 0,
+        "exp_races": 0, "exp_return": 0,  # 既走馬のみのレース
     }
 
     for r in races:
@@ -111,11 +114,14 @@ def run(date_str: str = None):
 
         honmei = res_df.iloc[0]["馬番"]
         stats["honmei_races"] += 1
+        has_unraced = (res_df["新馬フラグ"].fillna(0).sum() > 0) if "新馬フラグ" in res_df.columns else False
 
         if track_type == "芝":
             stats["shiba_races"] += 1
         elif track_type == "ダート":
             stats["dart_races"] += 1
+        if not has_unraced:
+            stats["exp_races"] += 1
 
         if honmei in payouts["tansho"]:
             stats["honmei_tan_hits"] += 1
@@ -125,6 +131,8 @@ def run(date_str: str = None):
                 stats["shiba_return"] += pay
             elif track_type == "ダート":
                 stats["dart_return"] += pay
+            if not has_unraced:
+                stats["exp_return"] += pay
 
         if honmei in payouts["fukusho"]:
             stats["honmei_fuku_hits"] += 1
@@ -141,6 +149,17 @@ def run(date_str: str = None):
                     stats["umaren_hits"] += 1
                     stats["umaren_return"] += payouts["umaren"][key]
 
+        # 穴馬ワイド流し: ◎ → AI6位以下(index>=5) かつ EV>=1.5
+        ana_list = res_df[(res_df.index >= 5) & (res_df["期待値"] >= 1.5)]["馬番"].tolist()
+        if ana_list:
+            stats["wide_ana_races"] += 1
+            stats["wide_ana_invest"] += len(ana_list) * 100
+            for ana in ana_list:
+                key = tuple(sorted([honmei, ana]))
+                if key in payouts.get("wide", {}):
+                    stats["wide_ana_hits"] += 1
+                    stats["wide_ana_return"] += payouts["wide"][key]
+
         # 超狙い馬: AI上位5頭(index<5) かつ EV>=1.5
         choko_df = res_df[(res_df.index < 5) & (res_df["期待値"] >= 1.5)]
         for _, row in choko_df.iterrows():
@@ -153,9 +172,8 @@ def run(date_str: str = None):
                 stats["choko_fuku_hits"] += 1
                 stats["choko_fuku_return"] += payouts["fukusho"][uban]
 
-        # 穴馬: AI6位以下(index>=5) かつ EV>=1.5
-        ana_df = res_df[(res_df.index >= 5) & (res_df["期待値"] >= 1.5)]
-        for _, row in ana_df.iterrows():
+        # 穴馬ベタ買い: AI6位以下(index>=5) かつ EV>=1.5
+        for _, row in res_df[(res_df.index >= 5) & (res_df["期待値"] >= 1.5)].iterrows():
             uban = row["馬番"]
             stats["ana_invest"] += 100
             if uban in payouts["tansho"]:
@@ -180,15 +198,17 @@ def run(date_str: str = None):
         return round(ret / inv * 100, 1) if inv > 0 else 0.0
 
     rates = {
-        "tan_rate":       _rate(stats["honmei_tan_return"],  races_n * 100),
-        "fuku_rate":      _rate(stats["honmei_fuku_return"], races_n * 100),
-        "choko_tan_rate": _rate(stats["choko_tan_return"], stats["choko_invest"]),
-        "choko_fuku_rate":_rate(stats["choko_fuku_return"], stats["choko_invest"]),
-        "ana_tan_rate":   _rate(stats["ana_tan_return"],  stats["ana_invest"]),
-        "ana_fuku_rate":  _rate(stats["ana_fuku_return"], stats["ana_invest"]),
-        "uma_rate":   _rate(stats["umaren_return"], max(stats["umaren_invest"], 1)),
-        "shiba_rate": _rate(stats["shiba_return"], max(stats["shiba_races"] * 100, 1)),
-        "dart_rate":  _rate(stats["dart_return"],  max(stats["dart_races"] * 100, 1)),
+        "tan_rate":        _rate(stats["honmei_tan_return"],  races_n * 100),
+        "fuku_rate":       _rate(stats["honmei_fuku_return"], races_n * 100),
+        "choko_tan_rate":  _rate(stats["choko_tan_return"], stats["choko_invest"]),
+        "choko_fuku_rate": _rate(stats["choko_fuku_return"], stats["choko_invest"]),
+        "ana_tan_rate":    _rate(stats["ana_tan_return"],  stats["ana_invest"]),
+        "ana_fuku_rate":   _rate(stats["ana_fuku_return"], stats["ana_invest"]),
+        "uma_rate":        _rate(stats["umaren_return"], max(stats["umaren_invest"], 1)),
+        "wide_rate":       _rate(stats["wide_ana_return"], max(stats["wide_ana_invest"], 1)),
+        "shiba_rate":      _rate(stats["shiba_return"], max(stats["shiba_races"] * 100, 1)),
+        "dart_rate":       _rate(stats["dart_return"],  max(stats["dart_races"] * 100, 1)),
+        "exp_rate":        _rate(stats["exp_return"],   max(stats["exp_races"] * 100, 1)),
     }
 
     logger.info(
@@ -200,6 +220,67 @@ def run(date_str: str = None):
         logger.info("Discord キューへの書き込み成功")
     else:
         logger.error("Discord キューへの書き込み失敗")
+
+    # ── HF Hub に ai_daily_history.csv を保存 ────────────────────────────
+    try:
+        import io
+        import pandas as pd
+        from huggingface_hub import HfApi, hf_hub_download
+
+        daily_row = {
+            "日付":              date_hf.replace("-", "/"),
+            "本命レース数":       races_n,
+            "本命単勝的中数":     stats["honmei_tan_hits"],
+            "本命単勝回収率":     rates["tan_rate"],
+            "本命複勝的中数":     stats["honmei_fuku_hits"],
+            "本命複勝回収率":     rates["fuku_rate"],
+            "馬連的中数":         stats["umaren_hits"],
+            "馬連回収率":         rates["uma_rate"],
+            "超狙い馬数":         int(stats["choko_invest"] // 100),
+            "超狙い馬単勝的中数": stats["choko_tan_hits"],
+            "超狙い馬単勝回収率": rates["choko_tan_rate"],
+            "超狙い馬複勝的中数": stats["choko_fuku_hits"],
+            "超狙い馬複勝回収率": rates["choko_fuku_rate"],
+            "穴馬数":             int(stats["ana_invest"] // 100),
+            "穴馬単勝的中数":     stats["ana_tan_hits"],
+            "穴馬単勝回収率":     rates["ana_tan_rate"],
+            "穴馬複勝的中数":     stats["ana_fuku_hits"],
+            "穴馬複勝回収率":     rates["ana_fuku_rate"],
+            "穴馬ワイド対象R":    stats["wide_ana_races"],
+            "穴馬ワイド的中数":   stats["wide_ana_hits"],
+            "穴馬ワイド回収率":   rates["wide_rate"],
+            "芝レース数":         stats["shiba_races"],
+            "芝単勝回収率":       rates["shiba_rate"],
+            "ダートレース数":     stats["dart_races"],
+            "ダート単勝回収率":   rates["dart_rate"],
+            "既走馬レース数":     stats["exp_races"],
+            "既走馬単勝回収率":   rates["exp_rate"],
+        }
+        new_df = pd.DataFrame([daily_row])
+
+        # 既存CSVを取得してマージ
+        try:
+            csv_path = hf_hub_download(HF_REPO_ID, "ai_daily_history.csv",
+                                        repo_type="dataset", token=HF_TOKEN)
+            existing_df = pd.read_csv(csv_path)
+            existing_df = existing_df[existing_df["日付"] != daily_row["日付"]]
+            merged_df = pd.concat([existing_df, new_df], ignore_index=True)
+        except Exception:
+            merged_df = new_df
+
+        buf = io.BytesIO()
+        merged_df.to_csv(buf, index=False)
+        buf.seek(0)
+        HfApi(token=HF_TOKEN).upload_file(
+            path_or_fileobj=buf,
+            path_in_repo="ai_daily_history.csv",
+            repo_id=HF_REPO_ID,
+            repo_type="dataset",
+            commit_message=f"成績履歴更新 {date_hf}",
+        )
+        logger.info("ai_daily_history.csv を HF Hub に保存しました")
+    except Exception as e:
+        logger.warning(f"ai_daily_history.csv 保存失敗（スキップ）: {e}")
 
 
 if __name__ == "__main__":
