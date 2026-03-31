@@ -5,7 +5,8 @@
       "Bash(python -m py_compile app.py)",
       "Bash(python:*)",
       "Bash(xargs grep:*)",
-      "Bash(wc -l src/*.py)"
+      "Bash(wc -l src/*.py)",
+      "Bash(python -c:*)"
     ]
   }
 }

@@ -225,7 +225,7 @@ def send_discord_review(stats: dict, rates: dict, target_date_str: str,
             "```",
             "",
             f"🌱 芝: {shiba_rate:.1f}%  🏜️ ダート: {dart_rate:.1f}%",
-        f"🔗 馬連: {uma_rate:.1f}%  📐 穴馬ワイド: {rates.get('wide_rate', 0):.1f}%  📚 既走馬: {rates.get('exp_rate', 0):.1f}%",
+            f"🔗 馬連: {uma_rate:.1f}%  📐 穴馬ワイド: {rates.get('wide_rate', 0):.1f}%",
             "",
             "-# keiba-ebye / 結果は参考情報です",
         ]
