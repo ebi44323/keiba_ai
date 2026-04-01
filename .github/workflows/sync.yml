@@ -2,6 +2,11 @@ name: Sync to Hugging Face Space
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'CLAUDE.md'
+      - 'HANDOVER_*.md'
+      - 'HF_TOKEN.txt'
+      - '.claude/**'
   workflow_dispatch:
 
 jobs:
