@@ -6,7 +6,8 @@
       "Bash(python:*)",
       "Bash(xargs grep:*)",
       "Bash(wc -l src/*.py)",
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "Bash(ls -lh learning_data_perfect_tier.*)"
     ]
   }
 }

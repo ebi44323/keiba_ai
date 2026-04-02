@@ -1,0 +1,49 @@
+name: Upload Learning Data to HF Hub
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'アップロード理由（任意）'
+        required: false
+        default: '手動アップロード'
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout (with LFS)
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install huggingface_hub
+        run: pip install huggingface_hub
+
+      - name: Upload learning_data_perfect_tier.zip to HF Hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
+
+          token = os.environ["HF_TOKEN"]
+          repo_id = "ebi44323/keiba-ebye-models"
+          api = HfApi(token=token)
+
+          api.upload_file(
+              path_or_fileobj="learning_data_perfect_tier.zip",
+              path_in_repo="learning_data_perfect_tier.zip",
+              repo_id=repo_id,
+              repo_type="dataset",
+          )
+          print(f"✅ アップロード完了: {repo_id}/learning_data_perfect_tier.zip")
+          EOF

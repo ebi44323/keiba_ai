@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-04-01a")
+st.caption("v2026-04-02a")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -218,6 +218,22 @@ if _is_pro and _hub_available:
         st.sidebar.caption("　└ 特徴量リークにより過大評価の可能性あり")
     _local_data_exists = (os.path.exists('learning_data_perfect_tier.zip') or
                           os.path.exists('learning_data_perfect_tier.csv'))
+
+def _get_learning_data_path():
+    """学習データZIPのパスを返す。ローカルになければHF Hubからダウンロード。"""
+    for p in ['learning_data_perfect_tier.zip', 'learning_data_perfect_tier.csv']:
+        if os.path.exists(p):
+            return p
+    if _HF_TOKEN and _HF_REPO_ID:
+        try:
+            from huggingface_hub import hf_hub_download
+            return hf_hub_download(
+                repo_id=_HF_REPO_ID, filename="learning_data_perfect_tier.zip",
+                repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache"
+            )
+        except Exception:
+            pass
+    return None
     if _local_data_exists:
         if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
             st.cache_resource.clear()
@@ -1546,16 +1562,18 @@ elif action == "📈 長期成績分析":
              '穴馬単勝回収率','穴馬複勝回収率','三連複回収率','馬連回収率'],
             help="累積損益グラフで比較する主指標")
 
-    # 起動時にHF HubからCSVを取得（再起動でリセット防止）
-    if not os.path.exists(csv_file) and _HF_TOKEN and _HF_REPO_ID:
+    # HF Hubから常に最新を取得（セッション1回のみ・別デバイスからでも最新が見える）
+    if _HF_TOKEN and _HF_REPO_ID and not st.session_state.get('_hist_fetched'):
         try:
             from huggingface_hub import hf_hub_download
             _hist_path = hf_hub_download(
                 repo_id=_HF_REPO_ID, filename="ai_daily_history.csv",
-                repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache"
+                repo_type="dataset", token=_HF_TOKEN, cache_dir="/tmp/hf_cache",
+                force_download=True
             )
             import shutil
             shutil.copy(_hist_path, csv_file)
+            st.session_state['_hist_fetched'] = True
         except Exception: pass
 
     if not os.path.exists(csv_file):
@@ -1818,7 +1836,10 @@ elif action == "🔧 Optuna チューニング":
     if st.button("🔧 チューニング開始", type="primary"):
         with st.spinner(f"Optunaによる探索中 ({n_trials} trials × {n_folds} folds)..."):
             try:
-                df_op = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+                _op_path = _get_learning_data_path()
+                if _op_path is None:
+                    st.error("学習データが見つかりません。"); st.stop()
+                df_op = pd.read_csv(_op_path, compression='zip' if str(_op_path).endswith('.zip') else None, dtype=str)
                 df_op['日付'] = pd.to_datetime(df_op['日付'], format='mixed', errors='coerce')
                 df_op = df_op.dropna(subset=['日付', '着順', '単勝'])
                 for col in ['着順', '単勝', '人気']: df_op[col] = pd.to_numeric(df_op[col], errors='coerce')
@@ -1882,7 +1903,10 @@ elif action == "🔧 Optuna チューニング":
                 mb_w = bundle[1]   # モデルB: LGBMRanker（1着）
                 mc_w = bundle[2]   # モデルC: LGBMRegressor（着順回帰）
 
-                df_w = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+                _w_path = _get_learning_data_path()
+                if _w_path is None:
+                    st.error("学習データが見つかりません。"); st.stop()
+                df_w = pd.read_csv(_w_path, compression='zip' if str(_w_path).endswith('.zip') else None, dtype=str)
                 df_w['日付'] = pd.to_datetime(df_w['日付'], format='mixed', errors='coerce')
                 df_w = df_w.dropna(subset=['日付', '着順', '単勝'])
                 for col in ['着順', '単勝', '人気']:
@@ -1938,7 +1962,11 @@ elif action == "🏇 騎手・調教師フォーム分析":
     # ── データ読み込み（キャッシュ）────────────────────────────────────
     @st.cache_data(ttl=3600, show_spinner="学習データを読み込み中...")
     def load_jockey_base():
-        df = pd.read_csv('learning_data_perfect_tier.zip', compression='zip', dtype=str)
+        _data_path = _get_learning_data_path()
+        if _data_path is None:
+            raise FileNotFoundError("学習データが見つかりません (ローカル・HF Hub両方)")
+        _comp = 'zip' if str(_data_path).endswith('.zip') else None
+        df = pd.read_csv(_data_path, compression=_comp, dtype=str)
         # 調教師名の正規化: "[東] 矢作芳人" → "矢作芳人"
         if '調教師' in df.columns:
             df['調教師'] = df['調教師'].str.replace(r'^\[.+?\]\s*', '', regex=True)
@@ -2779,11 +2807,12 @@ elif action == "🐴 愛馬の成長記録":
     if st.button("📊 成長記録を表示", type="primary") and horse_name:
         with st.spinner(f"{horse_name} のデータを検索中..."):
             try:
-                data_file = 'learning_data_perfect_tier.zip'
-                if not os.path.exists(data_file):
-                    st.error(f"データベースファイル ({data_file}) が見つかりません。")
+                data_file = _get_learning_data_path()
+                if data_file is None:
+                    st.error("データベースファイルが見つかりません。HF Hubにも存在しません。")
                 else:
-                    df_hist = pd.read_csv(data_file, compression='zip', dtype=str)
+                    _comp = 'zip' if str(data_file).endswith('.zip') else None
+                    df_hist = pd.read_csv(data_file, compression=_comp, dtype=str)
                     df_hist['日付'] = pd.to_datetime(df_hist['日付'], format='mixed', errors='coerce')
                     df_horse = df_hist[df_hist['馬名'] == horse_name].copy()
 
