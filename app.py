@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-04-02a")
+st.caption("v2026-04-02b")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -206,19 +206,6 @@ else:
     gemini_model_name = "gemini-2.5-flash"
     st.sidebar.caption("🤖 AI思考モード: HF Secrets に `GEMINI_API_KEY` を設定してください")
 
-# ── モデル管理 (Pro + HF Hubが設定済みの場合のみ表示) ─────
-if _is_pro and _hub_available:
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### ⚙️ モデル管理")
-    st.sidebar.caption(f"HF Hub: `{_HF_REPO_ID}`")
-    st.sidebar.caption(f"🎚 アンサンブル重み: 複勝={ensemble_weight:.1f} / 1着={1-ensemble_weight:.1f}")
-    # AUC: 特徴量計算にリークが含まれるため表示は参考値扱い
-    if auc_win > 0:
-        st.sidebar.caption(f"⚠️ AUC(参考): 1着={auc_win:.4f} / 複勝={auc_place:.4f}")
-        st.sidebar.caption("　└ 特徴量リークにより過大評価の可能性あり")
-    _local_data_exists = (os.path.exists('learning_data_perfect_tier.zip') or
-                          os.path.exists('learning_data_perfect_tier.csv'))
-
 def _get_learning_data_path():
     """学習データZIPのパスを返す。ローカルになければHF Hubからダウンロード。"""
     for p in ['learning_data_perfect_tier.zip', 'learning_data_perfect_tier.csv']:
@@ -234,6 +221,19 @@ def _get_learning_data_path():
         except Exception:
             pass
     return None
+
+# ── モデル管理 (Pro + HF Hubが設定済みの場合のみ表示) ─────
+if _is_pro and _hub_available:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### ⚙️ モデル管理")
+    st.sidebar.caption(f"HF Hub: `{_HF_REPO_ID}`")
+    st.sidebar.caption(f"🎚 アンサンブル重み: 複勝={ensemble_weight:.1f} / 1着={1-ensemble_weight:.1f}")
+    # AUC: 特徴量計算にリークが含まれるため表示は参考値扱い
+    if auc_win > 0:
+        st.sidebar.caption(f"⚠️ AUC(参考): 1着={auc_win:.4f} / 複勝={auc_place:.4f}")
+        st.sidebar.caption("　└ 特徴量リークにより過大評価の可能性あり")
+    _local_data_exists = (os.path.exists('learning_data_perfect_tier.zip') or
+                          os.path.exists('learning_data_perfect_tier.csv'))
     if _local_data_exists:
         if st.sidebar.button("🔄 強制再学習 & Hub更新", help="データが更新された際に手動で再学習してHubにアップロードします"):
             st.cache_resource.clear()
