@@ -290,16 +290,16 @@ def prepare_model_and_data(force_retrain=False):
     train_df['win_label'] = (train_df['着順'] == 1).astype(int) if '着順' in train_df.columns else train_df['馬券内']
     test_df['win_label']  = (test_df['着順']  == 1).astype(int) if '着順' in test_df.columns  else test_df['馬券内']
     # ── モデルBパラメータ: Optunaチューニング済み（3fold ウォークフォワードCV）──
-    # CV AUC: 0.7615 (市場勝率除外, 50試行) @ 2026-03-26
+    # CVスコア: 0.6949 (AUC×0.7 + 正規化回収率×0.3, 市場勝率除外, 50試行) @ 2026-04-03
     model_win = lgb.LGBMRanker(
-        n_estimators=700,
-        learning_rate=0.012275,
-        num_leaves=32,
-        max_bin=162,
-        cat_smooth=31.9926,
-        colsample_bytree=0.7124,
-        subsample=0.8923,
-        min_child_samples=77,
+        n_estimators=685,
+        learning_rate=0.029074,
+        num_leaves=15,
+        max_bin=228,
+        cat_smooth=39.9527,
+        colsample_bytree=0.8848,
+        subsample=0.7033,
+        min_child_samples=70,
         random_state=123,
         importance_type='gain',
     )
