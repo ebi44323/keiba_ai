@@ -332,10 +332,12 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
 
         # 乗り替わりフラグ: 正規化名で比較
         if '最新_騎手' in df_test.columns:
+            # 文字列'nan'や空文字をfloat NaNに統一（馬場替わりフラグと同様の対策）
+            _jockey_clean = df_test['最新_騎手'].replace({'nan': np.nan, '': np.nan})
             now_j  = df_test['騎手'].apply(_norm_name)
-            prev_j = df_test['最新_騎手'].apply(_norm_name)
+            prev_j = _jockey_clean.apply(_norm_name)
             df_test['乗り替わりフラグ'] = ((now_j != prev_j) & (prev_j != '')).astype(int)
-            df_test['_前走騎手']        = df_test['最新_騎手'].fillna('不明')
+            df_test['_前走騎手']        = _jockey_clean.fillna('不明')
         else:
             df_test['乗り替わりフラグ'] = 0
             df_test['_前走騎手']        = '不明'
@@ -344,13 +346,15 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         # 障害レースは「障害」カテゴリとして扱い、芝/ダート→障害は常に「変更」とする
         # ただし障害→障害は変化なし
         if '最新_芝ダート' in df_test.columns:
+            # 文字列'nan'や空文字をfloat NaNに統一（CSVやpkl由来の'nan'文字列を防ぐ）
+            _surf_clean = df_test['最新_芝ダート'].replace({'nan': np.nan, '': np.nan})
             now_s  = df_test['芝/ダート'].fillna('').astype(str).str.strip()
-            prev_s = df_test['最新_芝ダート'].fillna('').astype(str).str.strip()
+            prev_s = _surf_clean.fillna('').astype(str).str.strip()
             # 障害同士は変化なし扱い（今回も前走も障害なら変化なし）
             both_shogai = (now_s.str.contains('障') & prev_s.str.contains('障'))
             surf_changed = ((now_s != prev_s) & (prev_s != '') & ~both_shogai)
             df_test['馬場替わりフラグ'] = surf_changed.astype(int)
-            df_test['_前走馬場']        = df_test['最新_芝ダート'].fillna('不明')
+            df_test['_前走馬場']        = _surf_clean.fillna('不明')
         else:
             df_test['馬場替わりフラグ'] = 0
             df_test['_前走馬場']        = '不明'
