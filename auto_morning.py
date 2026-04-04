@@ -11,6 +11,7 @@
   HF_TOKEN           - HuggingFace API トークン（モデルロード用）
   HF_REPO_ID         - モデル保存先 Dataset リポジトリ ID
   DISCORD_WEBHOOK_URL - 投稿先 Discord Webhook URL
+  GEMINI_API_KEY     - (任意) Google Gemini API キー（11R コメント生成）
 """
 
 import os
@@ -29,6 +30,7 @@ logger = logging.getLogger("auto_morning")
 HF_TOKEN            = os.environ.get("HF_TOKEN", "")
 HF_REPO_ID          = os.environ.get("HF_REPO_ID", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 
 if not HF_TOKEN or not HF_REPO_ID:
     logger.error("HF_TOKEN / HF_REPO_ID が未設定です。")
@@ -48,6 +50,8 @@ with mock.patch("streamlit.cache_resource", _passthrough), \
     from src.core_model import prepare_model_and_data
     from src.scraper import get_todays_races
     from src.inference import run_real_prediction
+    if GEMINI_API_KEY:
+        from src.gemini_utils import generate_two_analysts
 
 JST = pytz.timezone("Asia/Tokyo")
 
@@ -63,28 +67,32 @@ def _emoji_ev(ev: float) -> str:
     return ""
 
 
-def format_race_txt(race: dict, res_df, reco: str, confidence_text: str, pace_text: str) -> str:
-    """1レース分のテキストブロックを生成"""
+def format_race_txt(race: dict, res_df, reco: str, confidence_text: str,
+                    pace_text: str, topics: list = None) -> str:
+    """1レース分のテキストブロックを生成（全頭表示）"""
     time_str = race["time"].strftime("%H:%M")
     lines = [
-        f"{'━'*50}",
+        f"{'━'*52}",
         f"【{race['place']} {race['num']}R】{race['title']}  {time_str}発走",
-        f"{'━'*50}",
+        f"{'━'*52}",
+        f"{'印':<2} {'馬番':>3} {'馬名':<12} {'オッズ':>6} {'勝率':>5} {'複勝率':>6} {'EV':>5} {'脚質':<5}",
+        f"{'─'*52}",
     ]
-    for _, row in res_df.iterrows():
+    for idx, row in res_df.iterrows():
         mark   = str(row.get("印", "")).ljust(2)
-        if not mark.strip():
-            continue
         uban   = int(row.get("馬番", 0))
         name   = str(row.get("馬名", ""))
         odds   = float(row.get("単勝オッズ", 0))
         prob   = float(row.get("勝率(AI予測)", 0)) * 100
+        fprob  = float(row.get("複勝率(AI予測)", 0)) * 100
         ev     = float(row.get("期待値", 0) or 0)
         ana    = str(row.get("穴馬マーク", ""))
+        style  = str(row.get("脚質カテゴリ", "")).replace("nan", "")
         ev_em  = _emoji_ev(ev)
         lines.append(
-            f"{mark} {uban:2d}番 {name:<12} "
-            f"オッズ{odds:5.1f}倍  勝率{prob:4.1f}%  EV{ev:4.2f} {ev_em}{ana}"
+            f"{mark} {uban:3d}番 {name:<12} "
+            f"{odds:5.1f}倍 {prob:4.1f}% {fprob:5.1f}% "
+            f"EV{ev:4.2f}{ev_em}{ana} {style}"
         )
     lines.append("")
     if confidence_text:
@@ -92,44 +100,106 @@ def format_race_txt(race: dict, res_df, reco: str, confidence_text: str, pace_te
     if pace_text:
         lines.append(f"【展開】{pace_text.replace('**','')}")
     if reco:
-        lines.append(f"【推奨】{reco.replace('**','').replace(chr(10),' ')[:120]}")
+        lines.append(f"【推奨】{reco.replace('**','').replace(chr(10),' ')[:180]}")
+    # SHAP推し理由
+    if topics:
+        for t in topics:
+            if "AIの推し理由" in t:
+                lines.append(f"【AI推し理由】{t.replace(chr(10),' ')}")
+                break
     lines.append("")
     return "\n".join(lines)
 
 
-def format_race_html_row(race: dict, res_df, confidence_text: str) -> str:
-    """1レース分のHTML<section>を生成"""
+def _gemini_html_section(gemini_data: dict) -> str:
+    """GeminiアナリストコメントのHTML断片"""
+    if not gemini_data:
+        return ""
+    h = gemini_data.get("honmei", {})
+    a = gemini_data.get("ana", {})
+    model = gemini_data.get("model", "")
+    return f"""
+<div style="margin-top:10px;padding:10px;background:#f0f4ff;border:1px solid #b0c4ff;border-radius:6px">
+  <div style="font-size:12px;font-weight:bold;color:#3a5bc7;margin-bottom:8px">🤖 AI思考モード（{model}）</div>
+  <div style="display:flex;gap:10px">
+    <div style="flex:1;padding:8px;background:#e8f4e8;border-left:3px solid #4caf50;border-radius:4px;font-size:12px">
+      <div style="font-weight:bold;margin-bottom:4px">🎯 本命党「伊藤ホンメ」</div>
+      <div>{h.get('comment','')}</div>
+      <div style="margin-top:6px;font-size:11px;color:#555;font-weight:bold">💰 {h.get('bet','')}</div>
+    </div>
+    <div style="flex:1;padding:8px;background:#fff3e0;border-left:3px solid #ff9800;border-radius:4px;font-size:12px">
+      <div style="font-weight:bold;margin-bottom:4px">💣 穴党「風穴あけるズ」</div>
+      <div>{a.get('comment','')}</div>
+      <div style="margin-top:6px;font-size:11px;color:#555;font-weight:bold">🎰 {a.get('bet','')}</div>
+    </div>
+  </div>
+</div>"""
+
+
+def format_race_html_row(race: dict, res_df, confidence_text: str,
+                         topics: list = None, gemini_data: dict = None) -> str:
+    """1レース分のHTML<section>を生成（全頭表示・詳細情報付き）"""
     time_str = race["time"].strftime("%H:%M")
     rows_html = ""
-    for _, row in res_df.iterrows():
-        mark = str(row.get("印", ""))
-        if not mark.strip(): continue
-        uban = int(row.get("馬番", 0))
-        name = str(row.get("馬名", ""))
-        odds = float(row.get("単勝オッズ", 0))
-        prob = float(row.get("勝率(AI予測)", 0)) * 100
-        ev   = float(row.get("期待値", 0) or 0)
-        ana  = str(row.get("穴馬マーク", ""))
-        bg   = "#fff3f3" if ev >= 1.5 else "#fffce8" if ev >= 1.0 else "white"
+    for idx, row in res_df.iterrows():
+        mark   = str(row.get("印", ""))
+        uban   = int(row.get("馬番", 0))
+        name   = str(row.get("馬名", ""))
+        odds   = float(row.get("単勝オッズ", 0))
+        prob   = float(row.get("勝率(AI予測)", 0)) * 100
+        fprob  = float(row.get("複勝率(AI予測)", 0)) * 100
+        ev     = float(row.get("期待値", 0) or 0)
+        ana    = str(row.get("穴馬マーク", ""))
+        style  = str(row.get("脚質カテゴリ", "")).replace("nan", "")
+        prev   = row.get("前走_着順", "")
+        prev_s = f"{int(prev)}着" if str(prev) not in ("nan", "", "None") else "-"
+        ev_em  = _emoji_ev(ev)
+        bg = "#fff3f3" if ev >= 1.5 else "#fffce8" if ev >= 1.0 else "white"
+        # 印なし馬は薄めの文字色
+        name_style = "" if mark.strip() else "color:#999"
         rows_html += (
             f'<tr style="background:{bg}">'
-            f'<td>{mark}</td><td>{uban}</td><td>{name}</td>'
-            f'<td>{odds:.1f}</td><td>{prob:.1f}%</td>'
-            f'<td><b>{ev:.2f}</b></td><td>{ana}</td></tr>\n'
+            f'<td style="font-size:16px">{mark}</td>'
+            f'<td>{uban}</td>'
+            f'<td style="text-align:left;{name_style}">{name}</td>'
+            f'<td>{style}</td>'
+            f'<td>{odds:.1f}</td>'
+            f'<td>{prob:.1f}%</td>'
+            f'<td>{fprob:.1f}%</td>'
+            f'<td><b>{ev:.2f}</b>{ev_em}</td>'
+            f'<td>{prev_s}</td>'
+            f'<td>{ana}</td>'
+            f'</tr>\n'
         )
+
     color = "#c0392b" if "鉄板" in confidence_text else "#2471a3" if "波乱" in confidence_text else "#117a65"
+
+    # SHAP推し理由
+    shap_html = ""
+    if topics:
+        for t in topics:
+            if "AIの推し理由" in t:
+                shap_html = f'<div style="padding:4px 12px;font-size:12px;color:#2471a3">🔍 {t.replace(chr(10),"　")}</div>'
+                break
+
+    # Geminiコメント（11Rのみ）
+    gemini_html = _gemini_html_section(gemini_data) if gemini_data else ""
+
     return f"""
 <section style="margin:16px 0;border:1px solid #ddd;border-radius:8px;overflow:hidden">
   <div style="background:{color};color:white;padding:8px 12px;font-weight:bold">
     {race['place']} {race['num']}R　{race['title']}　{time_str}発走
   </div>
-  <table style="width:100%;border-collapse:collapse;font-size:14px">
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
     <tr style="background:#f5f5f5;font-weight:bold">
-      <th>印</th><th>馬番</th><th>馬名</th><th>オッズ</th><th>勝率</th><th>EV</th><th></th>
+      <th>印</th><th>馬番</th><th style="text-align:left">馬名</th><th>脚質</th>
+      <th>オッズ</th><th>勝率</th><th>複勝率</th><th>EV</th><th>前走</th><th></th>
     </tr>
     {rows_html}
   </table>
   <div style="padding:6px 12px;font-size:13px;color:#555">{confidence_text.replace('**','')}</div>
+  {shap_html}
+  <div style="padding:6px 12px 10px;font-size:12px;color:#333;white-space:pre-wrap">{gemini_html}</div>
 </section>"""
 
 
@@ -140,13 +210,17 @@ def build_full_html(date_label: str, sections: list) -> str:
 <meta charset="utf-8">
 <title>keiba-ebye 予想 {date_label}</title>
 <style>
-  body {{ font-family: 'Hiragino Kaku Gothic Pro', Meiryo, sans-serif; max-width:900px; margin:auto; padding:16px; }}
+  body {{ font-family: 'Hiragino Kaku Gothic Pro', Meiryo, sans-serif; max-width:960px; margin:auto; padding:16px; }}
   h1 {{ color:#2c3e50; border-bottom:3px solid #c0392b; padding-bottom:8px; }}
-  td,th {{ padding:6px 10px; border-bottom:1px solid #eee; text-align:center; }}
+  td,th {{ padding:5px 8px; border-bottom:1px solid #eee; text-align:center; }}
 </style>
 </head><body>
 <h1>🐴 keiba-ebye AI予想　{date_label}</h1>
 <p style="color:#888;font-size:13px">⚠️ 馬券の購入は自己責任でお願いします。オッズは8時時点の参考値です。</p>
+<p style="font-size:12px;color:#555">
+  EV=AI勝率×オッズ（✅=1.0以上・⭐=1.5以上・🔥=2.0以上）　🎯=穴馬マーク<br>
+  印なし馬も含む全頭表示。EV1.5以上の行はピンク背景、1.0以上は黄背景。
+</p>
 {body}
 <hr><p style="color:#aaa;font-size:12px">keiba-ebye 自動生成 | EV=AI勝率×オッズ（1.0超が購入検討ライン）</p>
 </body></html>"""
@@ -223,7 +297,7 @@ def run(date_str: str = None):
     logger.info("モデルロード完了。推論開始...")
 
     # 全レース推論
-    txt_blocks   = []
+    txt_blocks    = []
     html_sections = []
     ok_count = 0
     venues = sorted(set(r["place"] for r in races))
@@ -231,7 +305,7 @@ def run(date_str: str = None):
     for r in races:
         logger.info(f"  推論: {r['place']} {r['num']}R ({r['id']})")
         try:
-            res_df, _, reco, pace_text, conf_text, _, _, _, err = run_real_prediction(
+            res_df, topics_list, reco, pace_text, conf_text, _, _, _, err = run_real_prediction(
                 r["id"], date_hf, bundle,
                 skip_live_scrape=False,
                 ev_first=True, ev_threshold=1.0, min_win_prob=0.10,
@@ -243,8 +317,24 @@ def run(date_str: str = None):
             logger.warning(f"  推論結果なし: {r['id']}")
             continue
 
-        txt_blocks.append(format_race_txt(r, res_df, reco or "", conf_text or "", pace_text or ""))
-        html_sections.append(format_race_html_row(r, res_df, conf_text or ""))
+        # 11R のみ Gemini アナリストコメントを生成
+        gemini_data = None
+        if r["num"] == 11 and GEMINI_API_KEY:
+            logger.info(f"  Gemini生成中: {r['place']} 11R")
+            try:
+                gemini_data = generate_two_analysts(
+                    res_df, pace_text or "", conf_text or "",
+                    topics_list or [], reco or "",
+                )
+            except Exception as ge:
+                logger.warning(f"  Gemini生成失敗: {ge}")
+
+        txt_blocks.append(
+            format_race_txt(r, res_df, reco or "", conf_text or "", pace_text or "", topics_list)
+        )
+        html_sections.append(
+            format_race_html_row(r, res_df, conf_text or "", topics_list, gemini_data)
+        )
         ok_count += 1
 
     if ok_count == 0:
@@ -255,19 +345,21 @@ def run(date_str: str = None):
     header_txt = (
         f"keiba-ebye AI朝刊予想  {date_label}\n"
         f"開催: {' / '.join(venues)}  全{ok_count}レース\n"
-        f"{'='*50}\n"
-        f"EV=AI勝率×オッズ（1.0超が購入検討ライン）\n"
-        f"{'='*50}\n\n"
+        f"{'='*52}\n"
+        f"EV=AI勝率×オッズ（✅=1.0以上 ⭐=1.5以上 🔥=2.0以上）\n"
+        f"全頭表示 / 印なし馬も参考として掲載\n"
+        f"{'='*52}\n\n"
     )
     full_txt  = header_txt + "\n".join(txt_blocks)
     full_html = build_full_html(date_label, html_sections)
 
     # Discord サマリーメッセージ（ファイルと一緒に投稿）
+    gemini_note = "🤖 11R Gemini AIコメント付き" if GEMINI_API_KEY else ""
     summary = (
         f"🐴 **keiba-ebye AI朝刊予想** | {date_label}\n"
         f"開催: **{' / '.join(venues)}** 全**{ok_count}**レース\n"
-        f"▼ 本日の全レース予想を .txt / .html で添付しました\n"
-        f"⭐=EV1.5以上  🔥=EV2.0以上  🎯=穴馬マーク\n"
+        f"▼ 本日の全レース予想を .txt / .html で添付しました（全頭表示）\n"
+        f"⭐=EV1.5以上  🔥=EV2.0以上  🎯=穴馬マーク  {gemini_note}\n"
         f"-# keiba-ebye 自動予想 / 馬券は自己責任でお願いします"
     )
 

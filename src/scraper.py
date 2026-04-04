@@ -25,7 +25,11 @@ def get_todays_races(date_str=None):
     for url in urls_to_try:
         try:
             res = requests.get(url, headers=get_headers(), timeout=10)
-            soup = BeautifulSoup(res.content.decode('euc-jp', errors='replace'), 'html.parser')
+            try:
+                _content = res.content.decode('utf-8')
+            except UnicodeDecodeError:
+                _content = res.content.decode('euc-jp', errors='replace')
+            soup = BeautifulSoup(_content, 'html.parser')
             
             for a_tag in soup.find_all('a', href=re.compile(r'race_id=(\d{12})')):
                 r_id = re.search(r'race_id=(\d{12})', a_tag.get('href')).group(1)
