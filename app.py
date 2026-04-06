@@ -41,9 +41,12 @@ from src.inference import run_real_prediction
 from src.gemini_utils import generate_two_analysts, check_gemini_available, generate_review_analysis
 
 @st.cache_data(ttl=3600*12, show_spinner=False)
-def get_morning_prediction(race_id, race_date_str, _bundle, ev_first=False, ev_threshold=1.0, min_win_prob=0.10):
+def get_morning_prediction(race_id, race_date_str, _bundle, ev_first=False, ev_threshold=1.0, min_win_prob=0.10, baba_shiba=None, baba_dirt=None):
     # 朝版（直前版と同じくfetch_horse_last_race()を呼んで前走情報を最新化）
-    return run_real_prediction(race_id, race_date_str, _bundle, skip_live_scrape=False, ev_first=ev_first, ev_threshold=ev_threshold, min_win_prob=min_win_prob)
+    _baba_ov = {}
+    if baba_shiba: _baba_ov['芝']   = baba_shiba
+    if baba_dirt:  _baba_ov['ダート'] = baba_dirt
+    return run_real_prediction(race_id, race_date_str, _bundle, skip_live_scrape=False, ev_first=ev_first, ev_threshold=ev_threshold, min_win_prob=min_win_prob, baba_override=_baba_ov or None)
 
 
 
@@ -182,6 +185,27 @@ if ev_first_mode:
                            help="この期待値以上の馬の中からEV最大を◎にします。")
     ev_first_min_prob  = st.sidebar.slider("◎昇格の最低AI勝率", 0.05, 0.30, 0.15, 0.01,
                            help="AI勝率がこれ未満の馬はEV優先でも◎になりません。")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🌦️ 馬場設定")
+_baba_manual = st.sidebar.checkbox(
+    "手動で馬場を指定",
+    value=False,
+    help="自動取得した馬場状態を上書きします。発走前にnetkeibaが更新されていない場合や雨で馬場が悪化した場合に使用してください。"
+)
+if _baba_manual:
+    _baba_choices = ['良', '稍重', '重', '不良']
+    _bs_col, _bd_col = st.sidebar.columns(2)
+    with _bs_col:
+        _baba_shiba = st.selectbox("芝", _baba_choices, key="baba_shiba")
+    with _bd_col:
+        _baba_dirt = st.selectbox("ダート", _baba_choices, key="baba_dirt")
+    baba_override = {'芝': _baba_shiba, 'ダート': _baba_dirt}
+    st.sidebar.caption(f"📌 手動設定中: 芝={_baba_shiba} / ダ={_baba_dirt}")
+else:
+    _baba_shiba = None
+    _baba_dirt  = None
+    baba_override = None
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🤖 AI思考モード")
@@ -841,7 +865,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
 
                 if manual_run or force_refresh or auto_triggered or discord_triggered or live_update:
                     with st.spinner('AIが推論中（最新オッズ取得含む）...'):
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob, baba_override=baba_override)
                     if res_df is not None:
                         st.session_state[f'cached_res_{next_race["id"]}'] = res_df.copy()
                         st.session_state[f'cached_topics_{next_race["id"]}'] = topics
@@ -859,7 +883,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                         conf_text = st.session_state.get(f'cached_conf_{next_race["id"]}')
                         err_log   = []
                     else:
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(next_race['id'], now.strftime('%Y-%m-%d'), bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob, baba_shiba=_baba_shiba, baba_dirt=_baba_dirt)
 
                 if res_df is not None:
                     display_result(res_df, topics, reco, pace_text, conf_text)
@@ -928,9 +952,9 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
             if st.button("🚀 朝版 予想開始", type="primary") or live_update:
                 with st.spinner('推論中...'):
                     if live_update:
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob, baba_override=baba_override)
                     else:
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob, baba_shiba=_baba_shiba, baba_dirt=_baba_dirt)
 
                     if res_df is not None:
                         st.session_state[f'spec_res_{_spec_key}']    = res_df.copy()
@@ -988,7 +1012,7 @@ elif action == "📅 今週末の全レース予想":
             for _i, _r in enumerate(_races):
                 _bar.progress((_i + 0.5) / len(_races), text=f"推論中... {_r['place']} {_r['num']}R")
                 _res_df, _topics, _reco, _pace, _conf, _track, _place, _dist, _elog = run_real_prediction(
-                    _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}", bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob)
+                    _r["id"], f"{_td[:4]}-{_td[4:6]}-{_td[6:]}", bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob, baba_override=baba_override)
                 if _res_df is not None:
                     _max_ev   = float(_res_df['期待値'].max()) if '期待値' in _res_df.columns else 0.0
                     _top_row  = _res_df.iloc[0]

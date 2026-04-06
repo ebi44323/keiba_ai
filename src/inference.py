@@ -23,10 +23,11 @@ def _safe_col(df, col, default=np.nan):
     return pd.Series([val] * len(df), index=df.index)
 
 # ==========================================
-def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.0, min_win_prob=0.15):
+def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.0, min_win_prob=0.15, baba_override=None):
     """
     skip_live_scrape=True: バックテスト時に使用。
       fetch_horse_last_race()を呼ばない（速度維持＆日付ズレ防止）
+    baba_override: {'芝': '重', 'ダート': '良'} のように指定すると馬場を手動上書き。
     """
     (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
@@ -108,6 +109,10 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     todays_baba = baba_match.group(1) if baba_match else '良'
     tdm = re.search(r'(芝|ダ|障|障害).*?(\d+)m', race_text)
     track_type = "芝" if tdm and tdm.group(1)=="芝" else "ダート" if tdm and "ダ" in tdm.group(1) else "障害"
+    # 馬場手動上書き（サイドバーからの設定が優先）
+    if baba_override and track_type in baba_override and baba_override[track_type]:
+        todays_baba = baba_override[track_type]
+        logger.info(f'馬場手動上書き: {track_type} → {todays_baba}')
     distance = float(tdm.group(2)) if tdm else 1600.0
     place = {'01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'}.get(str(race_id)[4:6], '東京')
     weather_m = re.search(r'天候:([晴曇雨小雪]+)', race_text)
@@ -415,7 +420,13 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['前走_上り順位率']   = pd.to_numeric(_safe_col(df_test, '前走_上り順位率',   np.nan), errors='coerce')
         df_test['前走_前半ペース値'] = pd.to_numeric(_safe_col(df_test, '前走_前半ペース値', np.nan), errors='coerce')
         df_test['前走_後半ペース値'] = pd.to_numeric(_safe_col(df_test, '前走_後半ペース値', np.nan), errors='coerce')
-        df_test['馬体重増減']            = df_test['馬体重_num'] - pd.to_numeric(_safe_col(df_test, '最新_馬体重', np.nan), errors='coerce')
+        # 馬体重フォールバック: 発表前（NaN）は前回体重で補完し朝予想を安定化
+        _prev_weight = pd.to_numeric(_safe_col(df_test, '最新_馬体重', np.nan), errors='coerce')
+        _weight_nan  = df_test['馬体重_num'].isna()
+        if _weight_nan.any():
+            df_test.loc[_weight_nan, '馬体重_num'] = _prev_weight[_weight_nan]
+            logger.debug(f'馬体重フォールバック: {_weight_nan.sum()}頭を前回体重で補完')
+        df_test['馬体重増減']            = df_test['馬体重_num'] - _prev_weight
         df_test['斤量差'] = pd.to_numeric(df_test['斤量'],errors='coerce') - pd.to_numeric(df_test['斤量'],errors='coerce').mean()
         _prev_kinryo = pd.to_numeric(_safe_col(df_test, '最新_斤量', np.nan), errors='coerce')
         df_test['斤量_前走差'] = pd.to_numeric(df_test['斤量'], errors='coerce') - _prev_kinryo
