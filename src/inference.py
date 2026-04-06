@@ -235,6 +235,21 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             lambda r: r.dropna().nlargest(3).median() if r.dropna().shape[0] >= 1 else np.nan, axis=1)
         df_test['近5走_スピード指数安定性'] = df_test[_s5_infer].std(axis=1)
 
+        # 案3: スピード指数NaNフォールバック（海外帰り等でNaNの場合、直近の有効値で補完）
+        # 前走がNaN → 2走前、2走前がNaN → 3走前... の順でバックフィル
+        for _i in range(len(_s5_infer) - 1):
+            _nan_mask = df_test[_s5_infer[_i]].isna() & df_test[_s5_infer[_i + 1]].notna()
+            if _nan_mask.any():
+                df_test.loc[_nan_mask, _s5_infer[_i]] = df_test.loc[_nan_mask, _s5_infer[_i + 1]]
+        # フォールバック後に派生特徴量を再計算
+        df_test['過去3走平均スピード指数']     = df_test[_s5_infer[:3]].mean(axis=1)
+        df_test['近5走_中央値スピード指数']    = df_test[_s5_infer].median(axis=1)
+        df_test['近5走_最高スピード指数']      = df_test[_s5_infer].max(axis=1)
+        df_test['上昇度_スピード指数']         = df_test['前走_スピード指数'] - df_test['近5走_中央値スピード指数']
+        df_test['ベスト3走_中央値スピード指数'] = df_test[_s5_infer].apply(
+            lambda r: r.dropna().nlargest(3).median() if r.dropna().shape[0] >= 1 else np.nan, axis=1)
+        df_test['近5走_スピード指数安定性']    = df_test[_s5_infer].std(axis=1)
+
         df_test['前走_通過'] = _safe_col(df_test, '最新_通過', '')
         def parse_corner(x):
             s=str(x); return s.split('-')[-1] if '-' in s else (s if s.isdigit() else np.nan)
@@ -279,6 +294,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         # 各馬の前走情報をnetkeibaから直接スクレイプして上書き
         # skip_live_scrape=True(バックテスト): スキップして高速化
         # 前走日付 >= race_date の場合もスキップ（バックテスト日より未来の情報は使えない）
+        df_test['海外帰りフラグ'] = 0.0  # 案1: 海外帰りフラグ初期化
         if not skip_live_scrape:
             for idx, row in df_test.iterrows():
                 hid = str(row['馬ID'])
@@ -294,6 +310,11 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                             continue  # 未来データは無視してCSVデータのまま
                     except Exception as _e:
                         logger.debug(f'前走日付パース失敗: {_e}')
+
+                # 案1: 海外帰りフラグをセット
+                if prev.get('海外帰りフラグ'):
+                    df_test.at[idx, '海外帰りフラグ'] = 1.0
+                    logger.info(f'海外帰り馬検出: 馬ID={hid}')
 
                 if '前走日付'   in prev: df_test.at[idx, '最新_日付']     = prev['前走日付']
                 if '前走距離'   in prev: df_test.at[idx, '最新_距離']     = prev['前走距離']
@@ -312,6 +333,11 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
 
         # 長期休養フラグ（休養日数から計算）
         df_test['長期休養フラグ'] = (df_test['休養日数'] >= 180).astype(float)
+        # 案1: 海外帰り馬は長期休養扱いにしない（休養ではなく海外遠征のため）
+        overseas_mask = df_test.get('海外帰りフラグ', pd.Series(0, index=df_test.index)) == 1.0
+        if overseas_mask.any():
+            df_test.loc[overseas_mask, '長期休養フラグ'] = 0.0
+            logger.info(f'海外帰り馬の長期休養フラグをリセット: {overseas_mask.sum()}頭')
 
         # レース格上挑戦フラグ（前走_レースクラスコード が latest_horse_data に含まれる場合）
         if 'レースクラスコード' in df_test.columns and '前走_レースクラスコード' in df_test.columns:

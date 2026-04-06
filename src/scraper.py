@@ -382,16 +382,20 @@ _JOCKEY_NORMALIZE_EXTRA = {
     '石川倭':    '石川倭',
 }
 
+# 国内競馬場名（海外レース判定用）
+_JAPAN_VENUES = {'札幌', '函館', '福島', '新潟', '東京', '中山', '中京', '京都', '阪神', '小倉'}
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_horse_last_race(horse_id: str) -> dict:
     """
     netkeibaの馬ページから「最後のレース情報」をスクレイプして返す。
     戻り値: {
-        '前走日付':   '2025/03/08',
-        '前走距離':   1600.0,
-        '前走芝ダート': '芝',
-        '前走騎手':   '川田将雅',
-        '前走着順':   2,
+        '前走日付':     '2025/03/08',  ← 海外帰りの場合は海外レースの日付（gap計算用）
+        '前走距離':     1600.0,         ← 海外帰りの場合は直近国内レースの値
+        '前走芝ダート': '芝',           ← 同上
+        '前走騎手':     '川田将雅',     ← 同上
+        '前走着順':     2,              ← 同上
+        '海外帰りフラグ': True/False,   ← 最終レースが海外ならTrue（案1）
     }
     取得失敗時は空dict{}を返す。
     """
@@ -423,43 +427,70 @@ def fetch_horse_last_race(horse_id: str) -> dict:
         dist_i  = gi(['距離'])
         jock_i  = gi(['騎手'])
         rank_i  = gi(['着順','着'])
+        venue_i = gi(['開催'])  # 案1: 海外レース判定用
+
+        def _is_overseas(row_tds):
+            """行が海外レースかどうかを判定（開催列に国内競馬場名がなければ海外）"""
+            if venue_i == -1 or venue_i >= len(row_tds):
+                return False
+            venue_text = row_tds[venue_i].text.strip()
+            return bool(venue_text) and not any(v in venue_text for v in _JAPAN_VENUES)
+
+        def _parse_row(row_tds):
+            """行からレース情報をパースして辞書で返す"""
+            d = {}
+            def g(i):
+                return row_tds[i].text.strip() if i != -1 and i < len(row_tds) else ''
+
+            date_str = g(date_i)
+            if re.match(r'\d{4}/\d{1,2}/\d{1,2}', date_str):
+                d['前走日付'] = date_str
+
+            dist_text = g(dist_i)
+            dist_m = re.search(r'(\d{3,4})', dist_text)
+            if dist_m:
+                d['前走距離'] = float(dist_m.group(1))
+            if dist_text.startswith('芝') or '芝' in dist_text:
+                d['前走芝ダート'] = '芝'
+            elif dist_text.startswith('ダ') or 'ダ' in dist_text or 'ダート' in dist_text:
+                d['前走芝ダート'] = 'ダート'
+            elif dist_text.startswith('障') or '障' in dist_text:
+                d['前走芝ダート'] = '障害'
+
+            jock_td = row_tds[jock_i] if jock_i != -1 and jock_i < len(row_tds) else None
+            if jock_td:
+                ja = jock_td.find('a')
+                d['前走騎手'] = ja.text.strip() if ja else jock_td.text.strip()
+
+            rank_str = g(rank_i)
+            if re.search(r'^\d+$', rank_str):
+                d['前走着順'] = int(rank_str)
+
+            return d
 
         last_row_tds = rows[1].find_all('td')
         if len(last_row_tds) < 4:
             return result
 
-        def g(i):
-            return last_row_tds[i].text.strip() if i != -1 and i < len(last_row_tds) else ''
+        overseas = _is_overseas(last_row_tds)
+        result = _parse_row(last_row_tds)
+        result['海外帰りフラグ'] = overseas
 
-        # 日付
-        date_str = g(date_i)
-        if re.match(r'\d{4}/\d{1,2}/\d{1,2}', date_str):
-            result['前走日付'] = date_str
-
-        # 距離と芝/ダート (例: "芝1600" or "ダ1200")
-        dist_text = g(dist_i)
-        dist_m = re.search(r'(\d{3,4})', dist_text)
-        if dist_m:
-            result['前走距離'] = float(dist_m.group(1))
-        if dist_text.startswith('芝') or '芝' in dist_text:
-            result['前走芝ダート'] = '芝'
-        elif dist_text.startswith('ダ') or 'ダ' in dist_text or 'ダート' in dist_text:
-            result['前走芝ダート'] = 'ダート'
-        elif dist_text.startswith('障') or '障' in dist_text:
-            result['前走芝ダート'] = '障害'
-
-        # 騎手
-        jock_td = last_row_tds[jock_i] if jock_i != -1 and jock_i < len(last_row_tds) else None
-        if jock_td:
-            ja = jock_td.find('a')
-            jname = ja.text.strip() if ja else jock_td.text.strip()
-            result['前走騎手'] = jname
-
-        # 着順
-        rank_str = g(rank_i)
-        rank_m = re.search(r'^\d+$', rank_str)
-        if rank_m:
-            result['前走着順'] = int(rank_str)
+        # 案1: 海外帰りの場合、直近国内レースの実績を探して着順等を上書き
+        # 前走日付（＝海外レースの日付）は gap 計算のために保持する
+        if overseas:
+            for row in rows[2:]:
+                row_tds = row.find_all('td')
+                if len(row_tds) < 4:
+                    continue
+                if not _is_overseas(row_tds):
+                    domestic = _parse_row(row_tds)
+                    # 国内実績で着順・コース系情報を上書き（スピード指数の元データに相当）
+                    for key in ('前走着順', '前走芝ダート', '前走距離', '前走騎手'):
+                        if key in domestic:
+                            result[key] = domestic[key]
+                    logger.debug(f'海外帰り馬 horse_id={horse_id}: 直近国内レース {domestic.get("前走日付","?")} を前走実績として使用')
+                    break
 
     except Exception as _e:
         logger.warning(f'fetch_horse_last_race 失敗 horse_id={horse_id}: {_e}')
