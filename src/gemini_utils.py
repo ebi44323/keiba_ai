@@ -155,6 +155,74 @@ AIの数字を参考にしつつも、そのまま読み上げるのではなく
         return None
 
 
+def score_oikiri_comments(oikiri_data: dict,
+                          model_name: str = "gemini-2.5-flash") -> dict:
+    """
+    調教コメントを Gemini Flash でバッチスコアリング。
+    コメントのある馬のみ処理（コメントなし馬は 0.0 を返す）。
+
+    Args:
+        oikiri_data: {馬番(int): {'評価': 'A', 'コメント': '...'}} (fetch_oikiri_data の戻り値)
+
+    Returns:
+        {馬番(int): float}  -2.0(最悪) 〜 +2.0(最高)
+        コメントなし / API失敗時は 0.0
+    """
+    if not _GEMINI_API_KEY:
+        return {}
+
+    # コメントがある馬だけ抽出
+    targets = {uban: v for uban, v in oikiri_data.items() if v.get('コメント', '').strip()}
+    if not targets:
+        return {}
+
+    try:
+        model, used_model = _make_model(model_name)
+
+        # 全馬まとめて1リクエスト（コスト最小化）
+        lines = "\n".join(
+            f"{uban}番: 評価{v['評価']} 「{v['コメント']}」"
+            for uban, v in sorted(targets.items())
+        )
+        prompt = f"""あなたは競馬の調教評価の専門家です。
+以下の調教コメントを読み、各馬の「仕上がり・状態の良し悪し」を
+-2〜+2 の数値でスコアリングしてください。
+
+スコア基準:
+  +2: 非常に良い（好時計・抜群の動き・万全の仕上がり）
+  +1: 良い（動きよく・手応え十分）
+   0: 普通（標準的な仕上がり）
+  -1: やや悪い（重め・動き平凡・課題あり）
+  -2: 悪い（明らかに状態不安・元気なし）
+
+調教データ:
+{lines}
+
+以下の形式のJSONのみ返してください（コードブロック不要）:
+{{"馬番": スコア, "馬番": スコア, ...}}
+例: {{"1": 1, "3": -1, "6": 2}}"""
+
+        response = model.generate_content(prompt)
+        text = (response.text or "").strip()
+        # コードブロック除去
+        text = re.sub(r'```[^\n]*\n?', '', text).strip()
+        data = json.loads(text)
+
+        result = {}
+        for uban_str, score in data.items():
+            try:
+                result[int(uban_str)] = float(max(-2, min(2, score)))
+            except (ValueError, TypeError):
+                pass
+
+        logger.info(f"調教コメントスコア生成完了 ({used_model}): {len(result)}頭")
+        return result
+
+    except Exception as e:
+        logger.warning(f"score_oikiri_comments 失敗: {e}")
+        return {}
+
+
 def generate_review_analysis(race_items: list, stats: dict, rates: dict,
                               target_date_str: str,
                               model_name: str = "gemini-2.5-flash") -> str | None:

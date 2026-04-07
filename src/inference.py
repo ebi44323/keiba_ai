@@ -8,7 +8,8 @@ import datetime
 import logging
 import traceback
 from src.utils import get_headers, resolve_name, VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class
-from src.scraper import fetch_horse_last_race
+from src.scraper import fetch_horse_last_race, fetch_oikiri_data
+from src.gemini_utils import score_oikiri_comments, check_gemini_available
 from src.features_engine import classify_style, TE_COLS
 
 logger = logging.getLogger('keiba_ebye')
@@ -23,11 +24,15 @@ def _safe_col(df, col, default=np.nan):
     return pd.Series([val] * len(df), index=df.index)
 
 # ==========================================
-def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.0, min_win_prob=0.15, baba_override=None):
+def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.0, min_win_prob=0.15, baba_override=None, use_oikiri=None):
     """
     skip_live_scrape=True: バックテスト時に使用。
       fetch_horse_last_race()を呼ばない（速度維持＆日付ズレ防止）
     baba_override: {'芝': '重', 'ダート': '良'} のように指定すると馬場を手動上書き。
+    use_oikiri: 調教データ取得の制御。
+      None  → skip_live_scrapeに従う（デフォルト: 通常予想=取得、長期バックテスト=スキップ）
+      True  → 強制取得（当日振り返りで使用: 直近レースの調教データはまだ残っている）
+      False → 強制スキップ（Optuna等の長期バックテスト）
     """
     (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
@@ -471,6 +476,18 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             .astype(float)
         )
 
+        # ── 調教データ取得（ポストモデル補正用・モデル特徴量ではない）──────
+        # use_oikiri=None → skip_live_scrapeに従う
+        # use_oikiri=True → 当日振り返りなど直近レース用に強制取得
+        # use_oikiri=False → Optuna等の長期バックテストで強制スキップ
+        _should_fetch_oikiri = (not skip_live_scrape) if use_oikiri is None else use_oikiri
+        _oikiri_data = {}
+        if _should_fetch_oikiri:
+            try:
+                _oikiri_data = fetch_oikiri_data(str(race_id))
+            except Exception as _oe:
+                logger.warning(f'fetch_oikiri_data 失敗（スキップ）: {_oe}')
+
         # ── 新特徴量: レースクラスコード ───────────────────────────
         # RaceName + RaceData02 + RaceData01 を結合してクラス判定（RaceData01だけだとクラス情報がない）
         _race_class = classify_race_class(race_class_text)
@@ -536,6 +553,35 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         except Exception as _e:
             logger.warning(f'model_win/reg予測失敗、model_aのみ使用: {_e}')
             raw_scores = _sa  # フォールバック
+
+        # ── ポストモデル調整: 調教グレード＋コメントスコア ─────────────
+        # モデルは歴史データのみ学習 → 調教情報は「当日加点」として補正
+        # バックテスト(skip_live_scrape=True)では _oikiri_data={} のため補正ゼロ
+        if _oikiri_data:
+            # Phase1: グレード補正（S=+0.06, A=+0.03, B=0, C=-0.04）
+            _GRADE_BOOST = {'S': 0.06, 'A': 0.03, 'B': 0.0, 'C': -0.04}
+            _grade_map = {uban: _GRADE_BOOST.get(v.get('評価', 'B'), 0.0)
+                          for uban, v in _oikiri_data.items()}
+            _grade_arr = df_test['馬番'].astype(int).map(_grade_map).fillna(0.0).values
+            raw_scores = raw_scores + _grade_arr
+
+            # Phase2: Geminiコメントスコア補正（コメントあり時のみ）
+            if check_gemini_available() and any(v.get('コメント', '') for v in _oikiri_data.values()):
+                try:
+                    _comment_scores = score_oikiri_comments(_oikiri_data)
+                    if _comment_scores:
+                        _comment_arr = (df_test['馬番'].astype(int)
+                                        .map(_comment_scores).fillna(0.0).values * 0.02)
+                        raw_scores = raw_scores + _comment_arr
+                        logger.info(f'調教コメント補正適用: {len(_comment_scores)}頭')
+                except Exception as _ce:
+                    logger.warning(f'調教コメント補正スキップ: {_ce}')
+
+        # 調教評価列をdf_testに追加（表示・確認用）
+        df_test['調教評価'] = (df_test['馬番'].astype(int)
+                               .map({uban: v.get('評価', '') for uban, v in _oikiri_data.items()})
+                               .fillna(''))
+
         # Isotonic Calibration: AI勝率(softmax後)→実勝率補正→再正規化
         exp_scores    = np.exp(raw_scores - np.max(raw_scores))
         softmax_probs = exp_scores / np.sum(exp_scores)

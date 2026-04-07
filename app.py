@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-04-07c")
+st.caption("v2026-04-07e")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -409,9 +409,9 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             bets.append(f"¥{bet:,}" if bet > 0 else "見送り")
             if bet > 0: total_bet += bet
 
-        _base_cols = ['印','枠番','馬番','馬名','脚質カテゴリ','単勝オッズ','勝率(AI予測)','複勝率(AI予測)','期待値']
+        _base_cols = ['印','枠番','馬番','馬名','調教評価','脚質カテゴリ','単勝オッズ','勝率(AI予測)','複勝率(AI予測)','期待値']
         if '穴馬マーク' in df_res.columns:
-            _base_cols = ['印','穴馬マーク','枠番','馬番','馬名','脚質カテゴリ','単勝オッズ','勝率(AI予測)','複勝率(AI予測)','期待値']
+            _base_cols = ['印','穴馬マーク','枠番','馬番','馬名','調教評価','脚質カテゴリ','単勝オッズ','勝率(AI予測)','複勝率(AI予測)','期待値']
         show_df = df_res[[c for c in _base_cols if c in df_res.columns]].copy()
         show_df = show_df.rename(columns={'勝率(AI予測)':'勝率','複勝率(AI予測)':'複勝率','単勝オッズ':'オッズ','脚質カテゴリ':'脚質'})
         show_df['💰推奨'] = bets

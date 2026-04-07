@@ -499,3 +499,120 @@ def fetch_horse_last_race(horse_id: str) -> dict:
     except Exception as _e:
         logger.warning(f'fetch_horse_last_race 失敗 horse_id={horse_id}: {_e}')
     return result
+
+
+# ──────────────────────────────────────────────────────────────
+# 調教データ取得（netkeiba 調教ページ / 無料）
+# ──────────────────────────────────────────────────────────────
+_OIKIRI_GRADE_MAP = {'S': 4.0, 'A': 3.0, 'B': 2.0, 'C': 1.0}
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_oikiri_data(race_id: str) -> dict:
+    """
+    netkeiba の調教ページから調教評価グレード(S/A/B/C)とコメントを取得（無料・ログイン不要）。
+    データは通常レース前日13時に公開される。未公開時は {} を返す。
+
+    Returns:
+        {馬番(int): {'評価': 'A', '評価スコア': 3.0, 'コメント': '坂路で好時計…'}}
+        評価スコア: S=4, A=3, B=2, C=1
+        コメントはAJAX不可時は空文字列
+    """
+    result = {}
+    try:
+        url = f"https://race.netkeiba.com/race/oikiri.html?race_id={race_id}"
+        headers = get_headers()
+        headers['Referer'] = f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}'
+        r = requests.get(url, headers=headers, timeout=10)
+        try:
+            content = r.content.decode('utf-8')
+        except UnicodeDecodeError:
+            content = r.content.decode('euc-jp', errors='replace')
+
+        soup = BeautifulSoup(content, 'html.parser')
+
+        # ── 評価セルが最も多いテーブルを選択 ───────────────────────────
+        best_table, best_score = None, 0
+        for tbl in soup.find_all('table'):
+            cnt = sum(1 for td in tbl.find_all(['td', 'th'])
+                      if td.get_text(strip=True) in _OIKIRI_GRADE_MAP)
+            if cnt > best_score:
+                best_score, best_table = cnt, tbl
+
+        if best_table is None or best_score < 2:
+            logger.debug(f'fetch_oikiri_data: 評価テーブル未検出（未公開？） race_id={race_id}')
+            return result
+
+        # ── ヘッダー行で列インデックスを確定 ────────────────────────────
+        uban_col = comment_col = None
+        header_row = best_table.find('tr')
+        if header_row:
+            for i, th in enumerate(header_row.find_all(['th', 'td'])):
+                txt = th.get_text(strip=True)
+                if '馬番' in txt:
+                    uban_col = i
+                if 'コメント' in txt or '調教師' in txt and 'コメント' in txt:
+                    comment_col = i
+
+        # ── 行ごとにパース ────────────────────────────────────────────
+        for row in best_table.find_all('tr'):
+            tds = row.find_all('td')
+            if len(tds) < 2:
+                continue
+
+            # 評価セルを探す
+            grade_letter = grade_score = None
+            for td in tds:
+                txt = td.get_text(strip=True)
+                if txt in _OIKIRI_GRADE_MAP:
+                    grade_letter = txt
+                    grade_score  = _OIKIRI_GRADE_MAP[txt]
+                    break
+            if grade_letter is None:
+                continue
+
+            # 馬番を特定（ヘッダーで確定済みなら優先、なければ先頭3列の数値から推定）
+            uban = None
+            if uban_col is not None and uban_col < len(tds):
+                t = tds[uban_col].get_text(strip=True)
+                if re.match(r'^\d{1,2}$', t) and 1 <= int(t) <= 18:
+                    uban = int(t)
+            if uban is None:
+                nums = [int(td.get_text(strip=True)) for td in tds[:3]
+                        if re.match(r'^\d{1,2}$', td.get_text(strip=True))
+                        and 1 <= int(td.get_text(strip=True)) <= 18]
+                uban = nums[1] if len(nums) >= 2 else (nums[0] if nums else None)
+
+            if uban is None or not (1 <= uban <= 18):
+                continue
+
+            # コメント取得（列インデックス確定時 or 長文テキストセルを探す）
+            comment = ''
+            if comment_col is not None and comment_col < len(tds):
+                comment = tds[comment_col].get_text(strip=True)
+            else:
+                # 20文字超のテキストセルをコメントとみなす
+                for td in tds:
+                    t = td.get_text(strip=True)
+                    if len(t) >= 20 and not re.search(r'\d{1,2}:\d{2}', t):
+                        comment = t
+                        break
+
+            result[uban] = {'評価': grade_letter, '評価スコア': grade_score, 'コメント': comment}
+
+        if result:
+            comment_cnt = sum(1 for v in result.values() if v.get('コメント'))
+            logger.info(f'fetch_oikiri_data: {len(result)}頭分 (コメント{comment_cnt}件) race_id={race_id}')
+        else:
+            logger.debug(f'fetch_oikiri_data: パース結果なし race_id={race_id}')
+
+    except Exception as e:
+        logger.warning(f'fetch_oikiri_data 失敗 race_id={race_id}: {e}')
+
+    return result
+
+
+# 後方互換性エイリアス
+def fetch_oikiri_grades(race_id: str) -> dict:
+    """fetch_oikiri_data の後方互換ラッパー（評価スコアのみ返す）"""
+    data = fetch_oikiri_data(race_id)
+    return {uban: v['評価スコア'] for uban, v in data.items()}

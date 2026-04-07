@@ -104,10 +104,11 @@ def run(date_str: str = None):
         try:
             res_df, _, _, _, _, track_type, place, dist, err_log = run_real_prediction(
                 r["id"], date_hf, bundle,
-                skip_live_scrape=True,  # 振り返りは高速モード
+                skip_live_scrape=True,  # 振り返りは高速モード（前走データは取得しない）
                 ev_first=True,
                 ev_threshold=1.0,
                 min_win_prob=0.15,
+                use_oikiri=True,  # 当日振り返り: 直近レースの調教データは残っているため取得
             )
         except Exception as e:
             logger.warning(f"推論失敗 {r['id']}: {e}")
