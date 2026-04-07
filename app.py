@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-04-07b")
+st.caption("v2026-04-07c")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -41,11 +41,14 @@ from src.inference import run_real_prediction
 from src.gemini_utils import generate_two_analysts, check_gemini_available, generate_review_analysis
 
 @st.cache_data(ttl=3600*12, show_spinner=False)
-def get_morning_prediction(race_id, race_date_str, _bundle, ev_first=False, ev_threshold=1.0, min_win_prob=0.10, baba_shiba=None, baba_dirt=None):
+def get_morning_prediction(race_id, race_date_str, _bundle, ev_first=False, ev_threshold=1.0, min_win_prob=0.10, baba_shiba=None, baba_dirt=None, baba_override=None):
     # 朝版（直前版と同じくfetch_horse_last_race()を呼んで前走情報を最新化）
-    _baba_ov = {}
-    if baba_shiba: _baba_ov['芝']   = baba_shiba
-    if baba_dirt:  _baba_ov['ダート'] = baba_dirt
+    if baba_override:
+        _baba_ov = baba_override  # 競馬場別 or 全会場共通、どちらの形式も受け付ける
+    else:
+        _baba_ov = {}
+        if baba_shiba: _baba_ov['芝']   = baba_shiba
+        if baba_dirt:  _baba_ov['ダート'] = baba_dirt
     return run_real_prediction(race_id, race_date_str, _bundle, skip_live_scrape=False, ev_first=ev_first, ev_threshold=ev_threshold, min_win_prob=min_win_prob, baba_override=_baba_ov or None)
 
 
@@ -195,13 +198,46 @@ _baba_manual = st.sidebar.checkbox(
 )
 if _baba_manual:
     _baba_choices = ['良', '稍重', '重', '不良']
-    _bs_col, _bd_col = st.sidebar.columns(2)
-    with _bs_col:
-        _baba_shiba = st.selectbox("芝", _baba_choices, key="baba_shiba")
-    with _bd_col:
-        _baba_dirt = st.selectbox("ダート", _baba_choices, key="baba_dirt")
-    baba_override = {'芝': _baba_shiba, 'ダート': _baba_dirt}
-    st.sidebar.caption(f"📌 手動設定中: 芝={_baba_shiba} / ダ={_baba_dirt}")
+    _ALL_VENUES = ['札幌','函館','福島','新潟','東京','中山','中京','京都','阪神','小倉']
+    _per_venue = st.sidebar.checkbox(
+        "競馬場別に設定する",
+        value=False,
+        key="baba_per_venue",
+        help="複数会場で馬場状態が異なる場合に使用。会場ごとに芝・ダートを個別設定できます。"
+    )
+    if _per_venue:
+        # セッションで検出済みの今日の開催場をデフォルト候補に
+        _default_v = [v for v in st.session_state.get('today_venues', []) if v in _ALL_VENUES]
+        _selected_venues = st.sidebar.multiselect(
+            "設定する競馬場",
+            _ALL_VENUES,
+            default=_default_v,
+            key="baba_venues_select",
+        )
+        baba_override = {}
+        _cap_parts = []
+        for _v in _selected_venues:
+            _vc1, _vc2 = st.sidebar.columns(2)
+            with _vc1:
+                _vs = st.selectbox(f"{_v} 芝", _baba_choices, key=f"baba_{_v}_shiba")
+            with _vc2:
+                _vd = st.selectbox(f"{_v} ダート", _baba_choices, key=f"baba_{_v}_dirt")
+            baba_override[_v] = {'芝': _vs, 'ダート': _vd}
+            _cap_parts.append(f"{_v}(芝={_vs}/ダ={_vd})")
+        if _cap_parts:
+            st.sidebar.caption("📌 " + "　".join(_cap_parts))
+        else:
+            st.sidebar.caption("⬆️ 競馬場を選択してください")
+        _baba_shiba = None
+        _baba_dirt  = None
+    else:
+        _bs_col, _bd_col = st.sidebar.columns(2)
+        with _bs_col:
+            _baba_shiba = st.selectbox("芝", _baba_choices, key="baba_shiba")
+        with _bd_col:
+            _baba_dirt = st.selectbox("ダート", _baba_choices, key="baba_dirt")
+        baba_override = {'芝': _baba_shiba, 'ダート': _baba_dirt}
+        st.sidebar.caption(f"📌 手動設定中: 芝={_baba_shiba} / ダ={_baba_dirt}")
 else:
     _baba_shiba = None
     _baba_dirt  = None
@@ -794,6 +830,10 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
     todays_races = get_todays_races()
     if not todays_races: st.warning(f"本日 ({now.strftime('%Y/%m/%d')}) はJRAのレースが開催されていません。")
     else:
+        # 今日の開催場を session_state に保存（馬場設定サイドバーのデフォルト候補用）
+        _detected_venues = sorted(set(r['place'] for r in todays_races))
+        if st.session_state.get('today_venues') != _detected_venues:
+            st.session_state['today_venues'] = _detected_venues
         if action == "⏩ 次のレースを予想":
             st.subheader("🕒 まもなく出走するレース")
             races_sorted_by_time = sorted(todays_races, key=lambda x: x['time'])
@@ -954,7 +994,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                     if live_update:
                         res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = run_real_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, skip_live_scrape=False, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob, baba_override=baba_override)
                     else:
-                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob, baba_shiba=_baba_shiba, baba_dirt=_baba_dirt)
+                        res_df, topics, reco, pace_text, conf_text, _, _, _, err_log = get_morning_prediction(target_race['id'], now.strftime('%Y-%m-%d'), bundle, ev_first=ev_first_mode, ev_threshold=ev_first_threshold, min_win_prob=ev_first_min_prob, baba_shiba=_baba_shiba, baba_dirt=_baba_dirt, baba_override=baba_override)
 
                     if res_df is not None:
                         st.session_state[f'spec_res_{_spec_key}']    = res_df.copy()

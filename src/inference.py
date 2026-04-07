@@ -111,12 +111,22 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     todays_baba = baba_match.group(1) if baba_match else '良'
     tdm = re.search(r'(芝|ダ|障|障害).*?(\d+)m', race_text)
     track_type = "芝" if tdm and tdm.group(1)=="芝" else "ダート" if tdm and "ダ" in tdm.group(1) else "障害"
-    # 馬場手動上書き（サイドバーからの設定が優先）
-    if baba_override and track_type in baba_override and baba_override[track_type]:
-        todays_baba = baba_override[track_type]
-        logger.info(f'馬場手動上書き: {track_type} → {todays_baba}')
-    distance = float(tdm.group(2)) if tdm else 1600.0
+    # ── 馬場手動上書き（サイドバーからの設定が優先）──────────────────
+    # place を先に導出（競馬場別override判定に使用）
     place = {'01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉'}.get(str(race_id)[4:6], '東京')
+    if baba_override:
+        # 形式A: 競馬場別 {'東京': {'芝': '不良', 'ダート': '重'}, '阪神': {'芝': '重'}}
+        _first_val = next(iter(baba_override.values()), None)
+        if isinstance(_first_val, dict):
+            _venue_baba = baba_override.get(place, {})
+            if track_type in _venue_baba and _venue_baba[track_type]:
+                todays_baba = _venue_baba[track_type]
+                logger.info(f'馬場手動上書き（{place}）: {track_type} → {todays_baba}')
+        # 形式B: 全会場共通 {'芝': '不良', 'ダート': '重'}
+        elif track_type in baba_override and baba_override[track_type]:
+            todays_baba = baba_override[track_type]
+            logger.info(f'馬場手動上書き（全会場）: {track_type} → {todays_baba}')
+    distance = float(tdm.group(2)) if tdm else 1600.0
     weather_m = re.search(r'天候:([晴曇雨小雪]+)', race_text)
     todays_tenki = weather_m.group(1) if weather_m else '晴'
 
