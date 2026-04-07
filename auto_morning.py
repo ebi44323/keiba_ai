@@ -21,6 +21,7 @@ import datetime
 import logging
 import unittest.mock as mock
 import json
+import base64
 import pytz
 import requests
 
@@ -57,6 +58,40 @@ JST = pytz.timezone("Asia/Tokyo")
 
 
 # ─────────────────────────────────────────────────────────────
+# 馬券メモ読み込み
+# ─────────────────────────────────────────────────────────────
+
+def load_horse_memos() -> dict:
+    """horse_memos.json をローカル優先→GitHub APIの順で読み込む"""
+    memo_file = "horse_memos.json"
+    if os.path.exists(memo_file):
+        try:
+            with open(memo_file, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"horse_memos.json読み込み失敗: {e}")
+    gh_token = os.environ.get("GITHUB_TOKEN", "")
+    gh_repo  = os.environ.get("GITHUB_REPO", "")
+    if gh_token and gh_repo:
+        try:
+            headers = {
+                "Authorization": f"token {gh_token}",
+                "Accept": "application/vnd.github.v3+json",
+            }
+            resp = requests.get(
+                f"https://api.github.com/repos/{gh_repo}/contents/{memo_file}",
+                headers=headers, timeout=10,
+            )
+            if resp.status_code == 200:
+                content = base64.b64decode(resp.json()["content"]).decode("utf-8")
+                logger.info("horse_memos.json をGitHubから取得")
+                return json.loads(content)
+        except Exception as e:
+            logger.warning(f"GitHub horse_memos.json取得失敗: {e}")
+    return {}
+
+
+# ─────────────────────────────────────────────────────────────
 # フォーマット関数
 # ─────────────────────────────────────────────────────────────
 
@@ -68,7 +103,8 @@ def _emoji_ev(ev: float) -> str:
 
 
 def format_race_txt(race: dict, res_df, reco: str, confidence_text: str,
-                    pace_text: str, topics: list = None) -> str:
+                    pace_text: str, topics: list = None,
+                    all_memos: dict = None) -> str:
     """1レース分のテキストブロックを生成（全頭表示）"""
     time_str = race["time"].strftime("%H:%M")
     lines = [
@@ -78,6 +114,7 @@ def format_race_txt(race: dict, res_df, reco: str, confidence_text: str,
         f"{'印':<2} {'馬番':>3} {'馬名':<12} {'オッズ':>6} {'勝率':>5} {'複勝率':>6} {'EV':>5} {'脚質':<5}",
         f"{'─'*52}",
     ]
+    memo_lines = []
     for idx, row in res_df.iterrows():
         mark   = str(row.get("印", "")).ljust(2)
         uban   = int(row.get("馬番", 0))
@@ -89,12 +126,24 @@ def format_race_txt(race: dict, res_df, reco: str, confidence_text: str,
         ana    = str(row.get("穴馬マーク", ""))
         style  = str(row.get("脚質カテゴリ", "")).replace("nan", "")
         ev_em  = _emoji_ev(ev)
+        memo_flag = "📝" if all_memos and name in all_memos else ""
         lines.append(
             f"{mark} {uban:3d}番 {name:<12} "
             f"{odds:5.1f}倍 {prob:4.1f}% {fprob:5.1f}% "
-            f"EV{ev:4.2f}{ev_em}{ana} {style}"
+            f"EV{ev:4.2f}{ev_em}{ana} {style}{memo_flag}"
         )
+        # メモ内容をまとめておく
+        if all_memos and name in all_memos:
+            latest = sorted(all_memos[name], key=lambda x: x["日付"], reverse=True)[0]
+            memo_lines.append(
+                f"  📝 {name}({mark.strip()}): {latest['タグ']} {latest['日付']}"
+                + (f" — {latest['メモ']}" if latest.get("メモ") else "")
+            )
     lines.append("")
+    if memo_lines:
+        lines.append("【メモあり馬】")
+        lines.extend(memo_lines)
+        lines.append("")
     if confidence_text:
         lines.append(f"【判定】{confidence_text.replace('**','')}")
     if pace_text:
@@ -137,10 +186,12 @@ def _gemini_html_section(gemini_data: dict) -> str:
 
 
 def format_race_html_row(race: dict, res_df, confidence_text: str,
-                         topics: list = None, gemini_data: dict = None) -> str:
+                         topics: list = None, gemini_data: dict = None,
+                         all_memos: dict = None) -> str:
     """1レース分のHTML<section>を生成（全頭表示・詳細情報付き）"""
     time_str = race["time"].strftime("%H:%M")
     rows_html = ""
+    memo_html_items = []
     for idx, row in res_df.iterrows():
         mark   = str(row.get("印", ""))
         uban   = int(row.get("馬番", 0))
@@ -154,14 +205,25 @@ def format_race_html_row(race: dict, res_df, confidence_text: str,
         prev   = row.get("前走_着順", "")
         prev_s = f"{int(prev)}着" if str(prev) not in ("nan", "", "None") else "-"
         ev_em  = _emoji_ev(ev)
-        bg = "#fff3f3" if ev >= 1.5 else "#fffce8" if ev >= 1.0 else "white"
+        has_memo = all_memos and name in all_memos
+        # 背景色: メモあり馬は紫優先、その後EVによる色
+        if has_memo:
+            bg = "rgba(155,89,182,0.08)"
+            row_border = "border-left:3px solid #9B59B6;"
+        elif ev >= 1.5:
+            bg, row_border = "#fff3f3", ""
+        elif ev >= 1.0:
+            bg, row_border = "#fffce8", ""
+        else:
+            bg, row_border = "white", ""
         # 印なし馬は薄めの文字色
-        name_style = "" if mark.strip() else "color:#999"
+        name_style = row_border + ("" if mark.strip() else "color:#999")
+        memo_badge = ' <span style="font-size:11px">📝</span>' if has_memo else ""
         rows_html += (
             f'<tr style="background:{bg}">'
             f'<td style="font-size:16px">{mark}</td>'
             f'<td>{uban}</td>'
-            f'<td style="text-align:left;{name_style}">{name}</td>'
+            f'<td style="text-align:left;{name_style}">{name}{memo_badge}</td>'
             f'<td>{style}</td>'
             f'<td>{odds:.1f}</td>'
             f'<td>{prob:.1f}%</td>'
@@ -171,6 +233,22 @@ def format_race_html_row(race: dict, res_df, confidence_text: str,
             f'<td>{ana}</td>'
             f'</tr>\n'
         )
+        # メモ内容を収集
+        if has_memo:
+            latest = sorted(all_memos[name], key=lambda x: x["日付"], reverse=True)[0]
+            count  = len(all_memos[name])
+            tag    = latest.get("タグ", "")
+            date_  = latest.get("日付", "")
+            memo_t = latest.get("メモ", "")
+            count_s = f"（全{count}件）" if count > 1 else ""
+            memo_html_items.append(
+                f'<div style="padding:3px 8px;font-size:12px">'
+                f'<b>{name}</b>（{mark.strip() or "印なし"}）{count_s} '
+                f'<span style="color:#9b59b6">{tag}</span> '
+                f'<span style="color:#888">{date_}</span>'
+                + (f' — {memo_t}' if memo_t else '')
+                + '</div>'
+            )
 
     color = "#c0392b" if "鉄板" in confidence_text else "#2471a3" if "波乱" in confidence_text else "#117a65"
 
@@ -181,6 +259,17 @@ def format_race_html_row(race: dict, res_df, confidence_text: str,
             if "AIの推し理由" in t:
                 shap_html = f'<div style="padding:4px 12px;font-size:12px;color:#2471a3">🔍 {t.replace(chr(10),"　")}</div>'
                 break
+
+    # 馬券メモセクション
+    memo_section_html = ""
+    if memo_html_items:
+        memo_section_html = (
+            '<div style="margin:0;padding:6px 12px;background:#f5f0ff;'
+            'border-top:1px solid #ddd;font-size:12px">'
+            '<span style="color:#9b59b6;font-weight:bold">📝 馬券メモ</span>'
+            + "".join(memo_html_items)
+            + "</div>"
+        )
 
     # Geminiコメント（11Rのみ）
     gemini_html = _gemini_html_section(gemini_data) if gemini_data else ""
@@ -199,6 +288,7 @@ def format_race_html_row(race: dict, res_df, confidence_text: str,
   </table>
   <div style="padding:6px 12px;font-size:13px;color:#555">{confidence_text.replace('**','')}</div>
   {shap_html}
+  {memo_section_html}
   <div style="padding:6px 12px 10px;font-size:12px;color:#333;white-space:pre-wrap">{gemini_html}</div>
 </section>"""
 
@@ -296,6 +386,10 @@ def run(date_str: str = None):
     bundle = prepare_model_and_data(force_retrain=False)
     logger.info("モデルロード完了。推論開始...")
 
+    # 馬券メモ読み込み（ローカルまたはGitHub）
+    all_memos = load_horse_memos()
+    logger.info(f"馬券メモ読み込み: {len(all_memos)}頭分")
+
     # 全レース推論
     txt_blocks    = []
     html_sections = []
@@ -330,10 +424,12 @@ def run(date_str: str = None):
                 logger.warning(f"  Gemini生成失敗: {ge}")
 
         txt_blocks.append(
-            format_race_txt(r, res_df, reco or "", conf_text or "", pace_text or "", topics_list)
+            format_race_txt(r, res_df, reco or "", conf_text or "", pace_text or "",
+                            topics_list, all_memos)
         )
         html_sections.append(
-            format_race_html_row(r, res_df, conf_text or "", topics_list, gemini_data)
+            format_race_html_row(r, res_df, conf_text or "", topics_list, gemini_data,
+                                 all_memos)
         )
         ok_count += 1
 

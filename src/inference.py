@@ -36,6 +36,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     calibrator        = _extra[0] if _extra else None
     model_d           = _extra[1] if len(_extra) > 1 else None
     ped_aptitude_dict = _extra[2] if len(_extra) > 2 else {}
+    horse_heavy_dict  = _extra[3] if len(_extra) > 3 else {}  # 馬ID → 重/不良馬場 着順パーセント平均
+    sire_heavy_dict   = _extra[4] if len(_extra) > 4 else {}  # 父名  → 重/不良馬場 着順パーセント平均
     
     error_log = []
     odds_dict = {}      # 馬番(int) → オッズ(float)
@@ -444,6 +446,20 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             df_test['馬場指数'] = df_test['馬場'].map(TRACK_CONDITION_MAP).fillna(0).astype(float)
         else:
             df_test['馬場指数'] = TRACK_CONDITION_MAP.get(todays_baba, 0)
+
+        # ── 新特徴量: 馬・父の重馬場適性 ────────────────────────────
+        # 父の重馬場適性（種牡馬産駒の重・不良馬場での平均着順パーセント）
+        df_test['父_重馬場_着順パーセント'] = (
+            df_test['父'].map(sire_heavy_dict)
+            .fillna(0.5)
+            .astype(float)
+        )
+        # 馬の重馬場適性（当該馬の実績 → なければ父の統計でフォールバック）
+        df_test['馬_重馬場_着順パーセント'] = (
+            df_test['馬ID'].map(horse_heavy_dict)
+            .fillna(df_test['父_重馬場_着順パーセント'])
+            .astype(float)
+        )
 
         # ── 新特徴量: レースクラスコード ───────────────────────────
         # RaceName + RaceData02 + RaceData01 を結合してクラス判定（RaceData01だけだとクラス情報がない）

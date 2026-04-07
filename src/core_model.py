@@ -436,12 +436,27 @@ def prepare_model_and_data(force_retrain=False):
     except Exception as _e:
         logger.warning(f'血統距離適性辞書 構築失敗: {_e}')
 
+    # ── 馬・父の重馬場適性 lookup dict（inference用）────────────────────
+    horse_heavy_dict = {}
+    sire_heavy_dict  = {}
+    try:
+        _df_heavy = df[df['馬場'].isin(['重', '不良'])].copy()
+        if len(_df_heavy) > 0 and '着順パーセント' in _df_heavy.columns:
+            horse_heavy_dict = _df_heavy.groupby('馬ID')['着順パーセント'].mean().to_dict()
+            _sire_heavy = _df_heavy[_df_heavy['父'].notna() & ~_df_heavy['父'].isin(['不明','','nan'])]
+            sire_heavy_dict = _sire_heavy.groupby('父')['着順パーセント'].mean().to_dict()
+        logger.info(f'重馬場適性辞書: 馬{len(horse_heavy_dict)}頭, 父{len(sire_heavy_dict)}種牡馬')
+    except Exception as _e:
+        logger.warning(f'重馬場適性辞書構築失敗: {_e}')
+
     best_weight = 0.8159  # 後方互換性用（bundle位置保持のため残存・inference.pyでは未使用、実重みはcore_model.py L331/inference.py L461参照）
     bundle = (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
-              auc_win, auc_place, calibrator, model_d, ped_aptitude_dict)
-              # _extra[0]=calibrator, _extra[1]=model_d, _extra[2]=ped_aptitude_dict（後方互換: *extraで受ける）
+              auc_win, auc_place, calibrator, model_d, ped_aptitude_dict,
+              horse_heavy_dict, sire_heavy_dict)
+              # _extra[0]=calibrator, _extra[1]=model_d, _extra[2]=ped_aptitude_dict
+              # _extra[3]=horse_heavy_dict, _extra[4]=sire_heavy_dict（後方互換: *extraで受ける）
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)

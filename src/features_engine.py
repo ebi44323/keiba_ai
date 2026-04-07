@@ -30,6 +30,9 @@ NUM_FEATURES = [
     # ── 未出走馬評価用特徴量 ──
     '新馬フラグ',                   # 初出走（キャリア数=0）: 0/1
     '血統距離適性スコア',           # 父×距離カテゴリ×芝ダート別の歴史的着順パーセント（高いほど適性あり）
+    # ── 馬場適性特徴量（2026-04-07追加）──
+    '馬_重馬場_着順パーセント',     # 当該馬の重・不良馬場での過去着順パーセント平均（expanding mean）
+    '父_重馬場_着順パーセント',     # 種牡馬産駒の重・不良馬場での平均着順パーセント（expanding mean）
 ]
 
 CAT_FEATURES = [
@@ -176,7 +179,34 @@ def create_features(df, te_dicts=None):
     else:
         df['血統距離適性スコア'] = 0.5
 
+    # ── 父の重馬場適性（日付順ソート中に計算してリーク防止）──────────────
+    # df はこの時点で日付順にソート済み（sort_values('日付') 後）
+    # 重・不良馬場のみの着順パーセントを使い、父ごとに expanding mean
+    if '父' in df.columns and '馬場' in df.columns and '着順パーセント' in df.columns:
+        df['_悪馬場着順_sire'] = df['着順パーセント'].where(df['馬場'].isin(['重', '不良']))
+        df['父_重馬場_着順パーセント'] = (
+            df.groupby('父')['_悪馬場着順_sire']
+            .transform(lambda x: x.shift(1).expanding(min_periods=5).mean())
+        ).fillna(0.5)
+        df = df.drop(columns=['_悪馬場着順_sire'])
+    else:
+        df['父_重馬場_着順パーセント'] = 0.5
+
     df = df.sort_values(['馬ID','日付']).reset_index(drop=True)
+
+    # ── 馬の重馬場適性（馬ID×日付順で expanding mean、leakフリー）────────
+    # sort_values(['馬ID','日付'])済みなので、各馬のグループは時系列順
+    if '馬場' in df.columns and '着順パーセント' in df.columns:
+        df['_悪馬場着順_horse'] = df['着順パーセント'].where(df['馬場'].isin(['重', '不良']))
+        _horse_heavy = (
+            df.groupby('馬ID')['_悪馬場着順_horse']
+            .transform(lambda x: x.shift(1).expanding(min_periods=1).mean())
+        )
+        # 個人データなし → 父の値でフォールバック
+        df['馬_重馬場_着順パーセント'] = _horse_heavy.fillna(df['父_重馬場_着順パーセント'])
+        df = df.drop(columns=['_悪馬場着順_horse'])
+    else:
+        df['馬_重馬場_着順パーセント'] = 0.5
 
     # ── 斤量_前走差（前走からの斤量増減: ハンデ戦の増減を捉える）──────────
     df['斤量_前走差'] = pd.to_numeric(df['斤量'], errors='coerce') - df.groupby('馬ID')['斤量'].shift(1)
