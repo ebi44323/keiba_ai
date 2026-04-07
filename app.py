@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-04-07e")
+st.caption("v2026-04-07f")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -598,7 +598,8 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             guide_data = {
                 "指標": ["地力(中央値)", "最高ポテンシャル", "上昇度",
                           "コース適性", "位置取り変化", "近3走安定度",
-                          "休養日数", "騎手変化", "馬場変化", "距離変化"],
+                          "休養日数", "騎手変化", "馬場変化", "距離変化",
+                          "調教評価"],
                 "見方・ポイント": [
                     "近5走スピード指数の中央値。50が平均、高いほど強い。最も信頼できる実力値",
                     "近5走の最高値。地力との差が大きい馬は条件次第で爆発力がある",
@@ -610,6 +611,7 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                     "前走と今回の騎手比較。格上騎手への乗り替わりは要注目",
                     "芝/ダートの変更。初芝・初ダートは過去実績との乖離リスクあり",
                     "距離の変更。距離延長/短縮で得意不得意が変わる。適性距離の確認推奨",
+                    "netkeibaの調教評価(前日13時以降公開)。S=金・A=緑・B=標準・C=グレー。モデルスコアへの上乗せ補正に使用",
                 ],
             }
             st.dataframe(pd.DataFrame(guide_data), width='stretch', hide_index=True)
@@ -625,7 +627,8 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             '直近3走着順パーセント':     '近3走安定度',
         }
         avail_s = {k: v for k, v in score_cols_map.items() if k in df_res.columns}
-        score_df = df_res[['馬番', '馬名', '脚質カテゴリ'] + list(avail_s.keys())].copy()
+        _oikiri_cols = ['調教評価'] if '調教評価' in df_res.columns else []
+        score_df = df_res[['馬番', '馬名', '脚質カテゴリ'] + _oikiri_cols + list(avail_s.keys())].copy()
         score_df = score_df.rename(columns=avail_s)
 
         def highlight_score(row):
@@ -643,6 +646,14 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                     try:
                         styles[cols.index(col)] = fn(float(row[col]))
                     except: pass
+            # 調教評価は文字列のため別処理
+            if '調教評価' in cols:
+                _grade = str(row['調教評価'])
+                styles[cols.index('調教評価')] = (
+                    'color:#DAA520;font-weight:bold' if _grade == 'S' else
+                    'color:#22AA22;font-weight:bold' if _grade == 'A' else
+                    'color:#888888' if _grade == 'C' else ''
+                )
             return styles
 
         fmt_s = {v: '{:.2f}' for v in avail_s.values()}
