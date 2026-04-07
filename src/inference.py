@@ -559,7 +559,10 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         # バックテスト(skip_live_scrape=True)では _oikiri_data={} のため補正ゼロ
         if _oikiri_data:
             # Phase1: グレード補正（S=+0.06, A=+0.03, B=0, C=-0.04）
-            _GRADE_BOOST = {'S': 0.06, 'A': 0.03, 'B': 0.0, 'C': -0.04}
+            # 補正値: 2025/01〜2026/04の4,300レース実績から算出 (SCALE=0.5)
+            # A: 1着率25% vs B:9.8% (着順%差-0.146), C: 1着率3.4% (着順%差+0.141)
+            # Sはデータなし → Aと同値で設定
+            _GRADE_BOOST = {'S': 0.07, 'A': 0.07, 'B': 0.0, 'C': -0.07}
             _grade_map = {uban: _GRADE_BOOST.get(v.get('評価', 'B'), 0.0)
                           for uban, v in _oikiri_data.items()}
             _grade_arr = df_test['馬番'].astype(int).map(_grade_map).fillna(0.0).values
