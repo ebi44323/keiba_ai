@@ -504,7 +504,7 @@ def fetch_horse_last_race(horse_id: str) -> dict:
 # ──────────────────────────────────────────────────────────────
 # 調教データ取得（netkeiba 調教ページ / 無料）
 # ──────────────────────────────────────────────────────────────
-_OIKIRI_GRADE_MAP = {'S': 4.0, 'A': 3.0, 'B': 2.0, 'C': 1.0}
+_OIKIRI_GRADE_MAP = {'S': 4.0, 'A': 3.0, 'B': 2.0, 'C': 1.0, 'D': 0.0}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_oikiri_data(race_id: str) -> dict:
@@ -514,7 +514,7 @@ def fetch_oikiri_data(race_id: str) -> dict:
 
     Returns:
         {馬番(int): {'評価': 'A', '評価スコア': 3.0, 'コメント': '坂路で好時計…'}}
-        評価スコア: S=4, A=3, B=2, C=1
+        評価スコア: S=4, A=3, B=2, C=1, D=0
         コメントはAJAX不可時は空文字列
     """
     result = {}
