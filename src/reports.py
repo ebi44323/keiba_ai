@@ -72,12 +72,47 @@ def _build_topics_html(topics: list) -> str:
     return f'<ul class="topics">{items}</ul>'
 
 
-def generate_pdf_report(results_list, ev_threshold=1.5):
+def _build_memo_html(df, all_memos: dict) -> str:
+    """馬券メモがある馬のHTMLブロックを返す。"""
+    if not all_memos:
+        return ""
+    items = []
+    for _, row in df.iterrows():
+        name = str(row.get('馬名', ''))
+        if name in all_memos:
+            imp = str(row.get('印', ''))
+            latest = sorted(all_memos[name], key=lambda x: x.get('日付', ''), reverse=True)[0]
+            count = len(all_memos[name])
+            count_s = f"（全{count}件）" if count > 1 else ""
+            tag    = latest.get('タグ', '')
+            date_  = latest.get('日付', '')
+            memo_t = latest.get('メモ', '')
+            memo_body = f' — {memo_t}' if memo_t else ''
+            items.append(
+                f'<div class="memo-item">'
+                f'📝 <b>{name}</b>（{imp or "印なし"}）{count_s} '
+                f'<span style="color:#9b59b6">{tag}</span> '
+                f'<span style="color:#888">{date_}</span>'
+                f'{memo_body}</div>'
+            )
+    if not items:
+        return ""
+    return (
+        '<div class="memo-section">'
+        '<div class="memo-title">📝 馬券メモあり</div>'
+        + "".join(items)
+        + '</div>'
+    )
+
+
+def generate_pdf_report(results_list, ev_threshold=1.5, all_memos: dict = None):
     """
     予想レポートをHTML形式で生成してbytesを返す。
     ブラウザで開いてCtrl+P(Cmd+P)で印刷・PDF保存できる。
     reportlabのフォント問題を回避するためHTML方式に変更。
     """
+    if all_memos is None:
+        all_memos = {}
     try:
         ev_summary = []
         races_html = ""
@@ -90,15 +125,18 @@ def generate_pdf_report(results_list, ev_threshold=1.5):
                     ev_val = float(row.get('期待値', 0) or 0)
                 except Exception:
                     ev_val = 0.0
+                name = str(row.get('馬名', ''))
+                has_memo = name in all_memos
                 bg = ' style="background:#fff0f0"' if ev_val >= ev_threshold else (' style="background:#fffde7"' if rank == 0 else '')
                 ev_color = ' color:#cc0000;font-weight:bold' if ev_val >= ev_threshold else ''
                 ana_mark = str(row.get('穴馬マーク', '')) if has_ana else ''
                 ana_td   = f'<td style="color:#e65100">{ana_mark}</td>' if has_ana else ''
+                memo_badge = ' 📝' if has_memo else ''
                 rows_html += f"""<tr{bg}>
                   <td>{row.get('印','')}</td>
                   {ana_td}
                   <td>{int(float(row.get('馬番',0)))}</td>
-                  <td style="text-align:left">{row.get('馬名','')}</td>
+                  <td style="text-align:left">{name}{memo_badge}</td>
                   <td>{row.get('脚質カテゴリ','')}</td>
                   <td>{float(row.get('単勝オッズ',0)):.1f}</td>
                   <td>{float(row.get('勝率(AI予測)',0))*100:.1f}%</td>
@@ -106,7 +144,7 @@ def generate_pdf_report(results_list, ev_threshold=1.5):
                   <td style="{ev_color}">{ev_val:.2f}</td>
                 </tr>"""
                 if rank < 5 and ev_val >= ev_threshold:
-                    ev_summary.append({'レース': f"{r['place']}{r['num']}R", '印': row.get('印',''), '馬名': row.get('馬名',''), 'EV': ev_val})
+                    ev_summary.append({'レース': f"{r['place']}{r['num']}R", '印': row.get('印',''), '馬名': name, 'EV': ev_val})
 
             ana_th = '<th>穴</th>' if has_ana else ''
             # 信頼度に応じた背景色
@@ -138,6 +176,7 @@ def generate_pdf_report(results_list, ev_threshold=1.5):
                 <tbody>{rows_html}</tbody>
               </table>
               {_build_ana_detail_html(df)}
+              {_build_memo_html(df, all_memos)}
               <div class="reco">💰 推奨: {reco_lines}</div>
               {gemini_html}
             </div>"""
@@ -185,6 +224,10 @@ def generate_pdf_report(results_list, ev_threshold=1.5):
   .gemini-ana    {{ background:#fff3e0; border-left:3px solid #ff9800; }}
   .gemini-analyst {{ font-weight:bold; margin-bottom:3px; }}
   .gemini-bet {{ font-size:9px; margin-top:4px; font-weight:bold; color:#555; }}
+  .memo-section {{ margin-top:6px; padding:6px 8px; background:#f5f0ff; border:1px solid #d8b4fe; border-radius:4px; }}
+  .memo-title {{ font-size:10px; font-weight:bold; color:#7c3aed; margin-bottom:4px; }}
+  .memo-item {{ font-size:10px; color:#333; margin:2px 0; padding:2px 0; border-bottom:1px solid #ede9fe; }}
+  .memo-item:last-child {{ border-bottom:none; }}
   @media print {{ body {{ margin:5mm; }} .race-block {{ page-break-inside:avoid; }} }}
 </style></head>
 <body>
@@ -200,8 +243,10 @@ def generate_pdf_report(results_list, ev_threshold=1.5):
 
 
 
-def generate_txt_report(results_list, ev_threshold=1.5):
+def generate_txt_report(results_list, ev_threshold=1.5, all_memos: dict = None):
     """noteに貼りやすい・読みやすいプレーンテキスト形式のレポートを生成"""
+    if all_memos is None:
+        all_memos = {}
     out = []
     ev_summary = []
 
@@ -296,6 +341,25 @@ def generate_txt_report(results_list, ev_threshold=1.5):
         if reco_raw:
             out.append("[推奨買い目]")
             out.append(f"  {reco_raw.strip()}")
+            out.append("")
+
+        # 馬券メモ
+        memo_lines = []
+        for _, row in r["df"].iterrows():
+            name = str(row.get("馬名", ""))
+            if name in all_memos:
+                imp = str(row.get("印", "")).strip()
+                latest = sorted(all_memos[name], key=lambda x: x.get("日付", ""), reverse=True)[0]
+                tag    = latest.get("タグ", "")
+                date_  = latest.get("日付", "")
+                memo_t = latest.get("メモ", "")
+                memo_lines.append(
+                    f"  📝 {name}（{imp or '印なし'}）: {tag} {date_}"
+                    + (f" — {memo_t}" if memo_t else "")
+                )
+        if memo_lines:
+            out.append("[馬券メモあり]")
+            out.extend(memo_lines)
             out.append("")
 
     # 横断EV注目馬まとめ

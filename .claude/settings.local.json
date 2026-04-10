@@ -8,7 +8,8 @@
       "Bash(wc -l src/*.py)",
       "Bash(python -c:*)",
       "Bash(ls -lh learning_data_perfect_tier.*)",
-      "WebFetch(domain:race.netkeiba.com)"
+      "WebFetch(domain:race.netkeiba.com)",
+      "Bash(git -C /c/Users/t-tsuchiya/Documents/keiba_ai ls-files horse_memos.json)"
     ]
   }
 }

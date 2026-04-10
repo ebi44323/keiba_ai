@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-04-07g")
+st.caption("v2026-04-10a")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -1137,15 +1137,24 @@ elif action == "📅 今週末の全レース予想":
         if _rank_rows:
             st.dataframe(pd.DataFrame(_rank_rows), width='stretch', hide_index=True)
         st.markdown("---")
+        # 馬券メモをレポートに含める
+        _rpt_memos = {}
+        try:
+            import json as _json
+            if os.path.exists("horse_memos.json"):
+                with open("horse_memos.json", encoding="utf-8") as _mf:
+                    _rpt_memos = _json.load(_mf)
+        except Exception:
+            pass
         _c1, _c2 = st.columns(2)
         _c1.download_button(
             f"📥 {_td2[4:6]}/{_td2[6:]} 予想レポート(.txt)",
-            data=generate_txt_report(_valid),
+            data=generate_txt_report(_valid, all_memos=_rpt_memos),
             file_name=f"keiba_weekend_{_td2}.txt",
             mime="text/plain",
             key="dl_txt_weekend",
         )
-        _hw = generate_pdf_report(_valid)
+        _hw = generate_pdf_report(_valid, all_memos=_rpt_memos)
         if _hw:
             _c2.download_button(
                 f"🌐 {_td2[4:6]}/{_td2[6:]} 予想レポート(.html)",
