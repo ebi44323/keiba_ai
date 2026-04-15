@@ -24,7 +24,7 @@ def _safe_col(df, col, default=np.nan):
     return pd.Series([val] * len(df), index=df.index)
 
 # ==========================================
-def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.0, min_win_prob=0.15, baba_override=None, use_oikiri=None):
+def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, ev_first=False, ev_threshold=1.5, min_win_prob=0.18, baba_override=None, use_oikiri=None):
     """
     skip_live_scrape=True: バックテスト時に使用。
       fetch_horse_last_race()を呼ばない（速度維持＆日付ズレ防止）
@@ -585,8 +585,12 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                                .map({uban: v.get('評価', '') for uban, v in _oikiri_data.items()})
                                .fillna(''))
 
-        # Isotonic Calibration: AI勝率(softmax後)→実勝率補正→再正規化
-        exp_scores    = np.exp(raw_scores - np.max(raw_scores))
+        # Temperature Scaling + Isotonic Calibration
+        # TEMPERATURE > 1 で確率分布を平坦化（本命の過信を抑制）
+        # check_temperature.py で最適値を探索してから変更すること
+        # T=1.0 は変更なし（現状維持）
+        TEMPERATURE = 1.0
+        exp_scores    = np.exp((raw_scores - np.max(raw_scores)) / TEMPERATURE)
         softmax_probs = exp_scores / np.sum(exp_scores)
         if calibrator is not None:
             try:

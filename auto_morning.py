@@ -51,6 +51,7 @@ with mock.patch("streamlit.cache_resource", _passthrough), \
     from src.core_model import prepare_model_and_data
     from src.scraper import get_todays_races
     from src.inference import run_real_prediction
+    from src.reports import generate_pdf_report, generate_txt_report
     if GEMINI_API_KEY:
         from src.gemini_utils import generate_two_analysts
 
@@ -391,18 +392,17 @@ def run(date_str: str = None):
     logger.info(f"馬券メモ読み込み: {len(all_memos)}頭分")
 
     # 全レース推論
-    txt_blocks    = []
-    html_sections = []
+    results_list = []
     ok_count = 0
     venues = sorted(set(r["place"] for r in races))
 
     for r in races:
         logger.info(f"  推論: {r['place']} {r['num']}R ({r['id']})")
         try:
-            res_df, topics_list, reco, pace_text, conf_text, _, _, _, err = run_real_prediction(
+            res_df, topics_list, reco, pace_text, conf_text, track_type, _, distance, err = run_real_prediction(
                 r["id"], date_hf, bundle,
                 skip_live_scrape=False,
-                ev_first=True, ev_threshold=1.0, min_win_prob=0.10,
+                ev_first=True, ev_threshold=1.5, min_win_prob=0.18,
             )
         except Exception as e:
             logger.warning(f"  推論失敗: {e}")
@@ -423,31 +423,33 @@ def run(date_str: str = None):
             except Exception as ge:
                 logger.warning(f"  Gemini生成失敗: {ge}")
 
-        txt_blocks.append(
-            format_race_txt(r, res_df, reco or "", conf_text or "", pace_text or "",
-                            topics_list, all_memos)
-        )
-        html_sections.append(
-            format_race_html_row(r, res_df, conf_text or "", topics_list, gemini_data,
-                                 all_memos)
-        )
+        ritem = {
+            "df":         res_df,
+            "place":      r["place"],
+            "num":        r["num"],
+            "track":      track_type or "",
+            "dist":       distance or "",
+            "confidence": conf_text or "",
+            "pace":       pace_text or "",
+            "topics":     topics_list or [],
+            "reco":       reco or "",
+            "date":       date_hf,
+        }
+        if gemini_data:
+            ritem["gemini_honmei"] = gemini_data.get("honmei", {})
+            ritem["gemini_ana"]    = gemini_data.get("ana", {})
+            ritem["gemini_model"]  = gemini_data.get("model", "")
+        results_list.append(ritem)
         ok_count += 1
 
     if ok_count == 0:
         logger.error("全レースで推論失敗。投稿スキップ。")
         return
 
-    # テキスト全体
-    header_txt = (
-        f"keiba-ebye AI朝刊予想  {date_label}\n"
-        f"開催: {' / '.join(venues)}  全{ok_count}レース\n"
-        f"{'='*52}\n"
-        f"EV=AI勝率×オッズ（✅=1.0以上 ⭐=1.5以上 🔥=2.0以上）\n"
-        f"全頭表示 / 印なし馬も参考として掲載\n"
-        f"{'='*52}\n\n"
-    )
-    full_txt  = header_txt + "\n".join(txt_blocks)
-    full_html = build_full_html(date_label, html_sections)
+    # src/reports.py のフォーマットで HTML / TXT 生成
+    html_bytes = generate_pdf_report(results_list, ev_threshold=1.5, all_memos=all_memos)
+    full_html  = html_bytes.decode("utf-8") if html_bytes else ""
+    full_txt   = generate_txt_report(results_list, ev_threshold=1.5, all_memos=all_memos)
 
     # Discord サマリーメッセージ（ファイルと一緒に投稿）
     gemini_note = "🤖 11R Gemini AIコメント付き" if GEMINI_API_KEY else ""

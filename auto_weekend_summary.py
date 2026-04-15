@@ -71,7 +71,7 @@ def collect_day_stats(date_str8: str, date_hf: str, bundle) -> dict:
             res_df, _, _, _, _, track_type, _, _, _ = run_real_prediction(
                 r["id"], date_hf, bundle,
                 skip_live_scrape=True, ev_first=True,
-                ev_threshold=1.0, min_win_prob=0.10,
+                ev_threshold=1.5, min_win_prob=0.18,
             )
         except Exception as e:
             logger.warning(f"    推論失敗 {r['id']}: {e}")

@@ -106,8 +106,8 @@ def run(date_str: str = None):
                 r["id"], date_hf, bundle,
                 skip_live_scrape=True,  # 振り返りは高速モード（前走データは取得しない）
                 ev_first=True,
-                ev_threshold=1.0,
-                min_win_prob=0.15,
+                ev_threshold=1.5,
+                min_win_prob=0.18,
                 use_oikiri=True,  # 当日振り返り: 直近レースの調教データは残っているため取得
             )
         except Exception as e:

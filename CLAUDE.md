@@ -252,7 +252,19 @@ git push origin main
 
 ---
 
-## 現在の状況（2026-04-03 時点）
+## 現在の状況（2026-04-15 時点）
+
+### 2026-04-15 完了した作業
+- **Discord自動予想通知を直接送信に変更** (`predict_auto.py`)
+  - 旧: HF Hubキュー書き込み → `discord_notify.yml` が5分後に配送（2ステップ）
+  - 新: GitHub Actionsから直接 `DISCORD_WEBHOOK_URL` にPOST（1ステップ）
+  - `send_discord_prediction`（discord_utils.py）への依存を削除
+  - `DISCORD_WEBHOOK_URL` は `auto_predict.yml` のenvに定義済み
+- **朝刊HTMLフォーマットを `src/reports.py` に統一** (`auto_morning.py`)
+  - 旧: `auto_morning.py` 内の独自 `format_race_txt`/`format_race_html_row` 関数
+  - 新: `src/reports.py` の `generate_pdf_report`/`generate_txt_report` を使用（アプリ内ダウンロードと同じ形式）
+  - `track_type` / `distance` も `run_real_prediction` 戻り値から取得してレポートに含める
+  - Geminiデータのキーマッピングも対応（`honmei`→`gemini_honmei` 等）
 
 ### 2026-04-03 完了した作業
 - **Optunaチューニング実施（2回目）**: CVスコア 0.6949（前回比 +0.018 改善）

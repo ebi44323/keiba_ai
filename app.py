@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-04-10a")
+st.caption("v2026-04-15c")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -181,12 +181,12 @@ ev_first_mode = st.sidebar.checkbox(
     value=True,
     help="ONにすると「AI勝率×オッズ(期待値)」が最大の馬を◎に選びます。穴馬が◎になりやすくなります。"
 )
-ev_first_threshold = 1.0
-ev_first_min_prob  = 0.15
+ev_first_threshold = 1.5
+ev_first_min_prob  = 0.18
 if ev_first_mode:
-    ev_first_threshold = st.sidebar.slider("◎昇格の最低期待値", 1.0, 3.0, 1.0, 0.1,
+    ev_first_threshold = st.sidebar.slider("◎昇格の最低期待値", 1.0, 3.0, 1.5, 0.1,
                            help="この期待値以上の馬の中からEV最大を◎にします。")
-    ev_first_min_prob  = st.sidebar.slider("◎昇格の最低AI勝率", 0.05, 0.30, 0.15, 0.01,
+    ev_first_min_prob  = st.sidebar.slider("◎昇格の最低AI勝率", 0.05, 0.30, 0.18, 0.01,
                            help="AI勝率がこれ未満の馬はEV優先でも◎になりません。")
 
 st.sidebar.markdown("---")
