@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-04-15c")
+st.caption("v2026-04-27a")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -1881,6 +1881,57 @@ elif action == "📈 長期成績分析":
                 ).properties(height=180)
                 st.altair_chart(heat, width='stretch')
                 st.caption("赤=高回収率 / 青=低回収率。開催日(主に土日)のみ反映")
+
+            # ── 累積競馬場別成績 ────────────────────
+            if '競馬場別' in history_df.columns:
+                import json as _json_v
+                _all_venue = {}
+                for _vj in history_df['競馬場別'].dropna():
+                    try:
+                        for _vname, _vdata in _json_v.loads(_vj).items():
+                            _e = _all_venue.setdefault(_vname, {'R数': 0, '的中': 0, '単勝回収': 0})
+                            _e['R数']      += _vdata.get('R数', 0)
+                            _e['的中']     += _vdata.get('的中', 0)
+                            _e['単勝回収'] += _vdata.get('単勝回収', 0)
+                    except Exception:
+                        continue
+                if _all_venue:
+                    st.markdown("---")
+                    st.markdown("#### 🏟️ 累積競馬場別 本命単勝回収率")
+                    _def_emoji2 = lambda v: "🔥" if v>=150 else ("✅" if v>=100 else ("🟡" if v>=70 else "❌"))
+                    _venue_rows = []
+                    for _vname, _vd in _all_venue.items():
+                        _vr = _vd['R数']
+                        _vret = _vd['単勝回収']
+                        _vrate = round(_vret / (_vr * 100) * 100, 1) if _vr > 0 else 0.0
+                        _hits = _vd['的中']
+                        _venue_rows.append({
+                            '競馬場': _vname, 'R数': _vr, '的中': _hits,
+                            '勝率(%)': round(_hits / _vr * 100, 1) if _vr > 0 else 0.0,
+                            '単勝回収率(%)': _vrate,
+                            '評価': _def_emoji2(_vrate),
+                        })
+                    _venue_df2 = pd.DataFrame(_venue_rows).sort_values('R数', ascending=False)
+                    _venue_bar2 = alt.Chart(_venue_df2).mark_bar().encode(
+                        x=alt.X('競馬場:N', sort='-y', title='競馬場'),
+                        y=alt.Y('単勝回収率(%):Q', title='単勝回収率(%)'),
+                        color=alt.Color('単勝回収率(%):Q',
+                            scale=alt.Scale(domain=[50, 100, 150],
+                                            range=['#FF6B6B', '#FFD93D', '#6BCB77'])),
+                        tooltip=['競馬場', 'R数', '的中',
+                                 alt.Tooltip('勝率(%):Q', format='.1f'),
+                                 alt.Tooltip('単勝回収率(%):Q', format='.1f')],
+                    ).properties(height=220)
+                    _ref2 = alt.Chart(pd.DataFrame({'y': [100]})).mark_rule(
+                        color='gray', strokeDash=[4, 4]
+                    ).encode(y='y:Q')
+                    st.altair_chart(_venue_bar2 + _ref2, width='stretch')
+                    st.dataframe(
+                        _venue_df2[['競馬場', 'R数', '的中', '勝率(%)', '単勝回収率(%)', '評価']]
+                        .style.format({'勝率(%)': '{:.1f}%', '単勝回収率(%)': '{:.1f}%'}),
+                        width='stretch', hide_index=True,
+                    )
+                    st.caption("全開催日の競馬場別成績を累積集計。R数が少ない競馬場はサンプル不足のため参考程度に。")
 
 elif action == "🔧 Optuna チューニング":
     st.subheader("🔧 Optuna ハイパーパラメータ チューニング")

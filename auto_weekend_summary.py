@@ -19,12 +19,15 @@ import datetime
 import logging
 import unittest.mock as mock
 import pytz
+import requests
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("auto_weekend_summary")
 
-HF_TOKEN   = os.environ.get("HF_TOKEN", "")
-HF_REPO_ID = os.environ.get("HF_REPO_ID", "")
+HF_TOKEN                   = os.environ.get("HF_TOKEN", "")
+HF_REPO_ID                 = os.environ.get("HF_REPO_ID", "")
+DISCORD_WEBHOOK_URL        = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+DISCORD_REVIEW_WEBHOOK_URL = (os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "").strip()) or DISCORD_WEBHOOK_URL
 
 if not HF_TOKEN or not HF_REPO_ID:
     logger.error("HF_TOKEN / HF_REPO_ID が未設定です。")
@@ -40,7 +43,6 @@ with mock.patch("streamlit.cache_resource", _passthrough), \
     from src.core_model import prepare_model_and_data
     from src.scraper import get_todays_races, get_all_payouts
     from src.inference import run_real_prediction
-    from src.discord_utils import _push_discord_queue
 
 JST = pytz.timezone("Asia/Tokyo")
 
@@ -235,13 +237,22 @@ def run(sat_str: str = None, sun_str: str = None):
     msg = build_discord_message(combined, sat_label, sun_label)
     logger.info(f"集計完了: 合計{combined['honmei_races']}レース")
 
-    dedup_key = f"weekend_{sat_str}_{sun_str}"
-    ok = _push_discord_queue(msg, channel="review",
-                             username="keiba-ebye 📊週末", dedup_key=dedup_key)
-    if ok:
-        logger.info("Discord キューへの書き込み成功")
-    else:
-        logger.error("Discord キューへの書き込み失敗")
+    review_url = DISCORD_REVIEW_WEBHOOK_URL
+    if not review_url:
+        logger.error("DISCORD_WEBHOOK_URL / DISCORD_REVIEW_WEBHOOK_URL が未設定のため Discord 送信をスキップ")
+        return
+    try:
+        resp = requests.post(
+            review_url,
+            json={"content": msg[:1990], "username": "keiba-ebye 📊週末"},
+            timeout=15,
+        )
+        if resp.status_code in (200, 204):
+            logger.info("Discord 送信成功")
+        else:
+            logger.error(f"Discord 送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        logger.error(f"Discord 送信エラー: {e}")
 
 
 if __name__ == "__main__":

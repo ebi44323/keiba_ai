@@ -20,12 +20,15 @@ import datetime
 import logging
 import unittest.mock as mock
 import pytz
+import requests
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("auto_review")
 
-HF_TOKEN   = os.environ.get("HF_TOKEN", "")
-HF_REPO_ID = os.environ.get("HF_REPO_ID", "")
+HF_TOKEN                = os.environ.get("HF_TOKEN", "")
+HF_REPO_ID              = os.environ.get("HF_REPO_ID", "")
+DISCORD_WEBHOOK_URL     = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+DISCORD_REVIEW_WEBHOOK_URL = (os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "").strip()) or DISCORD_WEBHOOK_URL
 
 if not HF_TOKEN or not HF_REPO_ID:
     logger.error("HF_TOKEN / HF_REPO_ID が未設定です。GitHub Secrets を確認してください。")
@@ -43,10 +46,76 @@ with mock.patch("streamlit.cache_resource", _passthrough), \
     from src.core_model import prepare_model_and_data
     from src.scraper import get_todays_races, get_all_payouts
     from src.inference import run_real_prediction
-    from src.discord_utils import send_discord_review
     from src.utils import classify_race_class
 
 JST = pytz.timezone("Asia/Tokyo")
+
+
+def _send_review_direct(stats: dict, rates: dict, date_label: str) -> bool:
+    """振り返り結果を Discord Webhook に直接送信する（GitHub Actions 用）"""
+    webhook_url = DISCORD_REVIEW_WEBHOOK_URL
+    if not webhook_url:
+        logger.error("DISCORD_WEBHOOK_URL / DISCORD_REVIEW_WEBHOOK_URL が未設定のため Discord 送信をスキップ")
+        return False
+
+    def _emoji(v):
+        if v >= 150: return "🔥"
+        if v >= 100: return "✅"
+        if v >= 70:  return "🟡"
+        return "❌"
+
+    tan_rate   = rates.get('tan_rate', 0)
+    fuku_rate  = rates.get('fuku_rate', 0)
+    choko_tan  = rates.get('choko_tan_rate', 0)
+    choko_fuku = rates.get('choko_fuku_rate', 0)
+    ana_tan    = rates.get('ana_tan_rate', 0)
+    ana_fuku   = rates.get('ana_fuku_rate', 0)
+    uma_rate   = rates.get('uma_rate', 0)
+    shiba_rate = rates.get('shiba_rate', 0)
+    dart_rate  = rates.get('dart_rate', 0)
+    races      = stats.get('honmei_races', 0)
+
+    lines = [
+        f"📊 **keiba-ebye 振り返りレポート** | {date_label}",
+        f"対象 {races}レース",
+        "",
+        "**【本命(◎) 成績】**",
+        "```",
+        f"単勝  {_emoji(tan_rate)} {tan_rate:6.1f}%   的中 {stats.get('honmei_tan_hits',0)}/{races}R",
+        f"複勝  {_emoji(fuku_rate)} {fuku_rate:6.1f}%   的中 {stats.get('honmei_fuku_hits',0)}/{races}R",
+        "```",
+        "",
+        "**【超狙い馬(AI上位5頭 EV1.5+) ベタ買い】**",
+        "```",
+        f"単勝  {_emoji(choko_tan)} {choko_tan:6.1f}%   的中 {stats.get('choko_tan_hits',0)}/{int(stats.get('choko_invest',0)//100)}頭",
+        f"複勝  {_emoji(choko_fuku)} {choko_fuku:6.1f}%   的中 {stats.get('choko_fuku_hits',0)}/{int(stats.get('choko_invest',0)//100)}頭",
+        "```",
+        "",
+        "**【穴馬(AI6位以下 EV1.5+) ベタ買い】**",
+        "```",
+        f"単勝  {_emoji(ana_tan)} {ana_tan:6.1f}%   的中 {stats.get('ana_tan_hits',0)}/{int(stats.get('ana_invest',0)//100)}頭",
+        f"複勝  {_emoji(ana_fuku)} {ana_fuku:6.1f}%   的中 {stats.get('ana_fuku_hits',0)}/{int(stats.get('ana_invest',0)//100)}頭",
+        "```",
+        "",
+        f"🌱 芝: {shiba_rate:.1f}%  🏜️ ダート: {dart_rate:.1f}%",
+        f"🔗 馬連: {uma_rate:.1f}%  📐 穴馬ワイド: {rates.get('wide_rate', 0):.1f}%",
+        "",
+        "-# keiba-ebye / 結果は参考情報です",
+    ]
+    content = "\n".join(lines)
+    try:
+        resp = requests.post(
+            webhook_url,
+            json={"content": content[:1990], "username": "keiba-ebye 📊"},
+            timeout=15,
+        )
+        if resp.status_code in (200, 204):
+            return True
+        logger.warning(f"Discord送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
+        return False
+    except Exception as e:
+        logger.error(f"Discord送信エラー: {e}")
+        return False
 
 
 def run(date_str: str = None):
@@ -280,11 +349,11 @@ def run(date_str: str = None):
         f"集計完了 {races_n}R: 本命単勝{rates['tan_rate']}% 複勝{rates['fuku_rate']}%"
     )
 
-    ok = send_discord_review(stats, rates, date_label)
+    ok = _send_review_direct(stats, rates, date_label)
     if ok:
-        logger.info("Discord キューへの書き込み成功")
+        logger.info("Discord 送信成功")
     else:
-        logger.error("Discord キューへの書き込み失敗")
+        logger.error("Discord 送信失敗")
 
     # ── HF Hub に ai_daily_history.csv を保存 ────────────────────────────
     try:

@@ -252,7 +252,21 @@ git push origin main
 
 ---
 
-## 現在の状況（2026-04-15 時点）
+## 現在の状況（2026-04-27 時点）
+
+### 2026-04-27 完了した作業
+- **Discord自動通知をすべて直接送信に統一** (`auto_review.py` / `auto_weekend_summary.py`)
+  - 旧: HF Hubキュー書き込み → `discord_notify.yml` が5分後に配送（queue依存）
+  - 新: GitHub Actionsから直接 Discord Webhook にPOST（predict_auto.py と同方式）
+  - `send_discord_review`（discord_utils.py）への依存を削除
+  - `_send_review_direct()` をauto_review.pyに内包
+  - `DISCORD_WEBHOOK_URL` / `DISCORD_REVIEW_WEBHOOK_URL` を各スクリプトで直接参照
+- **YAMLのstreamlitバージョン不一致修正**: `auto_review.yml`/`auto_weekend_summary.yml` の `streamlit==1.55.0` → `1.56.0`
+- **app.py 振り返りタブに累積競馬場別成績を追加**
+  - `ai_daily_history.csv` の `競馬場別` カラム（JSON）を全日分パース・集計
+  - 競馬場ごとの R数・的中数・勝率・単勝回収率をバーチャートと表で表示
+  - 長期成績ダッシュボード末尾（週別ヒートマップの後）に配置
+- **バージョン**: `v2026-04-27a`
 
 ### 2026-04-15 完了した作業
 - **Discord自動予想通知を直接送信に変更** (`predict_auto.py`)
