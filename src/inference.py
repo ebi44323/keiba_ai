@@ -281,6 +281,26 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['前走先行フラグ']  = ((df_test['前走_最終コーナー']>2)&(df_test['前走_最終コーナー']<=5)).astype(int)
         df_test['同レース逃げ馬頭数'] = df_test['前走逃げフラグ'].sum()
         df_test['同レース先行馬頭数'] = df_test['前走先行フラグ'].sum()
+
+        # ── 展開×脚質 交互作用特徴量（features_engine.py と同一ロジック）────
+        df_test['逃げ_単独優位スコア'] = (
+            df_test['前走逃げフラグ'].fillna(0) * np.maximum(0.0, 3.0 - df_test['同レース逃げ馬頭数'])
+        )
+        _is_oikomi = ((1 - df_test['前走逃げフラグ'].fillna(0)) * (1 - df_test['前走先行フラグ'].fillna(0)))
+        df_test['追込_展開向き度'] = _is_oikomi * df_test['同レース逃げ馬頭数']
+        _pace_inf = pd.to_numeric(_safe_col(df_test, '前走_前半ペース値', np.nan), errors='coerce')
+        if _pace_inf.notna().sum() > 0:
+            _pm_inf = float(_pace_inf.mean()) if _pace_inf.notna().sum() > 0 else 0.0
+            _ps_inf = float(_pace_inf.std()) if _pace_inf.notna().sum() > 1 and _pace_inf.std() > 1e-3 else 1.0
+            _pace_z_inf = (_pace_inf - _pm_inf) / _ps_inf
+            df_test['前走_ペース補正スピード指数'] = (
+                pd.to_numeric(_safe_col(df_test, '前走_スピード指数', 50.0), errors='coerce').fillna(50.0)
+                - df_test['前走逃げフラグ'].fillna(0) * _pace_z_inf.fillna(0) * 2.0
+            )
+        else:
+            df_test['前走_ペース補正スピード指数'] = pd.to_numeric(
+                _safe_col(df_test, '前走_スピード指数', 50.0), errors='coerce').fillna(50.0)
+
         df_test['コース適性_着順パーセント'] = df_test.set_index(['馬ID','競馬場','芝/ダート']).index.map(horse_course_dict).fillna(0.5)
         df_test['位置取りショック'] = df_test['前走_最終コーナー'] - pd.to_numeric(_safe_col(df_test, '2走前_最終コーナー'), errors='coerce')
 
@@ -587,9 +607,9 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
 
         # Temperature Scaling + Isotonic Calibration
         # TEMPERATURE > 1 で確率分布を平坦化（本命の過信を抑制）
-        # check_temperature.py で最適値を探索してから変更すること
-        # T=1.0 は変更なし（現状維持）
-        TEMPERATURE = 1.0
+        # 実績: 本命平均AI=25% vs 実際勝者=14.5% → 1.72倍過信
+        # T=1.5 で圧縮後: 25% → 約15-16% に補正（2026-04-27 変更）
+        TEMPERATURE = 1.5
         exp_scores    = np.exp((raw_scores - np.max(raw_scores)) / TEMPERATURE)
         softmax_probs = exp_scores / np.sum(exp_scores)
         if calibrator is not None:

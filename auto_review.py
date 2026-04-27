@@ -264,14 +264,17 @@ def run(date_str: str = None):
                     stats["umaren_hits"] += 1
                     stats["umaren_return"] += payouts["umaren"][key]
 
-        # 三連複 ◎〇▲ボックス
-        if len(res_df) >= 3:
-            top3 = res_df.iloc[:3]["馬番"].tolist()
-            key3 = tuple(sorted(top3))
-            stats["sanrenpuku_invest"] += 100
-            if key3 in payouts.get("sanrenpuku", {}):
-                stats["sanrenpuku_hits"] += 1
-                stats["sanrenpuku_return"] += payouts["sanrenpuku"][key3]
+        # 三連複 ◎ → 2〜5位ながし (◎軸1頭 × 相手4頭からC(4,2)=6点)
+        if len(res_df) >= 5:
+            honmei_num3 = res_df.iloc[0]["馬番"]
+            himo4 = res_df.iloc[1:5]["馬番"].tolist()
+            for _i in range(len(himo4)):
+                for _j in range(_i + 1, len(himo4)):
+                    key3 = tuple(sorted([honmei_num3, himo4[_i], himo4[_j]]))
+                    stats["sanrenpuku_invest"] += 100
+                    if key3 in payouts.get("sanrenpuku", {}):
+                        stats["sanrenpuku_hits"] += 1
+                        stats["sanrenpuku_return"] += payouts["sanrenpuku"][key3]
 
         # 穴馬ワイド流し: ◎ → AI6位以下(index>=5) かつ EV>=1.5
         ana_list = res_df[(res_df.index >= 5) & (res_df["期待値"] >= 1.5)]["馬番"].tolist()

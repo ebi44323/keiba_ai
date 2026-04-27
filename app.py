@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-04-27a")
+st.caption("v2026-04-27b")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -1297,14 +1297,17 @@ elif action == "📝 1日の振り返り (答え合わせ)":
                                     stats['umaren_hits'] += 1
                                     stats['umaren_return'] += payouts['umaren'][key]
 
-                        # 三連複◎〇▲
-                        if len(res_df) >= 3:
-                            top3 = res_df.iloc[:3]['馬番'].tolist()
-                            key3 = tuple(sorted(top3))
-                            stats['sanrenpuku_invest'] += 100
-                            if key3 in payouts.get('sanrenpuku', {}):
-                                stats['sanrenpuku_hits'] += 1
-                                stats['sanrenpuku_return'] += payouts['sanrenpuku'][key3]
+                        # 三連複 ◎ → 2〜5位ながし (◎軸1頭 × 相手4頭から6点)
+                        if len(res_df) >= 5:
+                            _h3 = res_df.iloc[0]['馬番']
+                            _h4 = res_df.iloc[1:5]['馬番'].tolist()
+                            for _i3 in range(len(_h4)):
+                                for _j3 in range(_i3 + 1, len(_h4)):
+                                    _k3 = tuple(sorted([_h3, _h4[_i3], _h4[_j3]]))
+                                    stats['sanrenpuku_invest'] += 100
+                                    if _k3 in payouts.get('sanrenpuku', {}):
+                                        stats['sanrenpuku_hits'] += 1
+                                        stats['sanrenpuku_return'] += payouts['sanrenpuku'][_k3]
 
                         # 穴馬ワイド流し
                         ana_list = res_df[(res_df.index >= 5) & (res_df['期待値'] >= 1.5)]['馬番'].tolist()
@@ -1537,7 +1540,7 @@ elif action == "📝 1日の振り返り (答え合わせ)":
             st.write(f"  投資: ¥{_stats['umaren_invest']:,} / 回収率: **{uma_rate:.1f}%** (的中 {_stats['umaren_hits']}R)")
             st.write(f"- **穴馬ワイド (◎ → 期待値特大の穴馬へ)**")
             st.write(f"  該当: {_stats['wide_ana_races']}R / 回収率: **{wide_rate:.1f}%** (的中 {_stats['wide_ana_hits']}回)")
-            st.write(f"- **三連複 (◎〇▲ 1点)**")
+            st.write(f"- **三連複 (◎→2〜5位ながし 6点)**")
             st.write(f"  投資: ¥{_stats['sanrenpuku_invest']:,} / 回収率: **{san_rate:.1f}%** (的中 {_stats['sanrenpuku_hits']}R)")
             st.markdown("---")
             st.warning("🔥 【超狙い馬 (AI上位5頭 EV1.5+) ベタ買い】")
