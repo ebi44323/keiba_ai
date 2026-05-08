@@ -379,7 +379,12 @@ git push origin main
 
 ### 高優先度
 1. **git push**（GitHub Desktop）→ コード変更をGitHubに反映
-2. **再学習 → HF Hub保存**（パラメータ変更を反映するため必須）
+2. **【検討中】騎手系特徴量の見直し**（`show_feature_importance.py` で判明した問題）
+   - **問題**: `騎手_競馬場`(29%) + `騎手_距離`(25%) が importance の54%を占める。超高カーディナリティのカテゴリ特徴量がsplit基準でも支配的で、実質「騎手勝率を距離・コース別に学習」している状態
+   - **推奨: A案（削除）** → `src/features_engine.py` の `CAT_FEATURES` から `'騎手_競馬場'` と `'騎手_距離'` を削除。`騎手_TE` だけ残す。再学習してAUCを比較。
+   - **B案（TE化）** → 削除でAUCが大きく落ちる場合、「騎手×競馬場の過去着順パーセント（expanding mean）」として数値化。カーディナリティバイアスは解消しつつ情報は保持。
+   - **合わせて削除候補**: gain/split両方で0の死んだ特徴量 → `馬場`, `母父系`, `前走失速フラグ`, `穴馬_実力馬の巻き返し`, `新馬フラグ`
+3. **再学習 → HF Hub保存**（パラメータ変更を反映するため必須）
    - GitHub Actions → 「Retrain and Push Model」→「Run workflow」
    - ※ ローカル実行なら push 前でも可（`python train_and_push.py`）
 3. **週次データ更新** (`python update_data.py`) → 最新レース結果を追加 → 再学習
