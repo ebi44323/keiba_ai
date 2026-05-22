@@ -35,7 +35,15 @@ _UA_LIST = [
 
 
 def get_headers():
-    return {"User-Agent": random.choice(_UA_LIST)}
+    return {
+        "User-Agent": random.choice(_UA_LIST),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Referer": "https://www.netkeiba.com/",
+        "Upgrade-Insecure-Requests": "1",
+    }
 
 
 def safe_sleep(base=1.5, jitter=1.0):

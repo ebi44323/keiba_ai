@@ -138,19 +138,29 @@ def get_race_ids_for_date(date_str):
     ]:
         try:
             r = requests.get(url, headers=get_headers(), timeout=10); r.encoding='euc-jp'
+            print(f"    [net] {url.split('?')[0].split('/')[-1]} → HTTP {r.status_code}")
             for a in BeautifulSoup(r.text,'html.parser').find_all('a', href=re.compile(r'race_id=(\d{12})')):
                 rid = re.search(r'race_id=(\d{12})',a['href']).group(1)
                 if 1 <= int(rid[4:6]) <= 10: race_ids.append(rid)
-            if race_ids: break
-        except: pass
+            if race_ids:
+                print(f"    [net] → {len(race_ids)}件取得")
+                break
+            print(f"    [net] → レースID 0件（レスポンス先頭: {r.text[:80].strip()!r}）")
+        except Exception as e:
+            print(f"    [net] → エラー: {e}")
         safe_sleep(1.0, 0.5)
     if not race_ids:
         try:
-            r = requests.get(f'https://db.netkeiba.com/race/list/{date_str}/', headers=get_headers(), timeout=10)
+            url_db = f'https://db.netkeiba.com/race/list/{date_str}/'
+            r = requests.get(url_db, headers=get_headers(), timeout=10)
             r.encoding = 'euc-jp'
+            print(f"    [net] db.netkeiba fallback → HTTP {r.status_code}")
             for m in re.findall(r'/race/(\d{12})', r.text):
                 if 1 <= int(m[4:6]) <= 10: race_ids.append(m)
-        except: pass
+            if not race_ids:
+                print(f"    [net] → fallbackも0件（先頭: {r.text[:80].strip()!r}）")
+        except Exception as e:
+            print(f"    [net] → fallbackエラー: {e}")
     return sorted(list(set(race_ids)))
 
 

@@ -7,3 +7,4 @@ __pycache__/
 *.jpg
 *.jpeg
 learning_data_perfect_tier.csv
+ped_cache.db
