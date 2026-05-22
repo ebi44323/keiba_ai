@@ -37,12 +37,17 @@ NUM_FEATURES = [
     '逃げ_単独優位スコア',          # 逃げフラグ × max(0, 3-同レース逃げ馬頭数): 単独逃げほど高い
     '追込_展開向き度',              # 差し・追込フラグ × 同レース逃げ馬頭数: ハイペース恩恵度
     '前走_ペース補正スピード指数',  # 前走SI をペース偏差×逃げフラグで補正（スロー逃げの過大評価抑制）
+    # ── 騎手能力特徴量（2026-05-22追加）──
+    '騎手_通算着順パーセント',     # 騎手の全期間 expanding mean 着順パーセント（リーク防止）
+    '騎手_競馬場_着順パーセント',  # 騎手×競馬場 expanding mean 着順パーセント（3件未満は通算でフォールバック）
 ]
 # ※ 調教評価スコアはモデル特徴量に含めない（歴史データに存在しないためポストモデル補正で適用）
 
 CAT_FEATURES = [
-    '競馬場', '芝/ダート', '天候', '馬場', '父系', '母系', '母父系', 
-    '前走芝ダート', '回り', 'コース地形', '脚質カテゴリ', '騎手_競馬場', '騎手_距離'
+    '競馬場', '芝/ダート', '天候', '馬場', '父系', '母系', '母父系',
+    '前走芝ダート', '回り', 'コース地形', '脚質カテゴリ'
+    # 騎手_競馬場・騎手_距離 は削除済み（超高カーディナリティで importance 54%独占→バイアス）
+    # 代わりに 騎手_通算着順パーセント / 騎手_競馬場_着順パーセント を NUM_FEATURES に追加
 ]
 
 TE_COLS = ['調教師', '父', '母父', '騎手']
@@ -197,6 +202,23 @@ def create_features(df, te_dicts=None):
     else:
         df['父_重馬場_着順パーセント'] = 0.5
 
+    # ── 騎手能力特徴量（日付順ソート中に計算してリーク防止）──────────────
+    # df はこの時点で日付順にソート済み（sort_values('日付') 後）
+    # 騎手_通算着順パーセント: 騎手の全期間 expanding mean（リーク防止: shift(1)）
+    if '騎手' in df.columns and '着順パーセント' in df.columns:
+        df['騎手_通算着順パーセント'] = (
+            df.groupby('騎手')['着順パーセント']
+            .transform(lambda x: x.shift(1).expanding(min_periods=5).mean())
+        ).fillna(0.5)
+        # 騎手_競馬場_着順パーセント: 騎手×競馬場 expanding mean（3件未満は通算でフォールバック）
+        _jockey_venue = df.groupby(['騎手', '競馬場'])['着順パーセント'].transform(
+            lambda x: x.shift(1).expanding(min_periods=3).mean()
+        )
+        df['騎手_競馬場_着順パーセント'] = _jockey_venue.fillna(df['騎手_通算着順パーセント'])
+    else:
+        df['騎手_通算着順パーセント']   = 0.5
+        df['騎手_競馬場_着順パーセント'] = 0.5
+
     df = df.sort_values(['馬ID','日付']).reset_index(drop=True)
 
     # ── 馬の重馬場適性（馬ID×日付順で expanding mean、leakフリー）────────
@@ -322,10 +344,6 @@ def create_features(df, te_dicts=None):
     for col in ['回り','コース地形']:
         if col not in df.columns or df[col].isna().all():
             df[col] = df['競馬場'].map(VENUE_MAWARI if col=='回り' else VENUE_CHIKEI).fillna('不明')
-    if '騎手_競馬場' not in df.columns:
-        df['騎手_競馬場'] = df['騎手ID'].astype(str)+'_'+df['競馬場'].astype(str)
-    if '騎手_距離' not in df.columns:
-        df['騎手_距離'] = df['騎手ID'].astype(str)+'_'+df['距離'].astype(str)
     for col in ['天候','前走芝ダート']:
         if col in df.columns: df[col] = df[col].fillna('不明').astype(str)
         else: df[col] = '不明'

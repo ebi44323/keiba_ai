@@ -43,6 +43,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     ped_aptitude_dict = _extra[2] if len(_extra) > 2 else {}
     horse_heavy_dict  = _extra[3] if len(_extra) > 3 else {}  # 馬ID → 重/不良馬場 着順パーセント平均
     sire_heavy_dict   = _extra[4] if len(_extra) > 4 else {}  # 父名  → 重/不良馬場 着順パーセント平均
+    jockey_overall_dict = _extra[5] if len(_extra) > 5 else {}  # 騎手名 → 全期間平均着順パーセント
+    jockey_venue_dict   = _extra[6] if len(_extra) > 6 else {}  # (騎手名,競馬場) → 平均着順パーセント
     
     error_log = []
     odds_dict = {}      # 馬番(int) → オッズ(float)
@@ -302,6 +304,15 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                 _safe_col(df_test, '前走_スピード指数', 50.0), errors='coerce').fillna(50.0)
 
         df_test['コース適性_着順パーセント'] = df_test.set_index(['馬ID','競馬場','芝/ダート']).index.map(horse_course_dict).fillna(0.5)
+
+        # 騎手能力特徴量（学習データの全期間平均 → リアルタイム推論）
+        df_test['騎手_通算着順パーセント'] = df_test['騎手'].map(jockey_overall_dict).fillna(0.5)
+        _jv_keys = list(zip(df_test['騎手'], df_test['競馬場']))
+        df_test['騎手_競馬場_着順パーセント'] = [
+            jockey_venue_dict.get(k, jockey_overall_dict.get(k[0], 0.5))
+            for k in _jv_keys
+        ]
+
         df_test['位置取りショック'] = df_test['前走_最終コーナー'] - pd.to_numeric(_safe_col(df_test, '2走前_最終コーナー'), errors='coerce')
 
         race_date_obj = pd.to_datetime(race_date_str)
@@ -473,8 +484,6 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['穴馬_実力馬の巻き返し'] = ((df_test['前走大敗フラグ']==1)&(df_test['近5走_最高スピード指数']>=55)).astype(int)
         df_test['回り']       = df_test['競馬場'].map(VENUE_MAWARI).fillna('不明')
         df_test['コース地形'] = df_test['競馬場'].map(VENUE_CHIKEI).fillna('不明')
-        df_test['騎手_競馬場'] = df_test['騎手'].astype(str)+'_'+df_test['競馬場'].astype(str)
-        df_test['騎手_距離']   = df_test['騎手'].astype(str)+'_'+df_test['距離'].astype(str)
 
         # ── 新特徴量: 馬場指数 ──────────────────────────────────────
         if '馬場' in df_test.columns:

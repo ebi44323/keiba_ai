@@ -449,14 +449,25 @@ def prepare_model_and_data(force_retrain=False):
     except Exception as _e:
         logger.warning(f'重馬場適性辞書構築失敗: {_e}')
 
+    # 騎手成績辞書（inference.py のリアルタイム予測で使用）
+    jockey_overall_dict = {}
+    jockey_venue_dict   = {}
+    try:
+        jockey_overall_dict = df.groupby('騎手')['着順パーセント'].mean().to_dict()
+        jockey_venue_dict   = df.groupby(['騎手', '競馬場'])['着順パーセント'].mean().to_dict()
+        logger.info(f'騎手成績辞書: {len(jockey_overall_dict)}騎手, {len(jockey_venue_dict)}騎手×競馬場')
+    except Exception as _e:
+        logger.warning(f'騎手成績辞書構築失敗: {_e}')
+
     best_weight = 0.8159  # 後方互換性用（bundle位置保持のため残存・inference.pyでは未使用、実重みはcore_model.py L331/inference.py L461参照）
     bundle = (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
               auc_win, auc_place, calibrator, model_d, ped_aptitude_dict,
-              horse_heavy_dict, sire_heavy_dict)
+              horse_heavy_dict, sire_heavy_dict, jockey_overall_dict, jockey_venue_dict)
               # _extra[0]=calibrator, _extra[1]=model_d, _extra[2]=ped_aptitude_dict
-              # _extra[3]=horse_heavy_dict, _extra[4]=sire_heavy_dict（後方互換: *extraで受ける）
+              # _extra[3]=horse_heavy_dict, _extra[4]=sire_heavy_dict
+              # _extra[5]=jockey_overall_dict, _extra[6]=jockey_venue_dict（後方互換: *extraで受ける）
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)
