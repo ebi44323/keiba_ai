@@ -8,3 +8,5 @@ __pycache__/
 *.jpeg
 learning_data_perfect_tier.csv
 ped_cache.db
+keiba_model.pkl
+trained_assets.pkl
