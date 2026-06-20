@@ -62,7 +62,10 @@ def get_todays_races(date_str=None):
         url = f'https://db.netkeiba.com/race/list/{target_date_str}/'
         try:
             res = requests.get(url, headers=get_headers(), timeout=10)
-            html_text = res.content.decode('euc-jp', errors='replace')
+            try:
+                html_text = res.content.decode('utf-8')
+            except UnicodeDecodeError:
+                html_text = res.content.decode('euc-jp', errors='replace')
             soup = BeautifulSoup(html_text, 'html.parser')
             ids = set(re.findall(r'/race/(\d{12})', html_text))
             for r_id in ids:
@@ -101,8 +104,12 @@ def get_payouts(race_id):
     urls = [f"https://race.netkeiba.com/race/result.html?race_id={race_id}", f"https://db.netkeiba.com/race/{race_id}/"]
     for url in urls:
         try:
-            res = requests.get(url, headers=get_headers(), timeout=10); res.encoding = 'euc-jp'
-            soup = BeautifulSoup(res.text, 'html.parser')
+            res = requests.get(url, headers=get_headers(), timeout=10)
+            try:
+                _html = res.content.decode('utf-8')
+            except UnicodeDecodeError:
+                _html = res.content.decode('euc-jp', errors='replace')
+            soup = BeautifulSoup(_html, 'html.parser')
             tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01'))
             if not tables: tables = soup.find_all('table', summary='払い戻し')
             for tbl in tables:
@@ -143,7 +150,10 @@ def get_all_payouts(race_id):
         try:
             res = requests.get(url, headers=get_headers(), timeout=10)
             html_bytes = res.content
-            html_text = html_bytes.decode('euc-jp', errors='ignore') # netkeibaはEUC-JP固定でOK
+            try:
+                html_text = html_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                html_text = html_bytes.decode('euc-jp', errors='replace')
             soup = BeautifulSoup(html_text, 'html.parser')
             
             tables = soup.find_all('table', class_=re.compile(r'Pay_Table_01|pay_table_01', re.I))
@@ -407,8 +417,11 @@ def fetch_horse_last_race(horse_id: str) -> dict:
     try:
         url = f"https://db.netkeiba.com/horse/{horse_id}/"
         r = requests.get(url, headers=get_headers(), timeout=8)
-        r.encoding = 'euc-jp'
-        soup = BeautifulSoup(r.text, 'html.parser')
+        try:
+            _html = r.content.decode('utf-8')
+        except UnicodeDecodeError:
+            _html = r.content.decode('euc-jp', errors='replace')
+        soup = BeautifulSoup(_html, 'html.parser')
 
         # 競走成績テーブルを探す
         table = soup.find('table', class_='race_table_01') or soup.find('table', summary='新着情報')

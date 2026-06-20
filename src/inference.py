@@ -94,10 +94,14 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
 
     for fetch_url in [f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}',f'https://race.netkeiba.com/race/result.html?race_id={race_id}',f'https://db.netkeiba.com/race/{race_id}/']:
         try:
-            r = requests.get(fetch_url, headers=get_headers(), timeout=10); r.encoding = 'euc-jp'
-            soup = BeautifulSoup(r.text, 'html.parser')
+            r = requests.get(fetch_url, headers=get_headers(), timeout=10)
+            try:
+                _html = r.content.decode('utf-8')
+            except UnicodeDecodeError:
+                _html = r.content.decode('euc-jp', errors='replace')
+            soup = BeautifulSoup(_html, 'html.parser')
             if soup.select_one('.Shutuba_Table') or soup.select_one('.RaceTable01') or soup.select_one('.race_table_01') or soup.select_one('#All_Result_Table'):
-                html_text = r.text; break
+                html_text = _html; break
         except Exception as _e:
             logger.warning(f'出馬表取得失敗 {fetch_url}: {_e}')
 

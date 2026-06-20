@@ -9,7 +9,14 @@
       "Bash(python -c:*)",
       "Bash(ls -lh learning_data_perfect_tier.*)",
       "WebFetch(domain:race.netkeiba.com)",
-      "Bash(git -C /c/Users/t-tsuchiya/Documents/keiba_ai ls-files horse_memos.json)"
+      "Bash(git -C /c/Users/t-tsuchiya/Documents/keiba_ai ls-files horse_memos.json)",
+      "Bash(set PYTHONIOENCODING=utf-8)",
+      "Bash(gh run *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git lfs *)",
+      "Bash(git rm *)",
+      "Bash(git push *)"
     ]
   }
 }
