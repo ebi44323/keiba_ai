@@ -1,7 +1,11 @@
 """
 土日まとめ振り返りスクリプト（GitHub Actions から呼び出し）
-- 直近の土曜・日曜の全レースを集計
-- 2日分合算の成績を Discord に送信（キュー経由）
+
+★2026-07-25 改修: 再計算をやめ、日次振り返り(auto_review.py)が保存した
+  ai_daily_history.csv の土・日の行を「集計するだけ」に変更。
+  旧実装は run_real_prediction を use_oikiri なしで再計算しており、日次(use_oikiri=True)
+  との条件差で◎がズレ、日次Discordと週末まとめの数字が乖離していた。
+  CSVを単一の真実の源にすることで構造的に一致させる。
 
 使い方:
   python auto_weekend_summary.py [--sat YYYYMMDD] [--sun YYYYMMDD]
@@ -10,6 +14,7 @@
 必要な環境変数:
   HF_TOKEN        - HuggingFace API トークン
   HF_REPO_ID      - モデル保存先 Dataset リポジトリ ID
+  DISCORD_WEBHOOK_URL / DISCORD_REVIEW_WEBHOOK_URL
 """
 
 import os
@@ -17,7 +22,6 @@ import sys
 import argparse
 import datetime
 import logging
-import unittest.mock as mock
 import pytz
 import requests
 
@@ -33,209 +37,158 @@ if not HF_TOKEN or not HF_REPO_ID:
     logger.error("HF_TOKEN / HF_REPO_ID が未設定です。")
     sys.exit(1)
 
-def _passthrough(func=None, **kw):
-    if callable(func): return func
-    return lambda f: f
-
-with mock.patch("streamlit.cache_resource", _passthrough), \
-     mock.patch("streamlit.cache_data",     _passthrough), \
-     mock.patch("streamlit.spinner",        lambda *a, **kw: mock.MagicMock()):
-    from src.core_model import prepare_model_and_data
-    from src.scraper import get_todays_races, get_all_payouts
-    from src.inference import run_real_prediction
-
 JST = pytz.timezone("Asia/Tokyo")
 
-_EMPTY_STATS = lambda: {
-    "honmei_races": 0, "honmei_tan_hits": 0, "honmei_tan_return": 0,
-    "honmei_fuku_hits": 0, "honmei_fuku_return": 0,
-    "umaren_races": 0, "umaren_invest": 0, "umaren_hits": 0, "umaren_return": 0,
-    # 超狙い馬: AI上位5頭(index<5) かつ EV>=1.5
-    "choko_invest": 0, "choko_tan_hits": 0, "choko_tan_return": 0,
-    "choko_fuku_hits": 0, "choko_fuku_return": 0,
-    # 穴馬: AI6位以下(index>=5) かつ EV>=1.5
-    "ana_invest": 0, "ana_tan_hits": 0, "ana_tan_return": 0,
-    "ana_fuku_hits": 0, "ana_fuku_return": 0,
-    "shiba_races": 0, "shiba_return": 0, "dart_races": 0, "dart_return": 0,
-}
+
+def get_last_weekend() -> tuple[str, str]:
+    """直近の土曜・日曜の日付文字列を返す（YYYYMMDD形式）"""
+    now = datetime.datetime.now(JST)
+    wd = now.weekday()  # 月=0 ... 土=5, 日=6
+    if wd == 6:          # 日曜
+        sat = now - datetime.timedelta(days=1); sun = now
+    elif wd == 5:        # 土曜
+        sat = now; sun = now + datetime.timedelta(days=1)
+    else:                # 平日
+        sun = now - datetime.timedelta(days=wd + 1)
+        sat = sun - datetime.timedelta(days=1)
+    return sat.strftime("%Y%m%d"), sun.strftime("%Y%m%d")
 
 
-def collect_day_stats(date_str8: str, date_hf: str, bundle) -> dict:
-    """1日分の統計を収集して返す"""
-    stats = _EMPTY_STATS()
-    races = get_todays_races(date_str8)
-    if not races:
-        return stats
-
-    logger.info(f"  {date_str8}: {len(races)} レース")
-    for r in races:
-        try:
-            res_df, _, _, _, _, track_type, _, _, _ = run_real_prediction(
-                r["id"], date_hf, bundle,
-                skip_live_scrape=True, ev_first=True,
-                ev_threshold=1.5, min_win_prob=0.18,
-            )
-        except Exception as e:
-            logger.warning(f"    推論失敗 {r['id']}: {e}")
-            continue
-        if res_df is None:
-            continue
-
-        try:
-            payouts = get_all_payouts(r["id"])
-        except Exception:
-            continue
-        if not payouts.get("tansho"):
-            continue
-
-        honmei = res_df.iloc[0]["馬番"]
-        stats["honmei_races"] += 1
-        if track_type == "芝":   stats["shiba_races"] += 1
-        elif track_type == "ダート": stats["dart_races"] += 1
-
-        if honmei in payouts["tansho"]:
-            stats["honmei_tan_hits"]   += 1
-            pay = payouts["tansho"][honmei]
-            stats["honmei_tan_return"] += pay
-            if track_type == "芝":   stats["shiba_return"] += pay
-            elif track_type == "ダート": stats["dart_return"] += pay
-        if honmei in payouts["fukusho"]:
-            stats["honmei_fuku_hits"]   += 1
-            stats["honmei_fuku_return"] += payouts["fukusho"][honmei]
-
-        if len(res_df) >= 5:
-            himo = res_df.iloc[1:5]["馬番"].tolist()
-            stats["umaren_races"]  += 1
-            stats["umaren_invest"] += len(himo) * 100
-            for h in himo:
-                key = tuple(sorted([honmei, h]))
-                if key in payouts.get("umaren", {}):
-                    stats["umaren_hits"]   += 1
-                    stats["umaren_return"] += payouts["umaren"][key]
-
-        # 超狙い馬: AI上位5頭(index<5) かつ EV>=1.5
-        for _, row in res_df[(res_df.index < 5) & (res_df["期待値"] >= 1.5)].iterrows():
-            uban = row["馬番"]
-            stats["choko_invest"] += 100
-            if uban in payouts["tansho"]:
-                stats["choko_tan_hits"]   += 1
-                stats["choko_tan_return"] += payouts["tansho"][uban]
-            if uban in payouts["fukusho"]:
-                stats["choko_fuku_hits"]   += 1
-                stats["choko_fuku_return"] += payouts["fukusho"][uban]
-
-        # 穴馬: AI6位以下(index>=5) かつ EV>=1.5
-        for _, row in res_df[(res_df.index >= 5) & (res_df["期待値"] >= 1.5)].iterrows():
-            uban = row["馬番"]
-            stats["ana_invest"] += 100
-            if uban in payouts["tansho"]:
-                stats["ana_tan_hits"]   += 1
-                stats["ana_tan_return"] += payouts["tansho"][uban]
-            if uban in payouts["fukusho"]:
-                stats["ana_fuku_hits"]   += 1
-                stats["ana_fuku_return"] += payouts["fukusho"][uban]
-
-    return stats
+def _f(row: dict, key: str) -> float:
+    try:
+        v = row.get(key, 0)
+        return float(v) if v not in (None, "") else 0.0
+    except (ValueError, TypeError):
+        return 0.0
 
 
-def merge_stats(a: dict, b: dict) -> dict:
-    return {k: a[k] + b[k] for k in a}
+def _isum(rows, key) -> int:
+    return int(sum(_f(r, key) for r in rows))
 
 
-def build_discord_message(stats: dict, sat_label: str, sun_label: str) -> str:
-    races = stats["honmei_races"]
-    if races == 0:
-        return f"📊 **keiba-ebye 週末まとめ** | {sat_label}・{sun_label}\nデータなし（レース結果未取得）"
+def _wavg(rows, rate_key, weight_key) -> float:
+    """回収率を重み付き平均（combined = Σ(rate×weight)/Σweight）。
+    rate% = 回収額/(weight×100)×100 = 回収額/weight なので、これがΣ回収額/Σ投資額と一致する。"""
+    num = sum(_f(r, rate_key) * _f(r, weight_key) for r in rows)
+    den = sum(_f(r, weight_key) for r in rows)
+    return round(num / den, 1) if den > 0 else 0.0
 
-    def _r(ret, inv): return round(ret / inv * 100, 1) if inv > 0 else 0.0
-    def _e(v): return "🔥" if v >= 150 else "✅" if v >= 100 else "🟡" if v >= 70 else "❌"
 
-    tan    = _r(stats["honmei_tan_return"],  races * 100)
-    fuku   = _r(stats["honmei_fuku_return"], races * 100)
-    uma    = _r(stats["umaren_return"],      max(stats["umaren_invest"], 1))
-    choko_t = _r(stats["choko_tan_return"], max(stats["choko_invest"], 1))
-    choko_f = _r(stats["choko_fuku_return"], max(stats["choko_invest"], 1))
-    ana_t  = _r(stats["ana_tan_return"],    max(stats["ana_invest"], 1))
-    ana_f  = _r(stats["ana_fuku_return"],   max(stats["ana_invest"], 1))
-    shiba  = _r(stats["shiba_return"],      max(stats["shiba_races"] * 100, 1))
-    dart   = _r(stats["dart_return"],       max(stats["dart_races"]  * 100, 1))
+def _load_daily_rows(sat_label: str, sun_label: str):
+    """ai_daily_history.csv から土・日の行を取得。戻り値: (rows, found_dict)"""
+    from huggingface_hub import hf_hub_download
+    import pandas as pd
+    path = hf_hub_download(HF_REPO_ID, "ai_daily_history.csv",
+                           repo_type="dataset", token=HF_TOKEN)
+    df = pd.read_csv(path, dtype=str)
+    rows, found = [], {}
+    for label in (sat_label, sun_label):
+        m = df[df["日付"] == label]
+        found[label] = not m.empty
+        if not m.empty:
+            rows.append(m.iloc[-1].to_dict())
+    return rows, found
 
-    tan_hi  = stats["honmei_tan_hits"]
-    fuku_hi = stats["honmei_fuku_hits"]
-    uma_hi  = stats["umaren_hits"]
+
+def build_message(rows, sat_label, sun_label, found) -> str:
+    if not rows:
+        return (f"📊 **keiba-ebye 週末まとめ** | {sat_label} & {sun_label}\n"
+                f"日次振り返りデータがありません（auto_review が未実行の可能性）。")
+
+    def _e(v):
+        return "🔥" if v >= 150 else "✅" if v >= 100 else "🟡" if v >= 70 else "❌"
+
+    races   = _isum(rows, "本命レース数")
+    tan     = _wavg(rows, "本命単勝回収率", "本命レース数")
+    fuku    = _wavg(rows, "本命複勝回収率", "本命レース数")
+    tan_hi  = _isum(rows, "本命単勝的中数")
+    fuku_hi = _isum(rows, "本命複勝的中数")
+
+    buy_r     = _isum(rows, "買いレース数")
+    miokuri_r = _isum(rows, "見送りレース数")
+    buy_tan   = _wavg(rows, "買い本命単勝回収率", "買いレース数")
+    buy_fuku  = _wavg(rows, "買い本命複勝回収率", "買いレース数")
+    buy_tan_hi  = _isum(rows, "買い本命単勝的中数")
+    buy_fuku_hi = _isum(rows, "買い本命複勝的中数")
+    kachi_r   = _isum(rows, "勝負レース数")
+    kachi_tan = _wavg(rows, "勝負本命単勝回収率", "勝負レース数")
+    kachi_fuku = _wavg(rows, "勝負本命複勝回収率", "勝負レース数")
+
+    uma      = _wavg(rows, "馬連回収率", "本命レース数")   # 馬連投資額は未保存のため本命R数で近似
+    uma_hi   = _isum(rows, "馬連的中数")
+    choko_n  = _isum(rows, "超狙い馬数")
+    choko_t  = _wavg(rows, "超狙い馬単勝回収率", "超狙い馬数")
+    choko_f  = _wavg(rows, "超狙い馬複勝回収率", "超狙い馬数")
+    choko_th = _isum(rows, "超狙い馬単勝的中数")
+    choko_fh = _isum(rows, "超狙い馬複勝的中数")
+    ana_n    = _isum(rows, "穴馬数")
+    ana_t    = _wavg(rows, "穴馬単勝回収率", "穴馬数")
+    ana_f    = _wavg(rows, "穴馬複勝回収率", "穴馬数")
+    ana_th   = _isum(rows, "穴馬単勝的中数")
+    ana_fh   = _isum(rows, "穴馬複勝的中数")
+    shiba_r  = _isum(rows, "芝レース数")
+    dart_r   = _isum(rows, "ダートレース数")
+    shiba    = _wavg(rows, "芝単勝回収率", "芝レース数")
+    dart     = _wavg(rows, "ダート単勝回収率", "ダートレース数")
+
+    missing = [lbl for lbl, ok in found.items() if not ok]
 
     lines = [
         f"📊 **keiba-ebye 週末まとめ** | {sat_label} & {sun_label}",
-        f"対象 **{races}レース**（土 {stats.get('_sat_races',0)}R + 日 {stats.get('_sun_races',0)}R）",
+        f"対象 **{races}レース**（日次振り返りの合算）",
+    ]
+    if missing:
+        lines.append(f"⚠️ {'・'.join(missing)} の日次データが無いため部分集計です")
+    lines += [
         "",
-        "**【本命(◎) 成績 2日合計】**",
+        "**【本命(◎) 成績・全レース 2日合計】**",
         "```",
         f"単勝  {_e(tan)} {tan:6.1f}%   的中 {tan_hi}/{races}R",
         f"複勝  {_e(fuku)} {fuku:6.1f}%   的中 {fuku_hi}/{races}R",
         f"馬連  {_e(uma)} {uma:6.1f}%   的中 {uma_hi}回",
         "```",
         "",
+        f"**【買うべきレース判定 2日合計】** 全{races}R → 🟢買い {buy_r}R / ⚠️見送り {miokuri_r}R",
+        "```",
+        f"買い◎単勝  {_e(buy_tan)} {buy_tan:6.1f}%   的中 {buy_tan_hi}/{buy_r}R",
+        f"買い◎複勝  {_e(buy_fuku)} {buy_fuku:6.1f}%   的中 {buy_fuku_hi}/{buy_r}R",
+        f"🔥勝負のみ  単{kachi_tan:.1f}% 複{kachi_fuku:.1f}%  ({kachi_r}R)",
+        "```",
+        "",
         "**【超狙い馬(AI上位5頭 EV1.5+) ベタ買い】**",
         "```",
-        f"単勝  {_e(choko_t)} {choko_t:6.1f}%   的中 {stats['choko_tan_hits']}/{int(stats['choko_invest']//100)}頭",
-        f"複勝  {_e(choko_f)} {choko_f:6.1f}%   的中 {stats['choko_fuku_hits']}/{int(stats['choko_invest']//100)}頭",
+        f"単勝  {_e(choko_t)} {choko_t:6.1f}%   的中 {choko_th}/{choko_n}頭",
+        f"複勝  {_e(choko_f)} {choko_f:6.1f}%   的中 {choko_fh}/{choko_n}頭",
         "```",
         "",
         "**【穴馬(AI6位以下 EV1.5+) ベタ買い】**",
         "```",
-        f"単勝  {_e(ana_t)} {ana_t:6.1f}%   的中 {stats['ana_tan_hits']}/{int(stats['ana_invest']//100)}頭",
-        f"複勝  {_e(ana_f)} {ana_f:6.1f}%   的中 {stats['ana_fuku_hits']}/{int(stats['ana_invest']//100)}頭",
+        f"単勝  {_e(ana_t)} {ana_t:6.1f}%   的中 {ana_th}/{ana_n}頭",
+        f"複勝  {_e(ana_f)} {ana_f:6.1f}%   的中 {ana_fh}/{ana_n}頭",
         "```",
         "",
         f"🌱 芝: {shiba:.1f}%  🏜️ ダート: {dart:.1f}%",
         "",
-        "-# keiba-ebye 週末まとめ / 結果は参考情報です",
+        "-# keiba-ebye 週末まとめ / 日次振り返りの合算・結果は参考情報です",
     ]
     return "\n".join(lines)
-
-
-def get_last_weekend() -> tuple[str, str]:
-    """直近の土曜・日曜の日付文字列を返す（YYYYMMDD形式）"""
-    now = datetime.datetime.now(JST)
-    wd  = now.weekday()  # 月=0 ... 土=5, 日=6
-    if wd == 6:          # 日曜
-        sat = now - datetime.timedelta(days=1)
-        sun = now
-    elif wd == 5:        # 土曜
-        sat = now
-        sun = now + datetime.timedelta(days=1)
-    else:                # 平日
-        days_to_last_sun = wd + 1
-        sun = now - datetime.timedelta(days=days_to_last_sun)
-        sat = sun - datetime.timedelta(days=1)
-    return sat.strftime("%Y%m%d"), sun.strftime("%Y%m%d")
 
 
 def run(sat_str: str = None, sun_str: str = None):
     if not sat_str or not sun_str:
         sat_str, sun_str = get_last_weekend()
+    sat_label = datetime.datetime.strptime(sat_str, "%Y%m%d").strftime("%Y/%m/%d")
+    sun_label = datetime.datetime.strptime(sun_str, "%Y%m%d").strftime("%Y/%m/%d")
 
-    sat_dt = datetime.datetime.strptime(sat_str, "%Y%m%d").replace(tzinfo=JST)
-    sun_dt = datetime.datetime.strptime(sun_str, "%Y%m%d").replace(tzinfo=JST)
-    sat_label = sat_dt.strftime("%Y/%m/%d")
-    sun_label = sun_dt.strftime("%Y/%m/%d")
+    logger.info(f"週末まとめ（日次CSV集計）: {sat_label}（土）& {sun_label}（日）")
+    try:
+        rows, found = _load_daily_rows(sat_label, sun_label)
+    except Exception as e:
+        logger.error(f"ai_daily_history.csv 読み込み失敗: {e}")
+        return
+    logger.info(f"取得: 土={found.get(sat_label)} 日={found.get(sun_label)}")
 
-    logger.info(f"週末まとめ: {sat_label}（土）& {sun_label}（日）")
-    logger.info("モデルロード中...")
-    bundle = prepare_model_and_data(force_retrain=False)
-    logger.info("モデルロード完了。集計中...")
-
-    logger.info(f"土曜 {sat_label} 集計中...")
-    sat_stats = collect_day_stats(sat_str, sat_dt.strftime("%Y-%m-%d"), bundle)
-    logger.info(f"日曜 {sun_label} 集計中...")
-    sun_stats = collect_day_stats(sun_str, sun_dt.strftime("%Y-%m-%d"), bundle)
-
-    combined = merge_stats(sat_stats, sun_stats)
-    combined["_sat_races"] = sat_stats["honmei_races"]
-    combined["_sun_races"] = sun_stats["honmei_races"]
-
-    msg = build_discord_message(combined, sat_label, sun_label)
-    logger.info(f"集計完了: 合計{combined['honmei_races']}レース")
+    msg = build_message(rows, sat_label, sun_label, found)
 
     review_url = DISCORD_REVIEW_WEBHOOK_URL
     if not review_url:
@@ -256,7 +209,7 @@ def run(sat_str: str = None, sun_str: str = None):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="土日まとめ振り返り → Discord")
+    parser = argparse.ArgumentParser(description="土日まとめ振り返り（日次CSV集計）→ Discord")
     parser.add_argument("--sat", type=str, default=None, help="土曜日 YYYYMMDD")
     parser.add_argument("--sun", type=str, default=None, help="日曜日 YYYYMMDD")
     args = parser.parse_args()

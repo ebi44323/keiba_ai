@@ -47,6 +47,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     jockey_venue_dict   = _extra[6] if len(_extra) > 6 else {}  # (騎手名,競馬場) → 平均着順パーセント
     score_norms         = _extra[7] if len(_extra) > 7 else None  # (norm_a,norm_b,norm_c) 各=(lo,hi) 絶対スコア正規化定数
     softmax_temperature = _extra[8] if len(_extra) > 8 else None  # 学習時と共有するsoftmax温度
+    place_calibrator    = _extra[9] if len(_extra) > 9 else None  # 複勝率キャリブレータ（AI勝率→複勝率）
     
     error_log = []
     odds_dict = {}      # 馬番(int) → オッズ(float)
@@ -655,9 +656,15 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         else:
             win_probs = softmax_probs
         df_test['勝率(AI予測)']   = win_probs
-        # 複勝率: Bradley-Terry式 3p/(2p+1) → 高勝率馬でも現実的な値になる
-        # 例: 勝率40%→複勝率67%, 10%→25%, 均等フィールド(1/18)→3/18
-        df_test['複勝率(AI予測)'] = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
+        # 複勝率(3着内): place_calibrator があれば学習済みIsotonicで算出（#5・データドリブン）。
+        # 無い旧bundleは従来のBradley-Terry式 3p/(2p+1) にフォールバック。
+        if place_calibrator is not None:
+            try:
+                df_test['複勝率(AI予測)'] = np.clip(place_calibrator.predict(win_probs), 0.0, 0.98)
+            except Exception:
+                df_test['複勝率(AI予測)'] = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
+        else:
+            df_test['複勝率(AI予測)'] = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
         df_test['期待値'] = df_test['勝率(AI予測)']*df_test['単勝オッズ']
         df_test['期待値'] = df_test['期待値'].clip(upper=50.0)  # 取消馬などの異常EV防止
         # 未出走馬の強制除外を撤廃（2026-07-25）:
@@ -733,10 +740,14 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                 if f"{row['馬番']}番" not in ana_horse_nums: ana_horse_nums.append(f"{row['馬番']}番")
         ana_str = "・".join(str(n) for n in ana_horse_nums[:3]) if ana_horse_nums else ""
 
-        # ── 勝負/回避レース判定（#5・2026-07-25）─────────────────────────
-        # 事前に「今回のレースが買いか見送りか」を一目で分かるラベルを付与。
-        #   🔥勝負: 本命が抜けて信頼できる  /  ⚠️回避: 混戦 or 未出走混在で精度担保できず
-        if p1 >= 0.25 and score_diff >= 0.10:
+        # ── 勝負/回避レース判定（#5・EV考慮に拡張 2026-07-25）──────────────
+        # 🔥勝負: (A) 本命が抜けている＝高勝率×勝率差  __または__
+        #         (B) 本命の期待値が大きい＝妙味大（勝率が高くなくてもオッズ妙味で勝負）
+        # ⚠️回避: 未出走混在 or 決め手のない低確率混戦（EVも小さい）
+        # 期待値 = 勝率×オッズ。EV優先で◎が入替わった後の◎の期待値を見る。
+        top_ev = float(df_test.loc[0, '期待値'])
+        EV_KACHI = 2.0   # ◎の期待値がこの値以上なら勝率が高くなくても🔥勝負扱い（調整可）
+        if (p1 >= 0.25 and score_diff >= 0.10) or (top_ev >= EV_KACHI):
             race_grade = "🔥 勝負レース"
         elif has_unraced or (score_diff <= 0.03 and p1 < 0.20):
             race_grade = "⚠️ 回避（様子見）レース"
@@ -755,6 +766,14 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             confidence_text = "⚖️ 【中穴狙いレース】 上位はまとまっていますが、展開次第で伏兵の台頭もあります。"
             reco = f"🎯 【馬連・ワイド】 ◎ {top1_umaban}番 から相手 ({himo_str}番) への流し。"
             if ana_str: reco += f"\n  💣 妙味狙い: {top1_umaban}番から穴馬({ana_str}番)へのワイドで高配当！"
+
+        # ── モデルD穴馬を複勝推奨に活用（#6・2026-07-25）──────────────────
+        # 穴馬マーク🎯（モデルD高スコア×オッズ8倍+）が付いた馬を複勝の妙味候補として明示。
+        if '穴馬マーク' in df_test.columns:
+            _dmark = df_test[df_test['穴馬マーク'] == '🎯']
+            if not _dmark.empty:
+                _d_nums = "・".join(str(n) for n in _dmark['馬番'].tolist()[:3])
+                reco += f"\n  🎯 モデルD妙味穴: {_d_nums}番 の複勝・ワイドに一考の価値。"
 
         # 未出走混在時: 強制見送りはせず注意書きを付記（#3・強制除外撤廃と整合）
         if has_unraced:

@@ -79,10 +79,17 @@ def _send_review_direct(stats: dict, rates: dict, date_label: str) -> bool:
         f"📊 **keiba-ebye 振り返りレポート** | {date_label}",
         f"対象 {races}レース",
         "",
-        "**【本命(◎) 成績】**",
+        "**【本命(◎) 成績・全レース】**",
         "```",
         f"単勝  {_emoji(tan_rate)} {tan_rate:6.1f}%   的中 {stats.get('honmei_tan_hits',0)}/{races}R",
         f"複勝  {_emoji(fuku_rate)} {fuku_rate:6.1f}%   的中 {stats.get('honmei_fuku_hits',0)}/{races}R",
+        "```",
+        "",
+        f"**【買うべきレース判定】** 全{races}R → 🟢買い {stats.get('buy_races',0)}R / ⚠️見送り {stats.get('miokuri_races',0)}R",
+        "```",
+        f"買い◎単勝  {_emoji(rates.get('buy_tan_rate',0))} {rates.get('buy_tan_rate',0):6.1f}%   的中 {stats.get('buy_tan_hits',0)}/{stats.get('buy_races',0)}R",
+        f"買い◎複勝  {_emoji(rates.get('buy_fuku_rate',0))} {rates.get('buy_fuku_rate',0):6.1f}%   的中 {stats.get('buy_fuku_hits',0)}/{stats.get('buy_races',0)}R",
+        f"🔥勝負のみ  単{rates.get('kachi_tan_rate',0):.1f}% 複{rates.get('kachi_fuku_rate',0):.1f}%  ({stats.get('kachi_races',0)}R)",
         "```",
         "",
         "**【超狙い馬(AI上位5頭 EV1.5+) ベタ買い】**",
@@ -145,6 +152,13 @@ def run(date_str: str = None):
         # 本命◎
         "honmei_races": 0, "honmei_tan_hits": 0, "honmei_tan_return": 0,
         "honmei_fuku_hits": 0, "honmei_fuku_return": 0,
+        # レース判定別（システムが買うべきと判断したレースに絞った成績）
+        #  買い = 回避以外（🔥勝負 + 🟡通常） / 見送り = ⚠️回避（未出走混在 or 拮抗）
+        "buy_races": 0, "buy_tan_hits": 0, "buy_tan_return": 0,
+        "buy_fuku_hits": 0, "buy_fuku_return": 0,
+        "kachi_races": 0, "kachi_tan_hits": 0, "kachi_tan_return": 0,   # 🔥勝負レースのみ
+        "kachi_fuku_hits": 0, "kachi_fuku_return": 0,
+        "miokuri_races": 0,   # ⚠️見送り(回避)数
         # 馬連
         "umaren_races": 0, "umaren_invest": 0, "umaren_hits": 0, "umaren_return": 0,
         # 超狙い馬: AI上位5頭(index<5) かつ EV>=1.5
@@ -171,7 +185,7 @@ def run(date_str: str = None):
 
     for r in races:
         try:
-            res_df, _, _, _, _, track_type, place, dist, err_log = run_real_prediction(
+            res_df, _, _, _, conf_text, track_type, place, dist, err_log = run_real_prediction(
                 r["id"], date_hf, bundle,
                 skip_live_scrape=True,  # 振り返りは高速モード（前走データは取得しない）
                 ev_first=True,
@@ -253,6 +267,22 @@ def run(date_str: str = None):
             stats["honmei_fuku_hits"] += 1
             stats["honmei_fuku_return"] += payouts["fukusho"][honmei]
 
+        # ── レース判定別（買うべき/見送り）本命成績 ─────────────────────────
+        # confidence_text 先頭のラベル(🔥勝負 / ⚠️回避 / 🟡通常)を単一の真実の源として利用
+        grade_line = (conf_text or "").split("\n")[0]
+        _tan_pay  = payouts["tansho"].get(honmei, 0)
+        _fuku_pay = payouts["fukusho"].get(honmei, 0)
+        if "勝負" in grade_line:
+            stats["kachi_races"] += 1
+            if honmei in payouts["tansho"]:  stats["kachi_tan_hits"] += 1;  stats["kachi_tan_return"] += _tan_pay
+            if honmei in payouts["fukusho"]: stats["kachi_fuku_hits"] += 1; stats["kachi_fuku_return"] += _fuku_pay
+        if "回避" in grade_line:
+            stats["miokuri_races"] += 1
+        else:  # 買い = 回避以外（勝負 + 通常）
+            stats["buy_races"] += 1
+            if honmei in payouts["tansho"]:  stats["buy_tan_hits"] += 1;  stats["buy_tan_return"] += _tan_pay
+            if honmei in payouts["fukusho"]: stats["buy_fuku_hits"] += 1; stats["buy_fuku_return"] += _fuku_pay
+
         # 馬連（◎ → 〇〜☆流し）
         if len(res_df) >= 5:
             himo_list = res_df.iloc[1:5]["馬番"].tolist()
@@ -333,6 +363,12 @@ def run(date_str: str = None):
     rates = {
         "tan_rate":        _rate(stats["honmei_tan_return"],  races_n * 100),
         "fuku_rate":       _rate(stats["honmei_fuku_return"], races_n * 100),
+        # 買い（回避以外）に絞った本命回収率
+        "buy_tan_rate":    _rate(stats["buy_tan_return"],  max(stats["buy_races"] * 100, 1)),
+        "buy_fuku_rate":   _rate(stats["buy_fuku_return"], max(stats["buy_races"] * 100, 1)),
+        # 🔥勝負レースのみ
+        "kachi_tan_rate":  _rate(stats["kachi_tan_return"],  max(stats["kachi_races"] * 100, 1)),
+        "kachi_fuku_rate": _rate(stats["kachi_fuku_return"], max(stats["kachi_races"] * 100, 1)),
         "choko_tan_rate":  _rate(stats["choko_tan_return"], max(stats["choko_invest"], 1)),
         "choko_fuku_rate": _rate(stats["choko_fuku_return"], max(stats["choko_invest"], 1)),
         "ana_tan_rate":    _rate(stats["ana_tan_return"],  max(stats["ana_invest"], 1)),
@@ -373,6 +409,18 @@ def run(date_str: str = None):
             "本命単勝回収率":     rates["tan_rate"],
             "本命複勝的中数":     stats["honmei_fuku_hits"],
             "本命複勝回収率":     rates["fuku_rate"],
+            # 買うべきレース判定（回避以外に絞った本命成績）
+            "買いレース数":       stats["buy_races"],
+            "見送りレース数":     stats["miokuri_races"],
+            "買い本命単勝的中数": stats["buy_tan_hits"],
+            "買い本命単勝回収率": rates["buy_tan_rate"],
+            "買い本命複勝的中数": stats["buy_fuku_hits"],
+            "買い本命複勝回収率": rates["buy_fuku_rate"],
+            "勝負レース数":       stats["kachi_races"],
+            "勝負本命単勝的中数": stats["kachi_tan_hits"],
+            "勝負本命単勝回収率": rates["kachi_tan_rate"],
+            "勝負本命複勝的中数": stats["kachi_fuku_hits"],
+            "勝負本命複勝回収率": rates["kachi_fuku_rate"],
             # 馬連
             "馬連的中数":         stats["umaren_hits"],
             "馬連回収率":         rates["uma_rate"],

@@ -374,12 +374,21 @@ def prepare_model_and_data(force_retrain=False):
     # テストセットのAI勝率(softmax後)と実勝率を対応させてキャリブレーション
     # 推論時: softmax→calibrator.predict→再正規化 の順で適用
     calibrator = None
+    place_calibrator = None
     try:
         from sklearn.isotonic import IsotonicRegression
         if 'win_true' in test_df.columns and len(test_df) > 50:
             calibrator = IsotonicRegression(out_of_bounds='clip')
             calibrator.fit(test_df['AI勝率'].values, test_df['win_true'].values)
             logger.info('Isotonic calibration 完了')
+        # ── 複勝率キャリブレーション（#5・2026-07-25）──────────────────────
+        # 旧: Bradley-Terry式 3p/(2p+1) の経験則。
+        # 新: AI勝率 → 実際の複勝(3着内)率 を Isotonic で学習（データドリブン）。
+        #     推論時に place_calibrator.predict(win_probs) で複勝率を算出する。
+        if 'place_true' in test_df.columns and len(test_df) > 50:
+            place_calibrator = IsotonicRegression(out_of_bounds='clip')
+            place_calibrator.fit(test_df['AI勝率'].values, test_df['place_true'].values)
+            logger.info('複勝率 Isotonic calibration 完了')
     except Exception as _e:
         logger.warning(f'Calibration失敗（スキップ）: {_e}')
 
@@ -486,11 +495,12 @@ def prepare_model_and_data(force_retrain=False):
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
               auc_win, auc_place, calibrator, model_d, ped_aptitude_dict,
               horse_heavy_dict, sire_heavy_dict, jockey_overall_dict, jockey_venue_dict,
-              score_norms, SOFTMAX_TEMPERATURE)
+              score_norms, SOFTMAX_TEMPERATURE, place_calibrator)
               # _extra[0]=calibrator, _extra[1]=model_d, _extra[2]=ped_aptitude_dict
               # _extra[3]=horse_heavy_dict, _extra[4]=sire_heavy_dict
               # _extra[5]=jockey_overall_dict, _extra[6]=jockey_venue_dict
-              # _extra[7]=score_norms(絶対スコア正規化定数), _extra[8]=SOFTMAX_TEMPERATURE（後方互換: *extraで受ける）
+              # _extra[7]=score_norms(絶対スコア正規化定数), _extra[8]=SOFTMAX_TEMPERATURE
+              # _extra[9]=place_calibrator(複勝率キャリブレータ)（後方互換: *extraで受ける）
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)

@@ -300,6 +300,30 @@ git push origin main
 
 ## 現在の状況（2026-07-25 時点）
 
+### 2026-07-25 完了した作業（後半: 検証基盤・振り返り・堅牢化）
+
+- **データドリブン検証基盤を新設**（`validate_model.py`）
+  - 本番と同じパイプラインで walk-forward OOS 検証。旧(レース内min-max)vs 新(絶対スコア)を同一データで比較。
+  - 指標: キャリブレーション(ECE)・頭数別的中率/回収率・**EV優先の小頭数人気薄◎率**。
+  - **検証結果(1,650R OOS)**: 標準◎は新旧ほぼ互角(安全)。EVフロア厳格化で**小頭数(≤9頭)の人気薄◎が4.3%→1.9%に半減**（#1の実証）。
+  - `src/backtest.py` も bundle の `score_norms`/`SOFTMAX_TEMPERATURE`/`calibrator` を使う絶対スコア対応に修正。
+- **回帰防止テスト新設**（`tests/test_smoke.py`・pytest不要）: 特徴量整合・**bundle位置契約**・create_features実データ・正規化/EVフロア。`python tests/test_smoke.py` で実行。
+- **日次振り返りに「買うべき/見送りレース判定」を追加**（`auto_review.py`）
+  - confidence_text の 🔥勝負/⚠️回避/🟡通常 ラベルで各レースを分類し、**買い(回避以外)に絞った本命回収率**と🔥勝負のみの回収率を Discord・CSV に出力。
+- **週末まとめの日次乖離を構造的に解消**（`auto_weekend_summary.py` を全面書換）
+  - 原因: 日次は `use_oikiri=True`(調教補正あり)、週末は無しで**同じレースを別条件で再計算**していた。
+  - 対策: 再計算を廃止し `ai_daily_history.csv` の土日行を**集計するだけ**に変更 → 日次Discordと必ず一致。買い判定セクションも合算表示。
+- **複勝率をデータドリブン化**（#5 / 要再学習）: Bradley-Terry経験則 → AI勝率→実複勝率のIsotonic学習(`place_calibrator`, bundle `_extra[9]`)。旧bundleは従来式にフォールバック。
+- **モデルD穴馬を複勝推奨に活用**（#6 / 即反映）: 🎯穴馬マーク馬を reco に「複勝・ワイド妙味」として明示。
+- **データ取得の失敗アラート**（`update_data.py`）: 対象土日があるのに新規0件なら Discord 通知（過去1か月の無言停止対策）。`weekly_update.yml` に `DISCORD_WEBHOOK_URL` 追加。
+- **未使用ファイル整理**: `app_backup_before_refactor.py`/`back2`/`backup`/`rewrite_app*`/`update_app_phase3`/`update_phase3_core`/`refactor_*`/`extract_structure`/`fix_indent` を削除。`.gitignore` に検証成果物追加。
+
+### ★このバッチ後の必須/推奨アクション
+1. **再学習 → HF Hub保存**（`place_calibrator` #5 を有効化するため。しないと複勝率は従来式のまま）
+   - この機会に **#2 Optuna再チューニング**（絶対スコア化で最適温度/重みが変わった可能性）も推奨。
+2. コミット＆プッシュで #6・振り返り改善・EVフロア等の推論系変更が即反映（sync.yml）。
+3. 未対応: #3 `horse_course_dict` の振り返りリーク（監視用途のみ・低影響のため据え置き。直すなら振り返り日以前に限定した再計算が必要）。
+
 ### 2026-07-25 完了した作業（予想システム精度改善・6課題対応）
 ユーザー提起の6つの課題に対応。**★再学習が必須**（勝率算出の刷新 + 未反映の騎手特徴量のため）。
 

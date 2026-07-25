@@ -435,6 +435,23 @@ def compute_features(df):
 
 
 # ================================================================
+# 失敗アラート（データ取得0件の「気づけない停止」対策・2026-07-25）
+# ================================================================
+def _alert_discord(message: str) -> None:
+    """データ取得0件など異常時に Discord へ通知する。Webhook未設定・失敗は無視。"""
+    url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    if not url:
+        print("⚠️ DISCORD_WEBHOOK_URL 未設定のためアラート送信スキップ")
+        return
+    try:
+        import requests
+        requests.post(url, json={"content": message[:1900],
+                                 "username": "keiba-ebye ⚠️データ取得"}, timeout=15)
+    except Exception as _e:
+        print(f"⚠️ アラート送信失敗: {_e}")
+
+
+# ================================================================
 # メイン処理
 # ================================================================
 def main():
@@ -554,7 +571,18 @@ def main():
 
     print(f"\n新規データ: {len(all_new_rows)}行")
     if not all_new_rows:
-        print("新しいデータはありませんでした。")
+        # 対象土日があったのに0件 = netkeibaブロック等でスクレイプが壊れている疑い → アラート
+        if target_dates:
+            _dates_str = "・".join(str(d) for d in target_dates[:6])
+            _alert_discord(
+                "🛑 **週次データ取得が0件でした**\n"
+                f"対象日: {len(target_dates)}日（{_dates_str}...）だったのに新規レースを取得できませんでした。\n"
+                "netkeibaのブロックやページ構造変更の可能性があります。"
+                "`python update_data.py --test` で確認してください。"
+            )
+            print("⚠️ 対象日があるのに0件。異常の可能性ありアラート送信。")
+        else:
+            print("新しいデータはありませんでした（対象日なし・正常）。")
         return
 
     df_new_raw = pd.DataFrame(all_new_rows)

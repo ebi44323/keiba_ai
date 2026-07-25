@@ -10,3 +10,7 @@ learning_data_perfect_tier.csv
 ped_cache.db
 keiba_model.pkl
 trained_assets.pkl
+# 検証・実行ログの生成物（コミット不要）
+validation_report.csv
+validation_run*.log
+*.log

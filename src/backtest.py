@@ -26,6 +26,10 @@ def run_longterm_ev_backtest(df, bundle, ev_threshold=1.0, min_win_prob=0.10,
     (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
      latest_horse_data, horse_course_dict, ped_dict,
      known_jockeys, known_trainers, te_dicts, global_mean, *_rest) = bundle
+    # _rest[4]=calibrator, [11]=score_norms, [12]=SOFTMAX_TEMPERATURE（無ければ旧挙動にフォールバック）
+    calibrator  = _rest[4]  if len(_rest) > 4  else None
+    score_norms = _rest[11] if len(_rest) > 11 else None
+    softmax_t   = _rest[12] if len(_rest) > 12 else None
 
     df = df.copy()
 
@@ -68,18 +72,35 @@ def run_longterm_ev_backtest(df, bundle, ev_threshold=1.0, min_win_prob=0.10,
         else:
             X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
 
-    def _norm(s):
-        mn, mx = s.min(), s.max()
-        return (s - mn) / (mx - mn + 1e-9)
+    score_a = np.asarray(model.predict(X), dtype=float)
+    score_b = np.asarray(model_win.predict(X), dtype=float)
+    score_c = 1.0 - np.asarray(model_reg.predict(X), dtype=float)
 
-    score_a = pd.Series(model.predict(X), index=df.index)
-    score_b = pd.Series(model_win.predict(X), index=df.index)
-    score_c = pd.Series(1.0 - model_reg.predict(X), index=df.index)
-    df['予測スコア'] = _norm(score_a) * 0.0581 + _norm(score_b) * 0.8159 + _norm(score_c) * 0.1261  # アンサンブル重み最適化 @ 2026-03-30
+    # ── 正規化: bundleに絶対スコア定数があれば本番と同じ絶対正規化、無ければ旧min-max ──
+    if score_norms is not None:
+        def _apply(s, lohi):
+            lo, hi = lohi
+            return np.clip((s - lo) / (hi - lo + 1e-9), 0.0, 1.0)
+        sa = _apply(score_a, score_norms[0])
+        sb = _apply(score_b, score_norms[1])
+        sc = _apply(score_c, score_norms[2])
+        temp = float(softmax_t) if softmax_t else 1.0
+    else:
+        def _norm(s):
+            return (s - s.min()) / (s.max() - s.min() + 1e-9)
+        sa, sb, sc = _norm(score_a), _norm(score_b), _norm(score_c)
+        temp = 1.5
+    df['予測スコア'] = sa * 0.0581 + sb * 0.8159 + sc * 0.1261  # アンサンブル重み最適化 @ 2026-03-30
 
     grp = df.groupby('レースID')
-    df['exp_s']  = np.exp(df['予測スコア'] - grp['予測スコア'].transform('max'))
+    df['exp_s']  = np.exp((df['予測スコア'] - grp['予測スコア'].transform('max')) / temp)
     df['AI勝率'] = df['exp_s'] / grp['exp_s'].transform('sum')
+    # Isotonic校正（本番と同じくsoftmax後に適用）
+    if calibrator is not None:
+        try:
+            df['AI勝率'] = np.clip(calibrator.predict(df['AI勝率'].values), 1e-6, 1.0)
+        except Exception:
+            pass
 
     # 推定オッズ (市場勝率の逆数; 0除算回避)
     if '市場勝率' in df.columns:
