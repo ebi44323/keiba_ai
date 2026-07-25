@@ -45,6 +45,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     sire_heavy_dict   = _extra[4] if len(_extra) > 4 else {}  # 父名  → 重/不良馬場 着順パーセント平均
     jockey_overall_dict = _extra[5] if len(_extra) > 5 else {}  # 騎手名 → 全期間平均着順パーセント
     jockey_venue_dict   = _extra[6] if len(_extra) > 6 else {}  # (騎手名,競馬場) → 平均着順パーセント
+    score_norms         = _extra[7] if len(_extra) > 7 else None  # (norm_a,norm_b,norm_c) 各=(lo,hi) 絶対スコア正規化定数
+    softmax_temperature = _extra[8] if len(_extra) > 8 else None  # 学習時と共有するsoftmax温度
     
     error_log = []
     odds_dict = {}      # 馬番(int) → オッズ(float)
@@ -573,15 +575,24 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         else: pace_text=f"🐎 【ミドルペース】 逃げ馬{nige_count}頭、先行馬{senko_count}頭。平均的なペースで実力が反映されやすい展開。"
 
         # アンサンブル: 3モデルの予測を結合
-        _sa = model.predict(df_test[features]).astype(float)
-        _sa = (_sa - _sa.min()) / (_sa.max() - _sa.min() + 1e-9)
+        # ── 絶対スコア正規化（2026-07-25）─────────────────────────────
+        # bundleにscore_norms(学習データ基準の1〜99%tile)があれば、それを固定基準に normalize。
+        # レース間で「馬の絶対的な強さ」が比較可能になり、小頭数での過大評価が解消される。
+        # 旧bundle(score_norms=None)の場合は従来のレース内min-maxにフォールバック（後方互換）。
+        def _norm_abs(s, lohi):
+            if lohi is None:
+                return (s - s.min()) / (s.max() - s.min() + 1e-9)  # フォールバック: レース内min-max
+            lo, hi = lohi
+            return np.clip((s - lo) / (hi - lo + 1e-9), 0.0, 1.0)
+
+        _na = score_norms[0] if score_norms else None
+        _nb = score_norms[1] if score_norms else None
+        _nc = score_norms[2] if score_norms else None
+
+        _sa = _norm_abs(model.predict(df_test[features]).astype(float), _na)
         try:
-            _sb = model_win.predict(df_test[features]).astype(float)
-            _sb = (_sb - _sb.min()) / (_sb.max() - _sb.min() + 1e-9)
-            
-            _sc = 1.0 - model_reg.predict(df_test[features]).astype(float)
-            _sc = (_sc - _sc.min()) / (_sc.max() - _sc.min() + 1e-9)
-            
+            _sb = _norm_abs(model_win.predict(df_test[features]).astype(float), _nb)
+            _sc = _norm_abs(1.0 - model_reg.predict(df_test[features]).astype(float), _nc)
             raw_scores = _sa * 0.0581 + _sb * 0.8159 + _sc * 0.1261  # アンサンブル重み最適化 @ 2026-03-30
         except Exception as _e:
             logger.warning(f'model_win/reg予測失敗、model_aのみ使用: {_e}')
@@ -619,10 +630,9 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                                .fillna(''))
 
         # Temperature Scaling + Isotonic Calibration
-        # TEMPERATURE > 1 で確率分布を平坦化（本命の過信を抑制）
-        # 実績: 本命平均AI=25% vs 実際勝者=14.5% → 1.72倍過信
-        # T=1.5 で圧縮後: 25% → 約15-16% に補正（2026-04-27 変更）
-        TEMPERATURE = 1.5
+        # 学習時と共有する温度をbundleから取得（絶対スコア化に伴いcalibrator主導へ）。
+        # 旧bundle(softmax_temperature=None)では従来値1.5でレース内min-maxと整合させる。
+        TEMPERATURE = float(softmax_temperature) if softmax_temperature else 1.5
         exp_scores    = np.exp((raw_scores - np.max(raw_scores)) / TEMPERATURE)
         softmax_probs = exp_scores / np.sum(exp_scores)
         if calibrator is not None:
@@ -650,12 +660,11 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['複勝率(AI予測)'] = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
         df_test['期待値'] = df_test['勝率(AI予測)']*df_test['単勝オッズ']
         df_test['期待値'] = df_test['期待値'].clip(upper=50.0)  # 取消馬などの異常EV防止
-        # 未出走馬（新馬フラグ==1）は必ず上位5頭の外へ（ソートキー先頭に新馬フラグ昇順を追加）
-        _unraced_col = df_test['新馬フラグ'].fillna(0).astype(int)
-        df_test = df_test.assign(_unraced_sort=_unraced_col)\
-                         .sort_values(['_unraced_sort', '勝率(AI予測)'], ascending=[True, False])\
-                         .drop(columns=['_unraced_sort'])\
-                         .reset_index(drop=True)
+        # 未出走馬の強制除外を撤廃（2026-07-25）:
+        # 旧: 新馬フラグ==1の馬を必ず上位5頭の外へソートしていた。
+        # 新: 純粋に勝率(AI予測)順でソートし、モデル評価(新馬フラグ/血統距離適性スコア)に委ねる。
+        #     未出走混在時は confidence_text に注意書きを付記するのみ（後述）。
+        df_test = df_test.sort_values('勝率(AI予測)', ascending=False).reset_index(drop=True)
         marks = ['◎','〇','▲','△','☆']+['']*(len(df_test)-5)
         df_test['印'] = marks[:len(df_test)]
 
@@ -680,13 +689,18 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             except Exception as _e:
                 logger.warning(f'モデルD推論失敗（スキップ）: {_e}')
 
-        # EV優先モード: EV>=閾値 かつ AI勝率>=min_win_prob の馬を◎に昇格
+        # EV優先モード: EV>=閾値 かつ AI勝率>=勝率フロア の馬を◎に昇格
         # 穴馬スコアが高い馬は複合EVスコア(EV × (1 + 穴馬スコア×0.5))で優先される
         if ev_first:
+            # EV昇格の勝率フロアを頭数連動で厳格化（2026-07-25・原因B対策）
+            # 小頭数レースはsoftmaxが弱い馬にも高勝率を配分するため、高オッズだけで◎昇格しやすかった。
+            # 基本フロア0.25、かつ 1/N の1.4倍を下限に → 5頭:0.28 / 8頭:0.25 / 18頭:0.25。
+            # 新馬フラグ==0 条件は撤廃（#3と整合）し、勝率フロアで弱い未出走馬を自然に排除する。
+            _n_runners = max(len(df_test), 1)
+            ev_win_floor = max(0.25, 1.4 / _n_runners, float(min_win_prob))
             ev_cands = df_test[
                 (df_test['期待値'] >= ev_threshold) &
-                (df_test['勝率(AI予測)'] >= min_win_prob) &
-                (df_test['新馬フラグ'].fillna(0) == 0)  # 未出走馬はEV優先◎昇格の対象外
+                (df_test['勝率(AI予測)'] >= ev_win_floor)
             ]
             if not ev_cands.empty:
                 ev_cands = ev_cands.copy()
@@ -714,15 +728,22 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         )
         ana_horse_nums = []; topics_list = []
         for rank, row in df_test.iterrows():
-            if not has_unraced and rank>=4 and row['期待値']>=1.5:
+            if rank>=4 and row['期待値']>=1.5:
                 topics_list.append(f"📌 {row['馬名']} (期待値特大の穴馬！)")
                 if f"{row['馬番']}番" not in ana_horse_nums: ana_horse_nums.append(f"{row['馬番']}番")
         ana_str = "・".join(str(n) for n in ana_horse_nums[:3]) if ana_horse_nums else ""
 
-        if has_unraced:
-            confidence_text = "🛑 【見送り推奨・未出走混在】 過去データのない馬が含まれており、AIの予測精度が担保できません。"
-            reco = f"⚠️ **購入見送り** (データ不足によるリスク大)\n※観戦に留めるか、どうしても買う場合は◎ {top1_umaban}番 の単複を少額で。"
-        elif p1>=0.25 and score_diff>=0.10:
+        # ── 勝負/回避レース判定（#5・2026-07-25）─────────────────────────
+        # 事前に「今回のレースが買いか見送りか」を一目で分かるラベルを付与。
+        #   🔥勝負: 本命が抜けて信頼できる  /  ⚠️回避: 混戦 or 未出走混在で精度担保できず
+        if p1 >= 0.25 and score_diff >= 0.10:
+            race_grade = "🔥 勝負レース"
+        elif has_unraced or (score_diff <= 0.03 and p1 < 0.20):
+            race_grade = "⚠️ 回避（様子見）レース"
+        else:
+            race_grade = "🟡 通常レース"
+
+        if p1>=0.25 and score_diff>=0.10:
             confidence_text = f"💎 【鉄板レース】 ◎が抜けた存在({p1*100:.1f}%)！ 軸は不動です。"
             reco = f"🎯 【本命・単勝勝負】 ◎ {top1_umaban}番 の単勝。\n  🔗 馬単・3連単: {top1_umaban}着固定 → 相手: {himo_str}"
             if ana_str: reco += f"\n  💣 余裕があれば穴馬({ana_str}番)へのヒモ流しも推奨。"
@@ -734,6 +755,13 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             confidence_text = "⚖️ 【中穴狙いレース】 上位はまとまっていますが、展開次第で伏兵の台頭もあります。"
             reco = f"🎯 【馬連・ワイド】 ◎ {top1_umaban}番 から相手 ({himo_str}番) への流し。"
             if ana_str: reco += f"\n  💣 妙味狙い: {top1_umaban}番から穴馬({ana_str}番)へのワイドで高配当！"
+
+        # 未出走混在時: 強制見送りはせず注意書きを付記（#3・強制除外撤廃と整合）
+        if has_unraced:
+            confidence_text += "\n⚠️ 未出走馬が含まれます。過去データが無いため該当馬の評価は不確実です（印はモデル評価に基づきます）。"
+
+        # 勝負/回避ラベルを先頭に付与（#5）
+        confidence_text = f"{race_grade}\n{confidence_text}"
 
         # =====================================================
         # SHAP値による本命馬の推し理由テキスト生成

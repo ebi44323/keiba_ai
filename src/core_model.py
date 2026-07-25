@@ -320,16 +320,37 @@ def prepare_model_and_data(force_retrain=False):
     score_b = model_win.predict(test_df[features])
     score_c = 1.0 - model_reg.predict(test_df[features])  # 低い方が上位なので反転
 
-    def _norm_scores(s):
-        mn, mx = s.min(), s.max()
-        return (s - mn) / (mx - mn + 1e-9)
-    _sa_norm = _norm_scores(score_a)
-    _sb_norm = _norm_scores(score_b)
-    _sc_norm = _norm_scores(score_c)
+    # ── 絶対スコア正規化（レース内min-max廃止 @ 2026-07-25）──────────────────
+    # 旧: レース内 or test全体の min-max → 「馬の絶対能力」が消え、常に相対順位だけが残った。
+    #     さらに学習(全体min-max・T=1)と推論(レース内min-max・T=1.5)が不整合でcalibratorが誤適用。
+    # 新: 学習データ全体のスコア分布(1〜99%tile)を固定基準に normalize し、その定数を bundle に保存。
+    #     推論時も同一定数を再利用 → レース間で比較可能な「絶対的な強さ」になり、
+    #     小頭数レースでの弱い馬の過大評価が解消される。softmax温度も学習・推論で共有。
+    _sa_tr = model.predict(train_df[features])
+    _sb_tr = model_win.predict(train_df[features])
+    _sc_tr = 1.0 - model_reg.predict(train_df[features])
+
+    def _fit_norm(s):
+        lo, hi = np.percentile(s, 1), np.percentile(s, 99)
+        return (float(lo), float(hi))
+
+    def _apply_norm(s, lohi):
+        lo, hi = lohi
+        return np.clip((s - lo) / (hi - lo + 1e-9), 0.0, 1.0)
+
+    norm_a = _fit_norm(_sa_tr)
+    norm_b = _fit_norm(_sb_tr)
+    norm_c = _fit_norm(_sc_tr)
+    score_norms = (norm_a, norm_b, norm_c)     # bundleに保存し推論時に再利用
+    SOFTMAX_TEMPERATURE = 1.0                   # 学習・推論で共有（絶対スコア化に伴いcalibrator主導へ）
+
+    _sa_norm = _apply_norm(score_a, norm_a)
+    _sb_norm = _apply_norm(score_b, norm_b)
+    _sc_norm = _apply_norm(score_c, norm_c)
 
     # 複勝0.058, 1着0.816, 着順回帰0.126（アンサンブル重み最適化 @ 2026-03-30）
     test_df['予測スコア'] = _sa_norm * 0.0581 + _sb_norm * 0.8159 + _sc_norm * 0.1261
-    test_df['exp_score'] = np.exp(test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max'))
+    test_df['exp_score'] = np.exp((test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max')) / SOFTMAX_TEMPERATURE)
     test_df['AI勝率'] = test_df['exp_score']/test_df.groupby('レースID')['exp_score'].transform('sum')
     top_preds = test_df.sort_values(['レースID','AI勝率'],ascending=[True,False]).groupby('レースID').head(1)
     win_hits  = top_preds[pd.to_numeric(top_preds['着順'],errors='coerce')==1]
@@ -464,10 +485,12 @@ def prepare_model_and_data(force_retrain=False):
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
               auc_win, auc_place, calibrator, model_d, ped_aptitude_dict,
-              horse_heavy_dict, sire_heavy_dict, jockey_overall_dict, jockey_venue_dict)
+              horse_heavy_dict, sire_heavy_dict, jockey_overall_dict, jockey_venue_dict,
+              score_norms, SOFTMAX_TEMPERATURE)
               # _extra[0]=calibrator, _extra[1]=model_d, _extra[2]=ped_aptitude_dict
               # _extra[3]=horse_heavy_dict, _extra[4]=sire_heavy_dict
-              # _extra[5]=jockey_overall_dict, _extra[6]=jockey_venue_dict（後方互換: *extraで受ける）
+              # _extra[5]=jockey_overall_dict, _extra[6]=jockey_venue_dict
+              # _extra[7]=score_norms(絶対スコア正規化定数), _extra[8]=SOFTMAX_TEMPERATURE（後方互換: *extraで受ける）
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)
