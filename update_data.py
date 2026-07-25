@@ -445,10 +445,18 @@ def main():
 
     weeks_back = 1
     fetch_all  = False
+    from_date  = None   # --from YYYYMMDD で指定
     if len(sys.argv) > 1:
         if sys.argv[1] == '--all':
             fetch_all = True
-            print("🔍 全未取得日付モード")
+            print("🔍 全未取得日付モード（ギャップ検出）")
+        elif sys.argv[1] == '--from' and len(sys.argv) > 2:
+            try:
+                from_date = datetime.datetime.strptime(sys.argv[2], '%Y%m%d').date()
+                print(f"🔍 指定日付モード: {from_date} 以降")
+            except ValueError:
+                print(f"⚠️ --from の日付形式が不正です: {sys.argv[2]} (YYYYMMDD で指定)")
+                sys.exit(1)
         else:
             try: weeks_back = int(sys.argv[1])
             except: pass
@@ -488,10 +496,30 @@ def main():
 
     # 取得対象日付の決定
     today = datetime.date.today()
-    if fetch_all and df_existing is not None:
-        last_dt = pd.to_datetime(df_existing['日付'], errors='coerce').max()
-        start_d = (last_dt + pd.Timedelta(days=1)).date()
-        target_dates = [d.date() for d in pd.date_range(start=start_d, end=today) if d.weekday() in (5,6)]
+    if from_date is not None:
+        # --from YYYYMMDD モード: 指定日以降の全土日（既存IDはスクレイプ時にスキップ）
+        target_dates = [
+            d.date() for d in pd.date_range(start=from_date, end=today)
+            if d.weekday() in (5, 6)
+        ]
+    elif fetch_all and df_existing is not None:
+        # ギャップ検出モード: 既存データの最古日から今日まで、土日で未収録の日付を全部対象にする
+        existing_dates = set(
+            pd.to_datetime(df_existing['日付'], errors='coerce').dt.date.dropna().unique()
+        )
+        data_start = min(existing_dates)
+        all_weekends = [
+            d.date() for d in pd.date_range(start=data_start, end=today)
+            if d.weekday() in (5, 6)
+        ]
+        target_dates = [d for d in all_weekends if d not in existing_dates]
+        if not target_dates:
+            # ギャップなし → 最新日以降を探す（新規データ取得）
+            last_dt = pd.to_datetime(df_existing['日付'], errors='coerce').max()
+            start_d = (last_dt + pd.Timedelta(days=1)).date()
+            target_dates = [d.date() for d in pd.date_range(start=start_d, end=today) if d.weekday() in (5,6)]
+        else:
+            print(f"⚠️  {len(target_dates)} 日分のギャップを検出: {[str(d) for d in target_dates]}")
     else:
         target_dates = []
         for w in range(weeks_back):

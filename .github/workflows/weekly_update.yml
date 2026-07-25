@@ -11,9 +11,13 @@ on:
         required: false
         default: '1'
       fetch_all:
-        description: '全未取得データ取得する場合は true'
+        description: 'ギャップ検出・全未取得データ取得する場合は true'
         required: false
         default: 'false'
+      from_date:
+        description: '指定日以降を全取得 (YYYYMMDD形式, 例: 20260523)'
+        required: false
+        default: ''
 
 jobs:
   update:
@@ -39,7 +43,10 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          if [ "${{ github.event.inputs.fetch_all }}" = "true" ]; then
+          FROM_DATE="${{ github.event.inputs.from_date }}"
+          if [ -n "$FROM_DATE" ]; then
+            python update_data.py --from "$FROM_DATE"
+          elif [ "${{ github.event.inputs.fetch_all }}" = "true" ]; then
             python update_data.py --all
           else
             WEEKS="${{ github.event.inputs.weeks_back }}"
@@ -51,7 +58,8 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          # pull を先に実行して、他のコミットとの競合を防ぐ
+          git pull --rebase origin main
           git add learning_data_perfect_tier.zip pedigree_master_all.csv || true
           git diff --staged --quiet || git commit -m "データ更新 $(date '+%Y-%m-%d')"
-          git pull --rebase origin main
           git push
