@@ -48,7 +48,7 @@ jobs:
             pytz==2026.1 \
             huggingface_hub==1.7.2 \
             joblib==1.5.3 \
-            streamlit==1.56.0
+            streamlit==1.60.0
 
       - name: 自動振り返り実行
         env:
