@@ -289,17 +289,19 @@ def prepare_model_and_data(force_retrain=False):
     # ── モデルB: 1着予測Ranker（アンサンブル用）──────────────────
     train_df['win_label'] = (train_df['着順'] == 1).astype(int) if '着順' in train_df.columns else train_df['馬券内']
     test_df['win_label']  = (test_df['着順']  == 1).astype(int) if '着順' in test_df.columns  else test_df['馬券内']
-    # ── モデルBパラメータ: Optunaチューニング済み（3fold ウォークフォワードCV）──
-    # CVスコア: 0.6949 (AUC×0.7 + 正規化回収率×0.3, 市場勝率除外, 50試行) @ 2026-04-03
+    # ── モデルBパラメータ: Optunaチューニング済み（3fold ウォークフォワードCV・150試行）──
+    # @2026-07-25 更新。CVスコア0.6685だが、旧値(0.6949@04-03)は別データ期間の採点で比較不能。
+    # compare_modelB.py の同一fold直接対決(1,104R OOS)で旧685/15を上回ることを確認:
+    #   モデルB AUC 0.7608→0.7629 / 単勝回収率 68.2%→71.8%（的中率は同値）。
     model_win = lgb.LGBMRanker(
-        n_estimators=685,
-        learning_rate=0.029074,
-        num_leaves=15,
-        max_bin=228,
-        cat_smooth=39.9527,
-        colsample_bytree=0.8848,
-        subsample=0.7033,
-        min_child_samples=70,
+        n_estimators=344,
+        learning_rate=0.025325,
+        num_leaves=37,
+        max_bin=217,
+        cat_smooth=46.1425,
+        colsample_bytree=0.8668,
+        subsample=0.7016,
+        min_child_samples=73,
         random_state=123,
         importance_type='gain',
     )
