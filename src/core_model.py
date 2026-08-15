@@ -386,7 +386,9 @@ def prepare_model_and_data(force_retrain=False):
         # ── 複勝率キャリブレーション（#5・2026-07-25）──────────────────────
         # 旧: Bradley-Terry式 3p/(2p+1) の経験則。
         # 新: AI勝率 → 実際の複勝(3着内)率 を Isotonic で学習（データドリブン）。
-        #     推論時に place_calibrator.predict(win_probs) で複勝率を算出する。
+        # ⚠️ ここで fit する x は test_df['AI勝率']（＝レース内 raw softmax）。
+        #     推論(inference.py)でも同じ raw softmax(softmax_probs) を predict に渡すこと。
+        #     win_probs(winキャリブレータ後)を渡すとドメイン不一致で複勝率が破綻する（2026-08-16）。
         if 'place_true' in test_df.columns and len(test_df) > 50:
             place_calibrator = IsotonicRegression(out_of_bounds='clip')
             place_calibrator.fit(test_df['AI勝率'].values, test_df['place_true'].values)

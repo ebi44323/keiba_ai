@@ -658,13 +658,22 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['勝率(AI予測)']   = win_probs
         # 複勝率(3着内): place_calibrator があれば学習済みIsotonicで算出（#5・データドリブン）。
         # 無い旧bundleは従来のBradley-Terry式 3p/(2p+1) にフォールバック。
+        #
+        # ⚠️ 入力は softmax_probs（=学習時 place_calibrator.fit の 'AI勝率' と同じ
+        #    レース内 raw softmax）を渡すこと。win_probs（winキャリブレータ通過後・
+        #    再正規化済み）は分布形状が別物で、渡すと複勝率0%(＜勝率)や98%飽和など
+        #    step関数が破綻する（従来バグの原因・2026-08-16修正）。
+        #    winキャリブレータ側(上のcalibrator.predict)は正しくsoftmax_probsを渡している。
         if place_calibrator is not None:
             try:
-                df_test['複勝率(AI予測)'] = np.clip(place_calibrator.predict(win_probs), 0.0, 0.98)
+                place_probs = np.clip(place_calibrator.predict(softmax_probs), 0.0, 0.95)
             except Exception:
-                df_test['複勝率(AI予測)'] = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
+                place_probs = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
         else:
-            df_test['複勝率(AI予測)'] = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
+            place_probs = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
+        # 物理制約: 複勝率 >= 勝率（勝てば必ず3着以内）。キャリブレータの step 関数由来の
+        # 破綻（複勝率 < 勝率）を防ぐ安全網。
+        df_test['複勝率(AI予測)'] = np.clip(np.maximum(place_probs, win_probs), 0.0, 0.98)
         df_test['期待値'] = df_test['勝率(AI予測)']*df_test['単勝オッズ']
         df_test['期待値'] = df_test['期待値'].clip(upper=50.0)  # 取消馬などの異常EV防止
         # 未出走馬の強制除外を撤廃（2026-07-25）:
