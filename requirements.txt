@@ -1,4 +1,6 @@
-streamlit==1.60.0
+# streamlit は HF Space が README の sdk_version で自動注入する（現在 1.61.1）。
+# ここで固定すると `pip install ... streamlit==1.61.1` と衝突し ResolutionImpossible でビルド失敗するため指定しない。
+# ローカルで動かす場合は別途 `pip install streamlit` すること。
 pandas==2.3.3
 numpy==2.4.2
 lightgbm==4.6.0
