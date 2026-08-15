@@ -218,7 +218,8 @@ def prepare_model_and_data(force_retrain=False):
     df_latest = df.groupby('馬ID').tail(1).copy()
     rn = {'着順':'最新_着順','スピード指数':'最新_スピード指数','人気':'最新_人気','上り':'最新_上り',
           '距離':'最新_距離','斤量':'最新_斤量','馬体重_num':'最新_馬体重','日付':'最新_日付','通過':'最新_通過',
-          '騎手':'最新_騎手','芝/ダート':'最新_芝ダート','着順パーセント':'最新_着順パーセント'}
+          '騎手':'最新_騎手','芝/ダート':'最新_芝ダート','着順パーセント':'最新_着順パーセント',
+          '出走頭数':'最新_出走頭数'}  # 前走頭数（通過順の正規化用・2026-08-16）
     for src,dst in [('前走失速フラグ','最新_失速フラグ'),('失速フラグ','最新_失速フラグ'),
                     ('前走上り偏差','最新_上り偏差'),('前走距離補正タイム差','最新_距離補正タイム差'),
                     ('直近3走着順パーセント','最新_直近3走着順パーセント'),('馬体重増減','最新_馬体重増減')]:
@@ -231,7 +232,7 @@ def prepare_model_and_data(force_retrain=False):
           '前走_着順','2走前_着順','3走前_着順','過去3走平均着順',
           '前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数',
           '過去3走平均スピード指数','近5走_中央値スピード指数','近5走_最高スピード指数','上昇度_スピード指数',
-          '前走_通過','2走前_通過','前走_最終コーナー','2走前_最終コーナー',
+          '前走_通過','2走前_通過','前走_最終コーナー','2走前_最終コーナー','最新_出走頭数',
           'キャリア数','前走_上り順位率',
           '前走_レースクラスコード']  # レース格上挑戦フラグ計算用
     ck = [c for c in ck if c in df_latest.columns]
@@ -352,7 +353,12 @@ def prepare_model_and_data(force_retrain=False):
 
     # 複勝0.058, 1着0.816, 着順回帰0.126（アンサンブル重み最適化 @ 2026-03-30）
     test_df['予測スコア'] = _sa_norm * 0.0581 + _sb_norm * 0.8159 + _sc_norm * 0.1261
-    test_df['exp_score'] = np.exp((test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max')) / SOFTMAX_TEMPERATURE)
+    # 頭数連動の温度スケーリング（機能②・2026-08-16）: 小頭数ほど温度を下げ softmax を尖らせる。
+    # 学習(ここ)と推論(inference)で同一関数を使い、キャリブレータの整合を保つ。
+    from src.config import field_softmax_temperature
+    _grp_n = test_df.groupby('レースID')['予測スコア'].transform('size')
+    _teff  = _grp_n.map(lambda n: field_softmax_temperature(SOFTMAX_TEMPERATURE, n))
+    test_df['exp_score'] = np.exp((test_df['予測スコア']-test_df.groupby('レースID')['予測スコア'].transform('max')) / _teff)
     test_df['AI勝率'] = test_df['exp_score']/test_df.groupby('レースID')['exp_score'].transform('sum')
     top_preds = test_df.sort_values(['レースID','AI勝率'],ascending=[True,False]).groupby('レースID').head(1)
     win_hits  = top_preds[pd.to_numeric(top_preds['着順'],errors='coerce')==1]
@@ -493,18 +499,60 @@ def prepare_model_and_data(force_retrain=False):
     except Exception as _e:
         logger.warning(f'騎手成績辞書構築失敗: {_e}')
 
+    # 枠×コース適性辞書（inference用・コース依存の枠有利不利をリアルタイム推論で再現）
+    # exact: (競馬場, 芝ダ, 距離, 枠番) / bucket: (競馬場, 芝ダ, 距離帯, 枠番) フォールバック
+    draw_course_dict = {}
+    draw_course_bucket_dict = {}
+    try:
+        _dfw = df.copy()
+        _dfw['_wk']   = pd.to_numeric(_dfw['枠番'], errors='coerce')
+        _dfw['_dist'] = pd.to_numeric(_dfw['距離'], errors='coerce')
+        _dfw = _dfw.dropna(subset=['_wk', '_dist', '着順パーセント'])
+        _dfw['_db'] = pd.cut(_dfw['_dist'], [0, 1400, 1800, 2200, 10000],
+                             labels=['sprint', 'mile', 'intermediate', 'long']).astype(object).fillna('unknown')
+        for (v, td, dist, wk), grp in _dfw.groupby(['競馬場', '芝/ダート', '_dist', '_wk'], observed=True):
+            if len(grp) >= 5:
+                draw_course_dict[(v, td, int(dist), int(wk))] = round(float(grp['着順パーセント'].mean()), 4)
+        for (v, td, db, wk), grp in _dfw.groupby(['競馬場', '芝/ダート', '_db', '_wk'], observed=True):
+            if len(grp) >= 8:
+                draw_course_bucket_dict[(v, td, db, int(wk))] = round(float(grp['着順パーセント'].mean()), 4)
+        logger.info(f'枠×コース辞書: exact={len(draw_course_dict)}, bucket={len(draw_course_bucket_dict)}')
+    except Exception as _e:
+        logger.warning(f'枠×コース辞書構築失敗: {_e}')
+
+    # 脚質×コース 前後有利辞書（inference用・トラックバイアスを脚質に反映）
+    # key: (競馬場, 芝ダ, 距離帯, 前走脚質バケット) → 着順パーセント平均。学習の 脚質_コース_着順パーセント と同一定義。
+    style_course_dict = {}
+    try:
+        _dfs = df.copy()
+        _dfs['_dist'] = pd.to_numeric(_dfs['距離'], errors='coerce')
+        _dfs = _dfs.dropna(subset=['_dist', '着順パーセント', '前走_前半コーナー率'])
+        _dfs['_db'] = pd.cut(_dfs['_dist'], [0, 1400, 1800, 2200, 10000],
+                             labels=['sprint', 'mile', 'intermediate', 'long']).astype(object).fillna('unknown')
+        _dfs['_sb'] = pd.cut(_dfs['前走_前半コーナー率'], [-0.01, 0.3, 0.6, 1.01],
+                             labels=['先行', '中団', '後方']).astype(object).fillna('中団')
+        for (v, td, db, sb), grp in _dfs.groupby(['競馬場', '芝/ダート', '_db', '_sb'], observed=True):
+            if len(grp) >= 10:
+                style_course_dict[(v, td, db, sb)] = round(float(grp['着順パーセント'].mean()), 4)
+        logger.info(f'脚質×コース辞書: {len(style_course_dict)} entries')
+    except Exception as _e:
+        logger.warning(f'脚質×コース辞書構築失敗: {_e}')
+
     best_weight = 0.8159  # 後方互換性用（bundle位置保持のため残存・inference.pyでは未使用、実重みはcore_model.py L331/inference.py L461参照）
     bundle = (model, model_win, model_reg, features, cat_features, num_features, cat_categories_dict,
               latest_horse_data, horse_course_dict, ped_dict,
               known_jockeys, known_trainers, te_dicts, global_mean, recent_return_rate, best_weight,
               auc_win, auc_place, calibrator, model_d, ped_aptitude_dict,
               horse_heavy_dict, sire_heavy_dict, jockey_overall_dict, jockey_venue_dict,
-              score_norms, SOFTMAX_TEMPERATURE, place_calibrator)
+              score_norms, SOFTMAX_TEMPERATURE, place_calibrator,
+              draw_course_dict, draw_course_bucket_dict, style_course_dict)
               # _extra[0]=calibrator, _extra[1]=model_d, _extra[2]=ped_aptitude_dict
               # _extra[3]=horse_heavy_dict, _extra[4]=sire_heavy_dict
               # _extra[5]=jockey_overall_dict, _extra[6]=jockey_venue_dict
               # _extra[7]=score_norms(絶対スコア正規化定数), _extra[8]=SOFTMAX_TEMPERATURE
-              # _extra[9]=place_calibrator(複勝率キャリブレータ)（後方互換: *extraで受ける）
+              # _extra[9]=place_calibrator, _extra[10]=draw_course_dict, _extra[11]=draw_course_bucket_dict
+              # _extra[12]=style_course_dict（脚質×コース前後有利）
+              # （後方互換: inference/backtest は *extra/*rest で受けるため旧bundleでも動作）
 
     # ── HF Hubにアップロード ──────────────────────────────────
     _save_model_to_hub(bundle)

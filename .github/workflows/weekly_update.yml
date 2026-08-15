@@ -59,8 +59,12 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
-          # pull を先に実行して、他のコミットとの競合を防ぐ
-          git pull --rebase origin main
+          # update_data.py が zip/pedigree を書き換えて作業ツリーが汚れているため、
+          # 先にコミットしてツリーをクリーンにしてから rebase pull する。
+          # （旧: 汚れたツリーで git pull --rebase → "cannot pull with rebase: unstaged changes" で失敗し
+          #   originが分岐した7/25以降、毎週データ取得しても push できず捨てていた。2026-08-16修正）
           git add learning_data_perfect_tier.zip pedigree_master_all.csv || true
           git diff --staged --quiet || git commit -m "データ更新 $(date '+%Y-%m-%d')"
+          # 念のため --autostash も付け、追跡外の想定外変更が残っても rebase を止めないようにする
+          git pull --rebase --autostash origin main
           git push

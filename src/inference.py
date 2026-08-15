@@ -48,7 +48,10 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
     score_norms         = _extra[7] if len(_extra) > 7 else None  # (norm_a,norm_b,norm_c) 各=(lo,hi) 絶対スコア正規化定数
     softmax_temperature = _extra[8] if len(_extra) > 8 else None  # 学習時と共有するsoftmax温度
     place_calibrator    = _extra[9] if len(_extra) > 9 else None  # 複勝率キャリブレータ（AI勝率→複勝率）
-    
+    draw_course_dict        = _extra[10] if len(_extra) > 10 else {}  # (競馬場,芝ダ,距離,枠) → 着順パーセント平均
+    draw_course_bucket_dict = _extra[11] if len(_extra) > 11 else {}  # (競馬場,芝ダ,距離帯,枠) → 着順パーセント平均
+    style_course_dict       = _extra[12] if len(_extra) > 12 else {}  # (競馬場,芝ダ,距離帯,脚質) → 着順パーセント平均
+
     error_log = []
     odds_dict = {}      # 馬番(int) → オッズ(float)
     name_odds_dict = {} # 馬名(str) → オッズ(float)  ★try外で初期化（API失敗時も参照可能）
@@ -217,10 +220,12 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                         om = re.search(r'\d{1,4}\.\d+', td.text)
                         if om: odds_val = float(om.group(0)); break
 
+            # オッズが1〜4のどれからも取れなかった → プレースホルダ10.0（鮮度判定用フラグを立てる）
+            _odds_fetched = odds_val > 0.0
             if odds_val == 0.0: odds_val = 10.0
 
             sex_age = tds[sex_age_idx].text.strip() if sex_age_idx!=-1 and len(tds)>sex_age_idx else "牡3"
-            horses.append({'枠番':waku,'馬番':umaban,'馬名':horse_name,'馬ID':horse_id,'性齢':sex_age,'斤量':kinryo,'騎手':jockey_name,'調教師':trainer_name,'距離':distance,'競馬場':place,'芝/ダート':track_type,'馬場':todays_baba,'天候':todays_tenki,'馬体重_num':weight_val,'単勝オッズ':odds_val})
+            horses.append({'枠番':waku,'馬番':umaban,'馬名':horse_name,'馬ID':horse_id,'性齢':sex_age,'斤量':kinryo,'騎手':jockey_name,'調教師':trainer_name,'距離':distance,'競馬場':place,'芝/ダート':track_type,'馬場':todays_baba,'天候':todays_tenki,'馬体重_num':weight_val,'単勝オッズ':odds_val,'オッズ取得':_odds_fetched})
         except Exception as _e:
             logger.warning(f'出走馬パース失敗 race_id={race_id}: {_e}')
 
@@ -291,6 +296,19 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['同レース逃げ馬頭数'] = df_test['前走逃げフラグ'].sum()
         df_test['同レース先行馬頭数'] = df_test['前走先行フラグ'].sum()
 
+        # ── 通過順シグナル（2026-08-16）: 前走テン位置・道中変化 ──────────────
+        def _parse_first_c(x):
+            s = str(x); p = s.split('-')[0] if '-' in s else s
+            return float(p) if p.isdigit() else np.nan
+        df_test['前走_最初コーナー'] = pd.to_numeric(
+            df_test['前走_通過'].fillna('').astype(str).apply(_parse_first_c), errors='coerce')
+        # 前走頭数: 最新_出走頭数（無い旧bundleは現レース頭数で代用）
+        _prev_n_inf = pd.to_numeric(_safe_col(df_test, '最新_出走頭数', np.nan), errors='coerce')
+        _prev_n_inf = _prev_n_inf.fillna(pd.to_numeric(df_test['出走頭数'], errors='coerce')).replace(0, np.nan)
+        df_test['前走_前半コーナー率'] = (df_test['前走_最初コーナー'] / _prev_n_inf).clip(0, 1).fillna(0.5)
+        df_test['前走_道中変化'] = (
+            (df_test['前走_最初コーナー'] - df_test['前走_最終コーナー']) / _prev_n_inf).fillna(0.0)
+
         # ── 展開×脚質 交互作用特徴量（features_engine.py と同一ロジック）────
         df_test['逃げ_単独優位スコア'] = (
             df_test['前走逃げフラグ'].fillna(0) * np.maximum(0.0, 3.0 - df_test['同レース逃げ馬頭数'])
@@ -320,6 +338,49 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             for k in _jv_keys
         ]
 
+        # 枠×コース適性（コース依存の枠有利不利・2026-08-16）: exact→bucket→0.5 の順で参照
+        def _dbucket_one(d):
+            try:
+                d = float(d)
+                if d < 1400: return 'sprint'
+                elif d < 1800: return 'mile'
+                elif d < 2200: return 'intermediate'
+                else: return 'long'
+            except Exception:
+                return 'unknown'
+        _wk_arr   = pd.to_numeric(df_test['枠番'], errors='coerce')
+        _dist_arr = pd.to_numeric(df_test['距離'], errors='coerce')
+        _draw_vals = []
+        for _v, _td, _di, _wk in zip(df_test['競馬場'], df_test['芝/ダート'], _dist_arr, _wk_arr):
+            if pd.isna(_di) or pd.isna(_wk):
+                _draw_vals.append(0.5); continue
+            _k_exact  = (_v, _td, int(_di), int(_wk))
+            _k_bucket = (_v, _td, _dbucket_one(_di), int(_wk))
+            _draw_vals.append(
+                draw_course_dict.get(_k_exact,
+                    draw_course_bucket_dict.get(_k_bucket, 0.5)))
+        df_test['枠_コース_着順パーセント'] = _draw_vals
+
+        # 脚質×コース 前後有利（2026-08-16）: (競馬場,芝ダ,距離帯,前走脚質) を lookup
+        def _style_bucket(rate):
+            try:
+                r = float(rate)
+            except Exception:
+                return '中団'
+            return '先行' if r <= 0.3 else ('中団' if r <= 0.6 else '後方')
+        _sc_vals = []
+        for _v, _td, _di, _rate in zip(df_test['競馬場'], df_test['芝/ダート'],
+                                       _dist_arr, df_test['前走_前半コーナー率']):
+            _k = (_v, _td, _dbucket_one(_di), _style_bucket(_rate))
+            _sc_vals.append(style_course_dict.get(_k, 0.5))
+        df_test['脚質_コース_着順パーセント'] = _sc_vals
+
+        # 馬場悪化×脚質 前有利補正（2026-08-16・学習と同一のrow-wise式）
+        _baba_bad_inf = df_test['馬場'].map({'良': 0.0, '稍重': 1.0, '重': 2.0, '不良': 3.0}).fillna(0.0)
+        _is_dirt_inf = (df_test['芝/ダート'] == 'ダート').astype(float)
+        _senko_deg_inf = (0.5 - pd.to_numeric(df_test['前走_前半コーナー率'], errors='coerce')).clip(-0.5, 0.5)
+        df_test['馬場悪化_先行補正'] = (_senko_deg_inf * _baba_bad_inf * (1.0 + _is_dirt_inf)).fillna(0.0)
+
         df_test['位置取りショック'] = df_test['前走_最終コーナー'] - pd.to_numeric(_safe_col(df_test, '2走前_最終コーナー'), errors='coerce')
 
         race_date_obj = pd.to_datetime(race_date_str)
@@ -334,7 +395,10 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                          '前走_着順','2走前_着順','3走前_着順',
                          '前走_スピード指数','2走前_スピード指数','3走前_スピード指数',
                          '4走前_スピード指数','5走前_スピード指数',
-                         '前走_最終コーナー','2走前_最終コーナー','最新_斤量']
+                         '前走_最終コーナー','2走前_最終コーナー','最新_斤量',
+                         # 通過順シグナル（前走由来・2026-08-16）は振り返り時にマスク。
+                         # 枠_コース_着順パーセントは 枠番×コース の静的属性なので未来非依存＝マスク不要。
+                         '前走_最初コーナー','前走_前半コーナー率','前走_道中変化','脚質_コース_着順パーセント']
             for col in leak_cols:
                 if col in df_test.columns:
                     df_test.loc[future_mask, col] = np.nan
@@ -633,7 +697,13 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         # Temperature Scaling + Isotonic Calibration
         # 学習時と共有する温度をbundleから取得（絶対スコア化に伴いcalibrator主導へ）。
         # 旧bundle(softmax_temperature=None)では従来値1.5でレース内min-maxと整合させる。
-        TEMPERATURE = float(softmax_temperature) if softmax_temperature else 1.5
+        # 新bundleは頭数連動温度（機能②）を学習と同一関数で適用し小頭数の勝率膨張を抑制。
+        _base_T = float(softmax_temperature) if softmax_temperature else 1.5
+        if softmax_temperature:
+            from src.config import field_softmax_temperature
+            TEMPERATURE = field_softmax_temperature(_base_T, len(raw_scores))
+        else:
+            TEMPERATURE = _base_T  # 旧bundleは従来挙動を厳守
         exp_scores    = np.exp((raw_scores - np.max(raw_scores)) / TEMPERATURE)
         softmax_probs = exp_scores / np.sum(exp_scores)
         if calibrator is not None:
@@ -676,6 +746,14 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         df_test['複勝率(AI予測)'] = np.clip(np.maximum(place_probs, win_probs), 0.0, 0.98)
         df_test['期待値'] = df_test['勝率(AI予測)']*df_test['単勝オッズ']
         df_test['期待値'] = df_test['期待値'].clip(upper=50.0)  # 取消馬などの異常EV防止
+
+        # ── 複勝EV（機能2・2026-08-16）──────────────────────────────────
+        # netkeiba は複勝オッズを常時公開しないため、単勝オッズから経験的に推定する。
+        # JRA複勝(上位3着払戻)は概ね「1 + (単勝-1)×0.2」前後に収まる（人気馬ほど圧縮）。
+        # 下限1.1で確定配当割れを回避。あくまで妙味の目安（実配当は変動レンジあり）。
+        _est_fuku_odds = np.clip(1.0 + (df_test['単勝オッズ'].astype(float) - 1.0) * 0.20, 1.1, None)
+        df_test['推定複勝オッズ'] = _est_fuku_odds
+        df_test['複勝期待値'] = (df_test['複勝率(AI予測)'] * _est_fuku_odds).clip(upper=20.0)
         # 未出走馬の強制除外を撤廃（2026-07-25）:
         # 旧: 新馬フラグ==1の馬を必ず上位5頭の外へソートしていた。
         # 新: 純粋に勝率(AI予測)順でソートし、モデル評価(新馬フラグ/血統距離適性スコア)に委ねる。
@@ -705,22 +783,42 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             except Exception as _e:
                 logger.warning(f'モデルD推論失敗（スキップ）: {_e}')
 
+        # ── オッズ鮮度チェック（機能4・2026-08-16）───────────────────────
+        # 朝の早い時間や取得失敗時はオッズがプレースホルダ(10.0)ばかりになり、
+        # EV=勝率×オッズ が無意味になって誤った◎入替が起きる。取得できた割合が低い
+        # ときは EV優先の◎入替を保留し、純AI評価で提示する（confidence_textに明記）。
+        if 'オッズ取得' in df_test.columns:
+            _odds_ok_frac = float(pd.Series(df_test['オッズ取得']).fillna(False).mean())
+        else:
+            _odds_ok_frac = 1.0
+        odds_stale = _odds_ok_frac < 0.6  # 6割未満しか実オッズが取れていない
+
         # EV優先モード: EV>=閾値 かつ AI勝率>=勝率フロア の馬を◎に昇格
         # 穴馬スコアが高い馬は複合EVスコア(EV × (1 + 穴馬スコア×0.5))で優先される
-        if ev_first:
+        if ev_first and not odds_stale:
             # EV昇格の勝率フロアを頭数連動で厳格化（2026-07-25・原因B対策）
             # 小頭数レースはsoftmaxが弱い馬にも高勝率を配分するため、高オッズだけで◎昇格しやすかった。
             # 基本フロア0.25、かつ 1/N の1.4倍を下限に → 5頭:0.28 / 8頭:0.25 / 18頭:0.25。
             # 新馬フラグ==0 条件は撤廃（#3と整合）し、勝率フロアで弱い未出走馬を自然に排除する。
             _n_runners = max(len(df_test), 1)
             ev_win_floor = max(0.25, 1.4 / _n_runners, float(min_win_prob))
+            # オッズを取得できた馬のみをEV昇格の対象にする（プレースホルダ馬の誤昇格防止）。
+            _ev_ok = df_test['オッズ取得'].fillna(True) if 'オッズ取得' in df_test.columns else True
+            # ── 高オッズEV抑制（機能1・2026-08-16）──────────────────────────
+            # favorite-longshot bias（実データ: 単勝ROIは〜1.5倍85.7%だが80倍超56.7%）。
+            # 高オッズ馬はEV=勝率×オッズが構造的に膨らみ、本命過信と重なると◎誤昇格が危険。
+            # ◎昇格の判定でのみオッズに上限(EV_ODDS_CAP)を課す（表示の期待値は実値のまま）。
+            EV_ODDS_CAP = 40.0
+            _promo_odds = pd.to_numeric(df_test['単勝オッズ'], errors='coerce').clip(upper=EV_ODDS_CAP)
+            df_test['_promo_ev'] = df_test['勝率(AI予測)'] * _promo_odds
             ev_cands = df_test[
-                (df_test['期待値'] >= ev_threshold) &
-                (df_test['勝率(AI予測)'] >= ev_win_floor)
+                (df_test['_promo_ev'] >= ev_threshold) &
+                (df_test['勝率(AI予測)'] >= ev_win_floor) &
+                (_ev_ok)
             ]
             if not ev_cands.empty:
                 ev_cands = ev_cands.copy()
-                ev_cands['_ev_composite'] = ev_cands['期待値'] * (1.0 + ev_cands['穴馬スコア'] * 0.5)
+                ev_cands['_ev_composite'] = ev_cands['_promo_ev'] * (1.0 + ev_cands['穴馬スコア'] * 0.5)
                 best_ev_idx = ev_cands['_ev_composite'].idxmax()
                 if best_ev_idx != 0:  # 元の◎と異なる場合のみ入れ替え
                     old_ev_mark = df_test.loc[best_ev_idx, '印']
@@ -787,6 +885,10 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         # 未出走混在時: 強制見送りはせず注意書きを付記（#3・強制除外撤廃と整合）
         if has_unraced:
             confidence_text += "\n⚠️ 未出走馬が含まれます。過去データが無いため該当馬の評価は不確実です（印はモデル評価に基づきます）。"
+
+        # オッズ未取得時（朝の早い時間等）: EV優先の◎入替を保留した旨を明記（機能4）
+        if odds_stale:
+            confidence_text += "\n⏳ オッズ未確定（取得率低）のためEV判定を保留し、純AI評価で表示しています。直前に再確認推奨。"
 
         # 勝負/回避ラベルを先頭に付与（#5）
         confidence_text = f"{race_grade}\n{confidence_text}"

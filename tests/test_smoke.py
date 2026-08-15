@@ -44,6 +44,7 @@ def test_bundle_field_contract():
         'best_weight', 'auc_win', 'auc_place', 'calibrator', 'model_d', 'ped_aptitude_dict',
         'horse_heavy_dict', 'sire_heavy_dict', 'jockey_overall_dict', 'jockey_venue_dict',
         'score_norms', 'SOFTMAX_TEMPERATURE', 'place_calibrator',
+        'draw_course_dict', 'draw_course_bucket_dict', 'style_course_dict',
     ]
     # inference.py: 18個を固定展開 → *_extra
     extra = order[18:]
@@ -52,6 +53,9 @@ def test_bundle_field_contract():
     assert extra[7] == 'score_norms', 'inference の _extra[7] が score_norms からズレた'
     assert extra[8] == 'SOFTMAX_TEMPERATURE', 'inference の _extra[8] がズレた'
     assert extra[9] == 'place_calibrator', 'inference の _extra[9] が place_calibrator からズレた'
+    assert extra[10] == 'draw_course_dict', 'inference の _extra[10] が draw_course_dict からズレた'
+    assert extra[11] == 'draw_course_bucket_dict', 'inference の _extra[11] がズレた'
+    assert extra[12] == 'style_course_dict', 'inference の _extra[12] が style_course_dict からズレた'
     # backtest.py: 14個を固定展開 → *_rest
     rest = order[14:]
     assert rest[4] == 'calibrator'
@@ -94,6 +98,34 @@ def test_absolute_norm_and_ev_floor():
     assert abs(floor(5) - 0.28) < 1e-9
     assert floor(8) == 0.25 and floor(18) == 0.25
     assert floor(5) > floor(8), '小頭数の方がフロアが高いはず'
+
+
+def test_place_prob_invariants():
+    """複勝率の物理制約（機能3・2026-08-16 回帰防止）:
+       複勝率 >= 勝率（勝てば必ず3着内）かつ <= 0.98。
+       place_calibrator が step 関数で破綻値（0.0 や 0.999）を返しても安全網が守ること。
+       inference.py の複勝率算出ロジックと同一式で検証する。"""
+    class _PathologicalCalib:
+        # わざと破綻させる: 小入力→0.0（複勝率<勝率を誘発）, 大入力→0.999（>0.98を誘発）
+        def predict(self, x):
+            x = np.asarray(x, dtype=float)
+            return np.where(x < 0.1, 0.0, 0.999)
+
+    win_probs     = np.array([0.03, 0.05, 0.20, 0.35, 0.60])
+    softmax_probs = np.array([0.02, 0.04, 0.18, 0.40, 0.70])
+
+    # inference.py と同一: place_calibrator は softmax_probs（学習ドメイン）を入力にする
+    cal = _PathologicalCalib()
+    place_probs = np.clip(cal.predict(softmax_probs), 0.0, 0.95)
+    result = np.clip(np.maximum(place_probs, win_probs), 0.0, 0.98)
+    assert np.all(result >= win_probs - 1e-9), '複勝率が勝率を下回った（物理制約違反）'
+    assert np.all(result <= 0.98 + 1e-9), '複勝率が上限0.98を超えた'
+
+    # フォールバック(Bradley-Terry)も同じ不変条件を満たすこと
+    bt = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
+    bt_res = np.clip(np.maximum(bt, win_probs), 0.0, 0.98)
+    assert np.all(bt_res >= win_probs - 1e-9), 'BTフォールバックが物理制約違反'
+    assert np.all(bt_res <= 0.98 + 1e-9)
 
 
 def _run_all():

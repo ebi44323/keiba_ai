@@ -142,6 +142,7 @@ def generate_pdf_report(results_list, ev_threshold=1.5, all_memos: dict = None):
                   <td>{float(row.get('勝率(AI予測)',0))*100:.1f}%</td>
                   <td>{float(row.get('複勝率(AI予測)',0))*100:.1f}%</td>
                   <td style="{ev_color}">{ev_val:.2f}</td>
+                  <td>{float(row.get('複勝期待値',0) or 0):.2f}</td>
                 </tr>"""
                 if rank < 5 and ev_val >= ev_threshold:
                     ev_summary.append({'レース': f"{r['place']}{r['num']}R", '印': row.get('印',''), '馬名': name, 'EV': ev_val})
@@ -172,7 +173,7 @@ def generate_pdf_report(results_list, ev_threshold=1.5, all_memos: dict = None):
               <p class="pace">📐 展開: {r.get('pace','')}</p>
               {_build_topics_html(r.get('topics', []))}
               <table>
-                <thead><tr><th>印</th>{ana_th}<th>馬番</th><th>馬名</th><th>脚質</th><th>オッズ</th><th>勝率</th><th>複勝率</th><th>EV</th></tr></thead>
+                <thead><tr><th>印</th>{ana_th}<th>馬番</th><th>馬名</th><th>脚質</th><th>オッズ</th><th>勝率</th><th>複勝率</th><th>EV</th><th>複勝EV</th></tr></thead>
                 <tbody>{rows_html}</tbody>
               </table>
               {_build_ana_detail_html(df)}
@@ -275,11 +276,11 @@ def generate_txt_report(results_list, ev_threshold=1.5, all_memos: dict = None):
         # 予想表（固定幅テキスト）
         has_ana = '穴馬マーク' in r["df"].columns
         if has_ana:
-            out.append(f"{'印':<3} {'穴':<2} {'馬番':>3} {'馬名':<12} {'脚質':<5} {'オッズ':>7} {'勝率':>6} {'複勝率':>7} {'EV':>5}")
-            out.append("-" * 60)
+            out.append(f"{'印':<3} {'穴':<2} {'馬番':>3} {'馬名':<12} {'脚質':<5} {'オッズ':>7} {'勝率':>6} {'複勝率':>7} {'EV':>5} {'複EV':>5}")
+            out.append("-" * 67)
         else:
-            out.append(f"{'印':<3} {'馬番':>3} {'馬名':<12} {'脚質':<5} {'オッズ':>7} {'勝率':>6} {'複勝率':>7} {'EV':>5}")
-            out.append("-" * 56)
+            out.append(f"{'印':<3} {'馬番':>3} {'馬名':<12} {'脚質':<5} {'オッズ':>7} {'勝率':>6} {'複勝率':>7} {'EV':>5} {'複EV':>5}")
+            out.append("-" * 63)
         for rank, row in r["df"].iterrows():
             try:
                 imp  = str(row["印"] or "").ljust(2)
@@ -290,13 +291,15 @@ def generate_txt_report(results_list, ev_threshold=1.5, all_memos: dict = None):
                 wp   = row["勝率(AI予測)"] * 100
                 fp   = row["複勝率(AI予測)"] * 100
                 ev   = float(row.get("期待値", 0) or 0)
+                fev  = float(row.get("複勝期待値", 0) or 0)
                 ev_str = f"{ev:4.2f}"
+                fev_str = f"{fev:4.2f}"
                 mark = " ★" if ev >= ev_threshold else ""
                 if has_ana:
                     ana = str(row.get("穴馬マーク", "") or "")
-                    out.append(f"{imp:<3} {ana:<2} {num_:>3} {name:<12} {stle:<5} {odds:>6.1f}倍 {wp:>5.1f}% {fp:>6.1f}% {ev_str}{mark}")
+                    out.append(f"{imp:<3} {ana:<2} {num_:>3} {name:<12} {stle:<5} {odds:>6.1f}倍 {wp:>5.1f}% {fp:>6.1f}% {ev_str} {fev_str}{mark}")
                 else:
-                    out.append(f"{imp:<3} {num_:>3} {name:<12} {stle:<5} {odds:>6.1f}倍 {wp:>5.1f}% {fp:>6.1f}% {ev_str}{mark}")
+                    out.append(f"{imp:<3} {num_:>3} {name:<12} {stle:<5} {odds:>6.1f}倍 {wp:>5.1f}% {fp:>6.1f}% {ev_str} {fev_str}{mark}")
                 if rank < 5 and ev >= ev_threshold:
                     ev_summary.append({"レース": f"{place}{num}R", "印": row["印"],
                                        "馬番": num_, "馬名": row["馬名"],

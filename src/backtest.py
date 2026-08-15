@@ -93,7 +93,14 @@ def run_longterm_ev_backtest(df, bundle, ev_threshold=1.0, min_win_prob=0.10,
     df['予測スコア'] = sa * 0.0581 + sb * 0.8159 + sc * 0.1261  # アンサンブル重み最適化 @ 2026-03-30
 
     grp = df.groupby('レースID')
-    df['exp_s']  = np.exp((df['予測スコア'] - grp['予測スコア'].transform('max')) / temp)
+    # 頭数連動温度（機能②）: 新bundle(score_norms有)のときのみ本番と同一適用
+    if score_norms is not None:
+        from src.config import field_softmax_temperature
+        _gn = grp['予測スコア'].transform('size')
+        _te = _gn.map(lambda n: field_softmax_temperature(temp, n))
+    else:
+        _te = temp
+    df['exp_s']  = np.exp((df['予測スコア'] - grp['予測スコア'].transform('max')) / _te)
     df['AI勝率'] = df['exp_s'] / grp['exp_s'].transform('sum')
     # Isotonic校正（本番と同じくsoftmax後に適用）
     if calibrator is not None:

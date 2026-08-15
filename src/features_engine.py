@@ -40,6 +40,13 @@ NUM_FEATURES = [
     # ── 騎手能力特徴量（2026-05-22追加）──
     '騎手_通算着順パーセント',     # 騎手の全期間 expanding mean 着順パーセント（リーク防止）
     '騎手_競馬場_着順パーセント',  # 騎手×競馬場 expanding mean 着順パーセント（3件未満は通算でフォールバック）
+    # ── 枠×コース適性（2026-08-16追加）──
+    '枠_コース_着順パーセント',    # 競馬場×芝ダ×距離×枠番 の歴史的着順パーセント（コース依存の枠有利不利・リーク防止）
+    # ── 通過順シグナル＋脚質×コース前後有利（2026-08-16追加）──
+    '前走_前半コーナー率',         # 前走テン位置/前走頭数（0=先頭〜1=後方）。先行力の指標
+    '前走_道中変化',               # (前走テン位置−最終位置)/前走頭数（正=道中で押し上げ/捲り）
+    '脚質_コース_着順パーセント',  # 競馬場×芝ダ×距離帯×前走脚質 別の歴史的着順パーセント（トラックバイアス×脚質）
+    '馬場悪化_先行補正',           # 先行度×馬場悪化度×ダート: 渋った馬場（特にダート）で先行馬を持ち上げる
 ]
 # ※ 調教評価スコアはモデル特徴量に含めない（歴史データに存在しないためポストモデル補正で適用）
 
@@ -219,6 +226,29 @@ def create_features(df, te_dicts=None):
         df['騎手_通算着順パーセント']   = 0.5
         df['騎手_競馬場_着順パーセント'] = 0.5
 
+    # ── 枠×コース適性（コース依存の枠有利不利を捕捉・リーク防止）──────────────
+    # df はこの時点で日付順ソート済み（sort_values('日付') 後・馬ID再ソート前）。
+    # 例: 新潟芝1000は外枠(8枠)勝率12%/内枠(1枠)2% と枠で大差。だが単一の枠番特徴では
+    #     全コース平均(ほぼフラット)しか学習できない。コース×距離×枠 の歴史的着順パーセントを
+    #     1つの数値特徴に集約し、コースごとに枠の有利不利（符号）を表現できるようにする。
+    if all(c in df.columns for c in ['競馬場','芝/ダート','距離','枠番']) and '着順パーセント' in df.columns:
+        _wk = pd.to_numeric(df['枠番'], errors='coerce')
+        _dist_num = pd.to_numeric(df['距離'], errors='coerce')
+        _dbucket = pd.cut(_dist_num, [0,1400,1800,2200,10000],
+                          labels=['sprint','mile','intermediate','long']).astype(object).fillna('unknown')
+        df['_wk_tmp'] = _wk
+        df['_db_tmp'] = _dbucket
+        # 正確キー: 競馬場×芝ダ×距離(実測)×枠 の expanding mean（min_periods=5）
+        _draw_exact = df.groupby(['競馬場','芝/ダート','距離','_wk_tmp'])['着順パーセント'].transform(
+            lambda x: x.shift(1).expanding(min_periods=5).mean())
+        # フォールバック: 距離帯でまとめた 競馬場×芝ダ×距離帯×枠
+        _draw_bucket = df.groupby(['競馬場','芝/ダート','_db_tmp','_wk_tmp'])['着順パーセント'].transform(
+            lambda x: x.shift(1).expanding(min_periods=5).mean())
+        df['枠_コース_着順パーセント'] = _draw_exact.fillna(_draw_bucket).fillna(0.5)
+        df = df.drop(columns=['_wk_tmp','_db_tmp'])
+    else:
+        df['枠_コース_着順パーセント'] = 0.5
+
     df = df.sort_values(['馬ID','日付']).reset_index(drop=True)
 
     # ── 馬の重馬場適性（馬ID×日付順で expanding mean、leakフリー）────────
@@ -295,6 +325,21 @@ def create_features(df, te_dicts=None):
     df['前走_最終コーナー']  = pd.to_numeric(df['前走_通過'].fillna('').astype(str).apply(parse_corner), errors='coerce')
     df['2走前_最終コーナー'] = pd.to_numeric(df['2走前_通過'].fillna('').astype(str).apply(parse_corner), errors='coerce')
     df['脚質カテゴリ'] = df['前走_最終コーナー'].apply(classify_style)
+
+    # ── 通過順の未活用シグナル（2026-08-16・検証で強い予測力を確認）──────────
+    # parse_first_corner: 通過列の最初の数字＝テン（1コーナー）位置
+    def parse_first_corner(x):
+        s = str(x); p = s.split('-')[0] if '-' in s else s
+        return float(p) if p.isdigit() else np.nan
+    df['前走_最初コーナー'] = pd.to_numeric(
+        df['前走_通過'].fillna('').astype(str).apply(parse_first_corner), errors='coerce')
+    _prev_n = pd.to_numeric(df.groupby('馬ID')['出走頭数'].shift(1), errors='coerce').replace(0, np.nan)
+    # 前走_前半コーナー率: 前走テン位置/前走頭数（0=先頭〜1=最後方）。先行力の指標。
+    #   検証: 最前(≤15%)勝率10.5% vs 後方(60%↑)4.8%（相関+0.12）
+    df['前走_前半コーナー率'] = (df['前走_最初コーナー'] / _prev_n).clip(0, 1).fillna(0.5)
+    # 前走_道中変化: (テン位置−最終位置)/頭数（正=道中で押し上げ/捲り, 負=後退）。
+    #   検証: 大押上げ組勝率9.0% vs 大後退4.0%。脚質で層別しても効く増分シグナル（相関-0.12）
+    df['前走_道中変化'] = ((df['前走_最初コーナー'] - df['前走_最終コーナー']) / _prev_n).fillna(0.0)
     df['前走逃げフラグ']  = (df['前走_最終コーナー']<=2).astype(int)
     df['前走先行フラグ']  = ((df['前走_最終コーナー']>2)&(df['前走_最終コーナー']<=5)).astype(int)
     df['同レース逃げ馬頭数'] = df.groupby('レースID')['前走逃げフラグ'].transform('sum')
@@ -324,6 +369,35 @@ def create_features(df, te_dicts=None):
 
     df['コース適性_着順パーセント'] = df.groupby(['馬ID','競馬場','芝/ダート'])['着順パーセント'].transform(lambda x: x.shift(1).expanding(min_periods=3).mean()).fillna(0.5)
     df['位置取りショック'] = df['前走_最終コーナー']-df['2走前_最終コーナー']
+
+    # ── 脚質×コース 前後有利（2026-08-16・トラックバイアスを脚質に反映）──────────
+    # 検証: 前有利度は函館ダ15.2〜東京芝6.8 とコース間で2倍超の差。ダート>芝。
+    # (競馬場×芝ダ×距離帯×前走脚質)別の歴史的着順パーセントを1特徴に集約し、
+    # 各コースのバイアスに脚質を適合させる。日付順に localized re-sort して expanding（リーク防止）。
+    if all(c in df.columns for c in ['競馬場', '芝/ダート', '距離']) and '着順パーセント' in df.columns:
+        _sb = pd.cut(df['前走_前半コーナー率'], [-0.01, 0.3, 0.6, 1.01],
+                     labels=['先行', '中団', '後方']).astype(object).fillna('中団')
+        _dn = pd.to_numeric(df['距離'], errors='coerce')
+        _db2 = pd.cut(_dn, [0, 1400, 1800, 2200, 10000],
+                      labels=['sprint', 'mile', 'intermediate', 'long']).astype(object).fillna('unknown')
+        _tmp = pd.DataFrame({
+            '日付': df['日付'], '競馬場': df['競馬場'], '芝/ダート': df['芝/ダート'],
+            '_db2': _db2, '_sb': _sb, '着順パーセント': df['着順パーセント'],
+        }).sort_values('日付')
+        _val = _tmp.groupby(['競馬場', '芝/ダート', '_db2', '_sb'])['着順パーセント'].transform(
+            lambda x: x.shift(1).expanding(min_periods=10).mean())
+        df['脚質_コース_着順パーセント'] = _val.reindex(df.index).fillna(0.5)
+    else:
+        df['脚質_コース_着順パーセント'] = 0.5
+
+    # ── 馬場悪化×脚質 前有利補正（2026-08-16・検証で確認）──────────────────
+    # 検証: 馬場が渋るほど前有利が強まる。特にダートで顕著（前有利度 良11.6→不良13.5）。
+    # 先行寄り(前走前半コーナー率が小)×馬場悪化度×ダート強め の交互作用を1特徴に。
+    _baba_bad = (df['馬場'].map({'良': 0.0, '稍重': 1.0, '重': 2.0, '不良': 3.0}).fillna(0.0)
+                 if '馬場' in df.columns else 0.0)
+    _is_dirt = (df['芝/ダート'] == 'ダート').astype(float) if '芝/ダート' in df.columns else 0.0
+    _senko_deg = (0.5 - pd.to_numeric(df['前走_前半コーナー率'], errors='coerce')).clip(-0.5, 0.5)
+    df['馬場悪化_先行補正'] = (_senko_deg * _baba_bad * (1.0 + _is_dirt)).fillna(0.0)
     df['前走_日付'] = df.groupby('馬ID')['日付'].shift(1)
     df['休養日数'] = (df['日付']-df['前走_日付']).dt.days
 

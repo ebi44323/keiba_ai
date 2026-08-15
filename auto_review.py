@@ -106,6 +106,45 @@ def _send_review_direct(stats: dict, rates: dict, date_label: str) -> bool:
         "",
         f"🌱 芝: {shiba_rate:.1f}%  🏜️ ダート: {dart_rate:.1f}%",
         f"🔗 馬連: {uma_rate:.1f}%  📐 穴馬ワイド: {rates.get('wide_rate', 0):.1f}%",
+    ]
+
+    # ── モデルD 🎯穴馬マーク成績（機能5）─────────────────────────────
+    _d_bets = stats.get("d_ana_bets", 0)
+    if _d_bets > 0:
+        lines += [
+            "",
+            f"**【🎯モデルD穴馬マーク】** {_d_bets}頭",
+            "```",
+            f"複勝  {_emoji(rates.get('d_ana_fuku_rate',0))} 回収{rates.get('d_ana_fuku_rate',0):6.1f}%  的中率{rates.get('d_ana_fuku_hit_rate',0):5.1f}%",
+            f"単勝  {_emoji(rates.get('d_ana_tan_rate',0))} 回収{rates.get('d_ana_tan_rate',0):6.1f}%",
+            "```",
+        ]
+
+    # ── 本命◎ オッズ帯別ROI（機能2: favorite-longshot bias監視）──────────
+    _ob_rates = rates.get("honmei_oband", {})
+    if _ob_rates:
+        _ob_lines = ["", "**【本命◎ オッズ帯別 単勝ROI】**", "```"]
+        for _b in ['〜5', '5-15', '15+']:
+            _od = _ob_rates.get(_b, {"R": 0, "tan_roi": 0})
+            if _od["R"] > 0:
+                _ob_lines.append(f"{_b:>5}倍  {_emoji(_od['tan_roi'])} {_od['tan_roi']:6.1f}%   ({_od['R']}R)")
+        _ob_lines.append("```")
+        lines += _ob_lines
+
+    # ── 複勝率キャリブレーション監視（機能1）───────────────────────────
+    _pred_f = rates.get("honmei_pred_fuku_avg", 0.0)
+    _act_f  = rates.get("honmei_actual_fuku", 0.0)
+    _gap    = rates.get("fuku_calib_gap", 0.0)
+    # 乖離が大きい（|gap|>=15pp）ときは警告。過信(正)/過小(負)を明示。
+    if abs(_gap) >= 15.0 and stats.get("honmei_races", 0) >= 5:
+        _sign = "⚠️過信（予測が実績を上回る）" if _gap > 0 else "⚠️過小評価（予測が実績を下回る）"
+        _calib_line = f"🔎 複勝キャリブ: 予測{_pred_f:.1f}% vs 実{_act_f:.1f}% → 乖離{_gap:+.1f}pp {_sign}"
+    else:
+        _calib_line = f"🔎 複勝キャリブ: 予測{_pred_f:.1f}% vs 実{_act_f:.1f}%（乖離{_gap:+.1f}pp）"
+    lines += [
+        "",
+        _calib_line,
+        f"📈 本命AI勝率: 予測{rates.get('honmei_avg_ai',0):.1f}% vs 実勝者{rates.get('winner_avg_ai',0):.1f}%",
         "",
         "-# keiba-ebye / 結果は参考情報です",
     ]
@@ -176,6 +215,13 @@ def run(date_str: str = None):
         # Calibration用リスト
         "honmei_ai_probs": [],   # ◎のAI勝率
         "winner_ai_probs": [],   # 実際の勝者のAI勝率
+        "honmei_pred_fuku": [],  # ◎の予測複勝率（機能1: 複勝キャリブレ監視用）
+        # モデルD 🎯穴馬マーク成績（機能5）
+        "d_ana_bets": 0, "d_ana_tan_hits": 0, "d_ana_tan_return": 0,
+        "d_ana_fuku_hits": 0, "d_ana_fuku_return": 0,
+        # 本命◎のオッズ帯別ROI（機能2: favorite-longshot bias監視）
+        "honmei_oband": {b: {"R": 0, "tan_hit": 0, "tan_ret": 0, "fuku_hit": 0, "fuku_ret": 0}
+                         for b in ['〜5', '5-15', '15+']},
         # 競馬場別 / 距離帯別 / クラス別（dict）
         "venue_stats": {},
         "dist_stats": {"短距離": _ds_init(), "マイル": _ds_init(),
@@ -214,6 +260,9 @@ def run(date_str: str = None):
         honmei_ai_prob = float(res_df.iloc[0]["勝率(AI予測)"])
         stats["honmei_races"] += 1
         stats["honmei_ai_probs"].append(honmei_ai_prob)
+        # ◎の予測複勝率を記録（機能1: 予測 vs 実複勝率の乖離監視）
+        if "複勝率(AI予測)" in res_df.columns:
+            stats["honmei_pred_fuku"].append(float(res_df.iloc[0]["複勝率(AI予測)"]))
 
         # 実際の勝者のAI勝率（Calibration）
         winner_nums = list(payouts["tansho"].keys())
@@ -266,6 +315,16 @@ def run(date_str: str = None):
         if honmei in payouts["fukusho"]:
             stats["honmei_fuku_hits"] += 1
             stats["honmei_fuku_return"] += payouts["fukusho"][honmei]
+
+        # 本命◎のオッズ帯別ROI（機能2: 高オッズ◎が実際に利益を出すか監視）
+        _ho = float(res_df.iloc[0].get("単勝オッズ", 0) or 0)
+        _ob = '〜5' if _ho < 5 else ('5-15' if _ho < 15 else '15+')
+        _hb = stats["honmei_oband"][_ob]
+        _hb["R"] += 1
+        if honmei in payouts["tansho"]:
+            _hb["tan_hit"] += 1; _hb["tan_ret"] += payouts["tansho"][honmei]
+        if honmei in payouts["fukusho"]:
+            _hb["fuku_hit"] += 1; _hb["fuku_ret"] += payouts["fukusho"][honmei]
 
         # ── レース判定別（買うべき/見送り）本命成績 ─────────────────────────
         # confidence_text 先頭のラベル(🔥勝負 / ⚠️回避 / 🟡通常)を単一の真実の源として利用
@@ -339,6 +398,20 @@ def run(date_str: str = None):
                 stats["ana_fuku_hits"] += 1
                 stats["ana_fuku_return"] += payouts["fukusho"][uban]
 
+        # ── モデルD 🎯穴馬マークの成績（機能5）─────────────────────────────
+        # 🎯マーク（モデルD高スコア×オッズ8倍+）が付いた馬の単勝・複勝の的中/回収を集計。
+        # マーク基準（score>=0.05 & オッズ>=8倍）のチューニング材料にする。
+        if "穴馬マーク" in res_df.columns:
+            for _, drow in res_df[res_df["穴馬マーク"] == "🎯"].iterrows():
+                d_uban = drow["馬番"]
+                stats["d_ana_bets"] += 1
+                if d_uban in payouts["tansho"]:
+                    stats["d_ana_tan_hits"] += 1
+                    stats["d_ana_tan_return"] += payouts["tansho"][d_uban]
+                if d_uban in payouts["fukusho"]:
+                    stats["d_ana_fuku_hits"] += 1
+                    stats["d_ana_fuku_return"] += payouts["fukusho"][d_uban]
+
         logger.info(
             f"  {r['place']} {r['num']}R: ◎{honmei}番 "
             f"単{'◎' if honmei in payouts['tansho'] else '×'} "
@@ -382,7 +455,24 @@ def run(date_str: str = None):
         "class_rate":      {k: _class_rate(k) for k in stats["class_stats"]},
         "honmei_avg_ai":   round(sum(stats["honmei_ai_probs"]) / len(stats["honmei_ai_probs"]) * 100, 1) if stats["honmei_ai_probs"] else 0.0,
         "winner_avg_ai":   round(sum(stats["winner_ai_probs"]) / len(stats["winner_ai_probs"]) * 100, 1) if stats["winner_ai_probs"] else 0.0,
+        # 機能1: ◎の予測複勝率 vs 実複勝率（キャリブレーション監視）
+        "honmei_pred_fuku_avg": round(sum(stats["honmei_pred_fuku"]) / len(stats["honmei_pred_fuku"]) * 100, 1) if stats["honmei_pred_fuku"] else 0.0,
+        "honmei_actual_fuku":   round(stats["honmei_fuku_hits"] / races_n * 100, 1) if races_n else 0.0,
+        # 機能5: モデルD 🎯穴馬マーク成績
+        "d_ana_tan_rate":  _rate(stats["d_ana_tan_return"],  max(stats["d_ana_bets"] * 100, 1)),
+        "d_ana_fuku_rate": _rate(stats["d_ana_fuku_return"], max(stats["d_ana_bets"] * 100, 1)),
+        "d_ana_fuku_hit_rate": round(stats["d_ana_fuku_hits"] / stats["d_ana_bets"] * 100, 1) if stats["d_ana_bets"] else 0.0,
     }
+    # 予測複勝率 − 実複勝率（正なら過信）。監視ログ・Discord警告に使用。
+    rates["fuku_calib_gap"] = round(rates["honmei_pred_fuku_avg"] - rates["honmei_actual_fuku"], 1)
+    # 本命◎ オッズ帯別ROI（機能2）
+    rates["honmei_oband"] = {}
+    for b, s in stats["honmei_oband"].items():
+        rates["honmei_oband"][b] = {
+            "R": s["R"],
+            "tan_roi": _rate(s["tan_ret"], max(s["R"] * 100, 1)),
+            "fuku_roi": _rate(s["fuku_ret"], max(s["R"] * 100, 1)),
+        }
 
     logger.info(
         f"集計完了 {races_n}R: 本命単勝{rates['tan_rate']}% 複勝{rates['fuku_rate']}%"
@@ -471,6 +561,23 @@ def run(date_str: str = None):
             # Calibration / AIスコア
             "本命平均AIスコア":     rates["honmei_avg_ai"],
             "実際勝者の平均AI勝率": rates["winner_avg_ai"],
+            # 複勝率キャリブレーション監視（機能1）
+            "本命予測複勝率":       rates["honmei_pred_fuku_avg"],
+            "本命実複勝率":         rates["honmei_actual_fuku"],
+            "複勝率乖離":           rates["fuku_calib_gap"],
+            # モデルD 🎯穴馬マーク成績（機能5）
+            "D穴馬数":             stats["d_ana_bets"],
+            "D穴馬複勝的中数":     stats["d_ana_fuku_hits"],
+            "D穴馬複勝的中率":     rates["d_ana_fuku_hit_rate"],
+            "D穴馬単勝回収率":     rates["d_ana_tan_rate"],
+            "D穴馬複勝回収率":     rates["d_ana_fuku_rate"],
+            # 本命◎ オッズ帯別ROI（機能2: favorite-longshot bias監視）
+            "本命_低オッズ_R":     rates["honmei_oband"]["〜5"]["R"],
+            "本命_低オッズ_単ROI": rates["honmei_oband"]["〜5"]["tan_roi"],
+            "本命_中オッズ_R":     rates["honmei_oband"]["5-15"]["R"],
+            "本命_中オッズ_単ROI": rates["honmei_oband"]["5-15"]["tan_roi"],
+            "本命_高オッズ_R":     rates["honmei_oband"]["15+"]["R"],
+            "本命_高オッズ_単ROI": rates["honmei_oband"]["15+"]["tan_roi"],
             # 競馬場別（JSON）
             "競馬場別": json.dumps(stats["venue_stats"], ensure_ascii=False),
         }

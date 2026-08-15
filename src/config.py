@@ -48,3 +48,21 @@ def get_headers():
 
 def safe_sleep(base=1.5, jitter=1.0):
     time.sleep(base + random.uniform(0, jitter))
+
+
+def field_softmax_temperature(base_t, n_runners):
+    """出走頭数に応じた softmax 温度（2026-08-16・小頭数の勝率膨張対策）。
+
+    小頭数ほど softmax が一様化し、人気薄の勝率を実勢の10倍以上に膨らませていた
+    （実データ: 本命勝率は ≤9頭で ~42% だが 15-18頭で ~31%。小頭数は分布が"尖る"べき）。
+    そこで小頭数ほど温度を下げて softmax を尖らせ、本命を持ち上げ人気薄を圧縮する。
+    ⚠️ 学習(core_model)と推論(inference)で必ず同一適用すること（キャリブレータ整合のため）。
+
+    factor: N=6以下→0.75（25%シャープ化） / N=16以上→1.0（従来通り）の線形。
+    """
+    try:
+        n = float(n_runners)
+    except (TypeError, ValueError):
+        return base_t
+    factor = 0.75 + 0.25 * min(max((n - 6.0) / 10.0, 0.0), 1.0)
+    return base_t * factor
