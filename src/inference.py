@@ -850,19 +850,27 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         # ⚠️回避: 未出走混在 or 決め手のない低確率混戦（EVも小さい）
         # 期待値 = 勝率×オッズ。EV優先で◎が入替わった後の◎の期待値を見る。
         top_ev = float(df_test.loc[0, '期待値'])
-        EV_KACHI = 2.0   # ◎の期待値がこの値以上なら勝率が高くなくても🔥勝負扱い（調整可）
-        if (p1 >= 0.25 and score_diff >= 0.10) or (top_ev >= EV_KACHI):
+        EV_KACHI = 2.0   # ◎EVがこの値以上なら勝率が高くなくても🔥勝負（オッズ妙味）
+        # ── ラベル閾値（2026-08-29 再調整）──────────────────────────────────
+        # 複勝率/勝率タイブレーク修正(2026-08-29)で◎の過信が是正され、◎勝率の上限が
+        # 旧~32% → 新~24% に低下。旧基準(勝率≥25%/差≥10pt)は新スケールでは到達不能で
+        # 「勝負が毎回0・回避だらけ」になっていたため新スケールへ再調整。予測/EV/◎選定は不変。
+        is_tekkan = (p1 >= 0.20 and score_diff >= 0.05)                            # 💎鉄板: ◎が明確に抜け
+        is_kachi  = (is_tekkan or (p1 >= 0.18 and score_diff >= 0.03)
+                     or (p1 >= 0.15 and p1 >= 1.35 * p2) or (top_ev >= EV_KACHI))  # 🔥勝負
+        is_haran  = (score_diff <= 0.02 and p1 < 0.14)                             # 🌪️拮抗(真に平坦で弱い)
+        if is_kachi:
             race_grade = "🔥 勝負レース"
-        elif has_unraced or (score_diff <= 0.03 and p1 < 0.20):
+        elif has_unraced or is_haran:
             race_grade = "⚠️ 回避（様子見）レース"
         else:
             race_grade = "🟡 通常レース"
 
-        if p1>=0.25 and score_diff>=0.10:
+        if is_tekkan:
             confidence_text = f"💎 【鉄板レース】 ◎が抜けた存在({p1*100:.1f}%)！ 軸は不動です。"
             reco = f"🎯 【本命・単勝勝負】 ◎ {top1_umaban}番 の単勝。\n  🔗 馬単・3連単: {top1_umaban}着固定 → 相手: {himo_str}"
             if ana_str: reco += f"\n  💣 余裕があれば穴馬({ana_str}番)へのヒモ流しも推奨。"
-        elif score_diff<=0.03 and p1<0.20:
+        elif is_haran:
             confidence_text = "🌪️ 【波乱レース】 上位の実力が拮抗の大混戦！ 穴馬からのヒモ荒れに警戒してください。"
             reco = f"⚠️ 【ボックス推奨】 上位陣 ({top1_umaban}・{himo_str}番) の馬連・3連複ボックス。"
             if ana_str: reco += f"\n  💣 大穴狙い: 穴馬({ana_str}番)を絡めたワイドや3連複が面白いです。"
