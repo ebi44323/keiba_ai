@@ -21,9 +21,21 @@ import logging
 import unittest.mock as mock
 import pytz
 import requests
+import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("auto_review")
+
+
+def _g_int(row, col):
+    """res_df の 1 セルを安全に int 化（欠損/空文字は None）。機能A/Cで使用。"""
+    try:
+        v = row.get(col)
+        if v is None or (isinstance(v, float) and pd.isna(v)) or str(v) == "":
+            return None
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
 
 HF_TOKEN                = os.environ.get("HF_TOKEN", "")
 HF_REPO_ID              = os.environ.get("HF_REPO_ID", "")
@@ -141,24 +153,59 @@ def _send_review_direct(stats: dict, rates: dict, date_label: str) -> bool:
         _calib_line = f"🔎 複勝キャリブ: 予測{_pred_f:.1f}% vs 実{_act_f:.1f}% → 乖離{_gap:+.1f}pp {_sign}"
     else:
         _calib_line = f"🔎 複勝キャリブ: 予測{_pred_f:.1f}% vs 実{_act_f:.1f}%（乖離{_gap:+.1f}pp）"
+    # ── 勝率キャリブレーション監視（機能B）──
+    _wgap = rates.get("win_calib_gap", 0.0)
+    if abs(_wgap) >= 8.0 and stats.get("honmei_races", 0) >= 5:
+        _wsign = "⚠️過信" if _wgap > 0 else "⚠️過小評価"
+        _win_calib_line = (f"🎯 勝率キャリブ: 予測{rates.get('honmei_avg_ai',0):.1f}% "
+                           f"vs 実{rates.get('honmei_actual_win',0):.1f}% → 乖離{_wgap:+.1f}pp {_wsign}")
+    else:
+        _win_calib_line = (f"🎯 勝率キャリブ: 予測{rates.get('honmei_avg_ai',0):.1f}% "
+                           f"vs 実{rates.get('honmei_actual_win',0):.1f}%（乖離{_wgap:+.1f}pp）")
     lines += [
         "",
         _calib_line,
+        _win_calib_line,
         f"📈 本命AI勝率: 予測{rates.get('honmei_avg_ai',0):.1f}% vs 実勝者{rates.get('winner_avg_ai',0):.1f}%",
+    ]
+
+    # ── 券種別 収支（機能D）──
+    _ledger = rates.get("ledger", {})
+    if _ledger:
+        _led_lines = ["", "**【券種別 収支】**", "```"]
+        for _bt, _lv in _ledger.items():
+            if _lv.get("投資", 0) > 0:
+                _led_lines.append(
+                    f"{_bt:<5} {_emoji(_lv['回収率'])} 回収{_lv['回収率']:6.1f}%  "
+                    f"(投{_lv['投資']//100}点 / 払{_lv['払戻']}円)")
+        _led_lines.append("```")
+        lines += _led_lines
+
+    lines += [
         "",
         "-# keiba-ebye / 結果は参考情報です",
     ]
-    content = "\n".join(lines)
+    # 情報量が増え 2000字上限を超えるため、行単位で 1900字以内に分割送信する。
+    chunks, buf = [], ""
+    for ln in lines:
+        if len(buf) + len(ln) + 1 > 1900:
+            chunks.append(buf); buf = ln
+        else:
+            buf = f"{buf}\n{ln}" if buf else ln
+    if buf:
+        chunks.append(buf)
     try:
-        resp = requests.post(
-            webhook_url,
-            json={"content": content[:1990], "username": "keiba-ebye 📊"},
-            timeout=15,
-        )
-        if resp.status_code in (200, 204):
-            return True
-        logger.warning(f"Discord送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
-        return False
+        ok_all = True
+        for _ci, _c in enumerate(chunks):
+            resp = requests.post(
+                webhook_url,
+                json={"content": _c, "username": "keiba-ebye 📊"},
+                timeout=15,
+            )
+            if resp.status_code not in (200, 204):
+                ok_all = False
+                logger.warning(f"Discord送信失敗 HTTP {resp.status_code} (chunk {_ci+1}/{len(chunks)}): {resp.text[:200]}")
+        return ok_all
     except Exception as e:
         logger.error(f"Discord送信エラー: {e}")
         return False
@@ -227,7 +274,14 @@ def run(date_str: str = None):
         "dist_stats": {"短距離": _ds_init(), "マイル": _ds_init(),
                        "中距離": _ds_init(), "長距離": _ds_init()},
         "class_stats": {"低クラス": _ds_init(), "高クラス": _ds_init()},
+        # ── 機能C: ◎の内訳別成績（脚質/枠/人気帯）。各 key→{R数,単的中,複的中,単回収,複回収} ──
+        "honmei_style_stats": {},   # 脚質カテゴリ別
+        "honmei_draw_stats":  {},   # 枠番別
+        "honmei_pop_stats":   {},   # 人気帯別
     }
+
+    # ── 機能A: レース×馬 明細（ai_race_history.csv に蓄積）─────────────────
+    race_detail_rows = []
 
     for r in races:
         try:
@@ -412,6 +466,51 @@ def run(date_str: str = None):
                     stats["d_ana_fuku_hits"] += 1
                     stats["d_ana_fuku_return"] += payouts["fukusho"][d_uban]
 
+        # ── 機能A: レース×馬 明細の蓄積 ＋ 機能C: ◎内訳集計 ──────────────────
+        _fs = len(res_df)
+        _odds_rank = (res_df["単勝オッズ"].rank(method="min").astype(int)
+                      if "単勝オッズ" in res_df.columns else None)
+        for _pos, (_idx, _hr) in enumerate(res_df.iterrows()):
+            _uban = _hr["馬番"]
+            _ninki = int(_odds_rank.iloc[_pos]) if _odds_rank is not None else 0
+            race_detail_rows.append({
+                "日付": date_hf.replace("-", "/"),
+                "競馬場": venue, "R": r.get("num", ""), "レースID": r["id"],
+                "頭数": _fs, "AI順位": _pos + 1,
+                "馬番": _uban, "馬名": _hr.get("馬名", ""),
+                "印": _hr.get("印", ""), "穴馬マーク": _hr.get("穴馬マーク", ""),
+                "脚質": _hr.get("脚質カテゴリ", ""), "枠番": _g_int(_hr, "枠番"),
+                "単勝オッズ": round(float(_hr.get("単勝オッズ", 0) or 0), 1), "人気": _ninki,
+                "AI勝率": round(float(_hr.get("勝率(AI予測)", 0) or 0), 4),
+                "複勝率": round(float(_hr.get("複勝率(AI予測)", 0) or 0), 4),
+                "EV": round(float(_hr.get("期待値", 0) or 0), 2),
+                "複勝EV": round(float(_hr.get("複勝期待値", 0) or 0), 2),
+                "1着": int(_uban in payouts["tansho"]),
+                "複勝内": int(_uban in payouts["fukusho"]),
+                "芝ダ": track_type, "距離": dist_val, "クラス": class_key,
+            })
+
+        _h_win  = honmei in payouts["tansho"]
+        _h_fuku = honmei in payouts["fukusho"]
+        _h_tan_pay  = payouts["tansho"].get(honmei, 0)
+        _h_fuku_pay = payouts["fukusho"].get(honmei, 0)
+
+        def _bump(dim_dict, key):
+            d = dim_dict.setdefault(str(key),
+                                    {"R数": 0, "単的中": 0, "複的中": 0, "単回収": 0, "複回収": 0})
+            d["R数"] += 1
+            if _h_win:  d["単的中"] += 1; d["単回収"] += _h_tan_pay
+            if _h_fuku: d["複的中"] += 1; d["複回収"] += _h_fuku_pay
+
+        _bump(stats["honmei_style_stats"], res_df.iloc[0].get("脚質カテゴリ", "不明") or "不明")
+        _hwaku = _g_int(res_df.iloc[0], "枠番")
+        if _hwaku:
+            _bump(stats["honmei_draw_stats"], _hwaku)
+        _hn = int(_odds_rank.iloc[0]) if _odds_rank is not None else 0
+        _pop_band = ("1番人気" if _hn == 1 else "2-3番人気" if _hn <= 3
+                     else "4-6番人気" if _hn <= 6 else "7番人気以下")
+        _bump(stats["honmei_pop_stats"], _pop_band)
+
         logger.info(
             f"  {r['place']} {r['num']}R: ◎{honmei}番 "
             f"単{'◎' if honmei in payouts['tansho'] else '×'} "
@@ -465,6 +564,17 @@ def run(date_str: str = None):
     }
     # 予測複勝率 − 実複勝率（正なら過信）。監視ログ・Discord警告に使用。
     rates["fuku_calib_gap"] = round(rates["honmei_pred_fuku_avg"] - rates["honmei_actual_fuku"], 1)
+    # ── 機能B: 勝率キャリブレーション（◎の予測勝率 vs 実勝率）──────────────
+    rates["honmei_actual_win"] = round(stats["honmei_tan_hits"] / races_n * 100, 1) if races_n else 0.0
+    rates["win_calib_gap"]     = round(rates["honmei_avg_ai"] - rates["honmei_actual_win"], 1)
+    # ── 機能D: 券種別 収支明細（投資・払戻・回収率）────────────────────────
+    rates["ledger"] = {
+        "単勝":   {"投資": races_n * 100, "払戻": int(stats["honmei_tan_return"]),  "回収率": rates["tan_rate"]},
+        "複勝":   {"投資": races_n * 100, "払戻": int(stats["honmei_fuku_return"]), "回収率": rates["fuku_rate"]},
+        "馬連":   {"投資": int(stats["umaren_invest"]),     "払戻": int(stats["umaren_return"]),     "回収率": rates["uma_rate"]},
+        "穴ワイド": {"投資": int(stats["wide_ana_invest"]),  "払戻": int(stats["wide_ana_return"]),   "回収率": rates["wide_rate"]},
+        "三連複": {"投資": int(stats["sanrenpuku_invest"]), "払戻": int(stats["sanrenpuku_return"]), "回収率": rates["sanrenpuku_rate"]},
+    }
     # 本命◎ オッズ帯別ROI（機能2）
     rates["honmei_oband"] = {}
     for b, s in stats["honmei_oband"].items():
@@ -580,6 +690,15 @@ def run(date_str: str = None):
             "本命_高オッズ_単ROI": rates["honmei_oband"]["15+"]["tan_roi"],
             # 競馬場別（JSON）
             "競馬場別": json.dumps(stats["venue_stats"], ensure_ascii=False),
+            # ── 機能B: 勝率キャリブレーション ──
+            "本命実勝率":  rates["honmei_actual_win"],
+            "勝率乖離":    rates["win_calib_gap"],
+            # ── 機能C: ◎内訳別 成績（JSON）──
+            "本命脚質別":   json.dumps(stats["honmei_style_stats"], ensure_ascii=False),
+            "本命枠別":     json.dumps(stats["honmei_draw_stats"],  ensure_ascii=False),
+            "本命人気帯別": json.dumps(stats["honmei_pop_stats"],   ensure_ascii=False),
+            # ── 機能D: 券種別 収支明細（JSON）──
+            "券種別収支":   json.dumps(rates["ledger"], ensure_ascii=False),
         }
         new_df = pd.DataFrame([daily_row])
 
@@ -606,6 +725,39 @@ def run(date_str: str = None):
         logger.info("ai_daily_history.csv を HF Hub に保存しました")
     except Exception as e:
         logger.warning(f"ai_daily_history.csv 保存失敗（スキップ）: {e}")
+
+    # ── 機能A: レース×馬 明細を ai_race_history.csv に蓄積 ────────────────────
+    if race_detail_rows:
+        try:
+            import io
+            from huggingface_hub import HfApi, hf_hub_download
+            new_detail = pd.DataFrame(race_detail_rows)
+            try:
+                _p = hf_hub_download(HF_REPO_ID, "ai_race_history.csv",
+                                     repo_type="dataset", token=HF_TOKEN)
+                _old = pd.read_csv(_p, dtype={"レースID": str, "馬番": str})
+                # 同一 (日付, レースID, 馬番) は今回分で置き換え（再実行の冪等性）
+                _key_new = set(zip(new_detail["日付"].astype(str),
+                                   new_detail["レースID"].astype(str),
+                                   new_detail["馬番"].astype(str)))
+                _mask = ~_old.apply(lambda x: (str(x["日付"]), str(x["レースID"]),
+                                               str(x["馬番"])) in _key_new, axis=1)
+                merged_detail = pd.concat([_old[_mask], new_detail], ignore_index=True)
+            except Exception:
+                merged_detail = new_detail
+            _buf = io.BytesIO()
+            merged_detail.to_csv(_buf, index=False)
+            _buf.seek(0)
+            HfApi(token=HF_TOKEN).upload_file(
+                path_or_fileobj=_buf,
+                path_in_repo="ai_race_history.csv",
+                repo_id=HF_REPO_ID,
+                repo_type="dataset",
+                commit_message=f"レース明細蓄積 {date_hf}（{len(new_detail)}行）",
+            )
+            logger.info(f"ai_race_history.csv を保存（今回 {len(new_detail)} 行）")
+        except Exception as e:
+            logger.warning(f"ai_race_history.csv 保存失敗（スキップ）: {e}")
 
 
 if __name__ == "__main__":

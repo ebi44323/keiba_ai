@@ -709,18 +709,13 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         if calibrator is not None:
             try:
                 calibrated = np.clip(calibrator.predict(softmax_probs), 1e-6, 1.0)
-                # IsotonicRegressionはステップ関数のため、同じステップに落ちた馬が
-                # 完全同値になる（例: 5頭が全員5.0%）。
-                # 同値グループ内はraw softmax確率の比率で按分してタイブレークする。
-                win_probs_adj = calibrated.copy().astype(float)
-                for v in np.unique(calibrated):
-                    mask = calibrated == v
-                    if mask.sum() > 1:
-                        group_sp = softmax_probs[mask]
-                        group_sp_sum = group_sp.sum()
-                        if group_sp_sum > 1e-9:
-                            win_probs_adj[mask] = v * (group_sp / group_sp_sum)
-                win_probs = win_probs_adj / win_probs_adj.sum()
+                # calibrated は softmax に対し単調（Isotonic）。合計1へ定数割り正規化すれば
+                # 順序（=softmax順）を保てる。微小な softmax 項で同値を決定的にタイブレーク。
+                # ⚠️ 旧実装は同値グループを softmax 比で「分割」していたが、各馬の値が群サイズに
+                #    依存して変わり、群境界で単調性が壊れていた（softmaxが高いのに勝率が低くなる →
+                #    複勝率(softmax単調)が勝率と逆転/同値化する主因）。2026-08-29 修正。
+                _tie = calibrated + 1e-9 * softmax_probs
+                win_probs = _tie / _tie.sum()
             except Exception:
                 win_probs = softmax_probs
         else:
@@ -734,16 +729,18 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         #    再正規化済み）は分布形状が別物で、渡すと複勝率0%(＜勝率)や98%飽和など
         #    step関数が破綻する（従来バグの原因・2026-08-16修正）。
         #    winキャリブレータ側(上のcalibrator.predict)は正しくsoftmax_probsを渡している。
+        # Bradley-Terry で勝率から複勝率(3着内)の下限を導く（常に > 勝率）。
+        _bt_place = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0.0, 0.98)
         if place_calibrator is not None:
             try:
                 place_probs = np.clip(place_calibrator.predict(softmax_probs), 0.0, 0.95)
             except Exception:
-                place_probs = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
+                place_probs = _bt_place
         else:
-            place_probs = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0, 0.95)
-        # 物理制約: 複勝率 >= 勝率（勝てば必ず3着以内）。キャリブレータの step 関数由来の
-        # 破綻（複勝率 < 勝率）を防ぐ安全網。
-        df_test['複勝率(AI予測)'] = np.clip(np.maximum(place_probs, win_probs), 0.0, 0.98)
+            place_probs = _bt_place
+        # 物理制約: 複勝率 >= Bradley-Terry下限（>勝率）。キャリブレータが勝率未満を返して
+        # 「複勝率=勝率」に潰れる／勝率と逆転するのを防ぐ安全網（2026-08-29 強化）。
+        df_test['複勝率(AI予測)'] = np.clip(np.maximum(place_probs, _bt_place), 0.0, 0.98)
         df_test['期待値'] = df_test['勝率(AI予測)']*df_test['単勝オッズ']
         df_test['期待値'] = df_test['期待値'].clip(upper=50.0)  # 取消馬などの異常EV防止
 
