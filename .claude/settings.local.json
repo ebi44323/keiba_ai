@@ -18,7 +18,9 @@
       "Bash(git rm *)",
       "Bash(git push *)",
       "Bash(python validate_model.py --splits 3 --test-days 30 --max-train-years 3)",
-      "Bash(echo \"EXIT=$?\")"
+      "Bash(echo \"EXIT=$?\")",
+      "Artifact",
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)"
     ]
   }
 }

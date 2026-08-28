@@ -427,6 +427,8 @@ def run(date_str: str = None):
             "df":         res_df,
             "place":      r["place"],
             "num":        r["num"],
+            "title":      r.get("title", ""),
+            "time":       r["time"].strftime("%H:%M") if r.get("time") else "",
             "track":      track_type or "",
             "dist":       distance or "",
             "confidence": conf_text or "",
