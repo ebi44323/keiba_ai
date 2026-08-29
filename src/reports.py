@@ -37,7 +37,8 @@ def _build_gemini_html(r: dict) -> str:
 #  朝刊HTML（スマホ最適・オフライン自己完結・並べ替え/絞り込み）  2026-08-29
 #  __DATA__ に races_data(JSON)、__DATE__ に日付を差し込む。外部通信ゼロ。
 # ════════════════════════════════════════════════════════════════════════
-_MORNING_TEMPLATE = """<title>keiba-ebye 朝刊 __DATE__</title>
+_MORNING_TEMPLATE = """<meta charset="utf-8">
+<title>keiba-ebye 朝刊 __DATE__</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <style>
 :root{
