@@ -1,9 +1,12 @@
 name: 朝刊予想 → Discord 投稿
 
 # ================================================================
-# 土日 8:00 JST（金曜 23:00 UTC / 土曜 23:00 UTC）に実行し
+# 土日 7:00 JST（金曜 22:40 UTC / 土曜 22:40 UTC）に実行し
 # 当日の全開催レース予想を .txt と .html ファイルとして Discord に投稿する。
 # GitHub Actions は Discord への直接通信が可能なため、キュー経由ではなく直接送信。
+# ※ 実行に最大40分かかる＋GitHub Actionsのスケジュール遅延があるため、
+#   「9時前投稿」を確実にするため 8:00→7:00 開始に前倒し（2026-09-19）。
+#   毎時0分はrunner混雑で遅延しやすいため :40 に設定。
 #
 # 【必要な GitHub Secrets】
 #   HF_TOKEN            - HuggingFace APIトークン（モデルロード用）
@@ -13,9 +16,9 @@ name: 朝刊予想 → Discord 投稿
 
 on:
   schedule:
-    # 土曜 8:00 JST = 金曜 23:00 UTC → cron: '0 23 * * 5'
-    # 日曜 8:00 JST = 土曜 23:00 UTC → cron: '0 23 * * 6'
-    - cron: '0 23 * * 5,6'
+    # 土曜 7:00 JST = 金曜 22:40 UTC → cron: '40 22 * * 5'
+    # 日曜 7:00 JST = 土曜 22:40 UTC → cron: '40 22 * * 6'
+    - cron: '40 22 * * 5,6'
   workflow_dispatch:
     inputs:
       date:
