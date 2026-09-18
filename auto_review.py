@@ -211,6 +211,31 @@ def _send_review_direct(stats: dict, rates: dict, date_label: str) -> bool:
         return False
 
 
+def _send_alert(text: str) -> bool:
+    """振り返りが失敗/0件/クラッシュしたとき Discord に警告を送る。
+
+    サイレント障害（緑ジョブなのに CSV も Discord も出ない）を人が検知できるようにする。
+    2026-04〜09 の数ヶ月間、集計0件でも無言 return していたため成績が蓄積されなかった問題への対策。
+    """
+    webhook_url = DISCORD_REVIEW_WEBHOOK_URL
+    if not webhook_url:
+        logger.error("Webhook 未設定のため警告送信をスキップ")
+        return False
+    try:
+        resp = requests.post(
+            webhook_url,
+            json={"content": text[:1900], "username": "keiba-ebye ⚠️"},
+            timeout=15,
+        )
+        if resp.status_code not in (200, 204):
+            logger.warning(f"警告送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"警告送信エラー: {e}")
+        return False
+
+
 def run(date_str: str = None):
     now = datetime.datetime.now(JST)
     if date_str:
@@ -225,7 +250,13 @@ def run(date_str: str = None):
 
     races = get_todays_races(date_str8)
     if not races:
-        logger.info("指定日のレースなし。終了。")
+        logger.warning("指定日のレースなし。スクレイプ失敗の可能性。")
+        _send_alert(
+            f"⚠️ **振り返り異常** | {date_label}\n"
+            f"開催レースを1件も取得できませんでした（`get_todays_races` が空）。\n"
+            f"netkeibaのブロック/構造変更、または本当に無開催の可能性があります。"
+            f"Actionsログを確認してください。"
+        )
         return
 
     logger.info(f"{len(races)} レース取得。モデルロード中...")
@@ -283,6 +314,9 @@ def run(date_str: str = None):
     # ── 機能A: レース×馬 明細（ai_race_history.csv に蓄積）─────────────────
     race_detail_rows = []
 
+    # 集計スキップの内訳カウンタ（サイレント障害検知用）
+    skip = {"infer_fail": 0, "infer_none": 0, "payout_fail": 0, "no_result": 0}
+
     for r in races:
         try:
             res_df, _, _, _, conf_text, track_type, place, dist, err_log = run_real_prediction(
@@ -295,19 +329,23 @@ def run(date_str: str = None):
             )
         except Exception as e:
             logger.warning(f"推論失敗 {r['id']}: {e}")
+            skip["infer_fail"] += 1
             continue
 
         if res_df is None:
             logger.warning(f"推論結果なし {r['id']}")
+            skip["infer_none"] += 1
             continue
 
         try:
             payouts = get_all_payouts(r["id"])
         except Exception as e:
             logger.warning(f"払戻取得失敗 {r['id']}: {e}")
+            skip["payout_fail"] += 1
             continue
 
         if not payouts.get("tansho"):
+            skip["no_result"] += 1
             continue  # レース結果未確定またはスクレイプ失敗
 
         honmei = res_df.iloc[0]["馬番"]
@@ -519,7 +557,15 @@ def run(date_str: str = None):
 
     races_n = stats["honmei_races"]
     if races_n == 0:
-        logger.info("集計対象レースなし（結果未確定の可能性）。終了。")
+        logger.warning("集計対象レースなし（結果未確定またはスクレイプ失敗）。")
+        _send_alert(
+            f"⚠️ **振り返り0件** | {date_label}\n"
+            f"開催 {len(races)}R を取得しましたが、集計できたレースが0件でした。\n"
+            f"内訳: 推論失敗 {skip['infer_fail']} / 結果None {skip['infer_none']} / "
+            f"払戻取得失敗 {skip['payout_fail']} / 結果未確定 {skip['no_result']}\n"
+            f"→ 全レース結果が未確定（実行が早すぎ）か、払戻/推論のスクレイプ失敗の可能性。"
+            f"Actionsログを確認してください。"
+        )
         return
 
     def _rate(ret, inv):
@@ -587,6 +633,17 @@ def run(date_str: str = None):
     logger.info(
         f"集計完了 {races_n}R: 本命単勝{rates['tan_rate']}% 複勝{rates['fuku_rate']}%"
     )
+
+    # ── 一部欠落の警告（集計はできたが半数以上スキップ）──────────────────────
+    _total_skip = sum(skip.values())
+    if _total_skip >= max(3, len(races) * 0.5):
+        _send_alert(
+            f"⚠️ **振り返り一部欠落** | {date_label}\n"
+            f"{len(races)}R中 {races_n}R のみ集計。スキップ {_total_skip}R "
+            f"（推論失敗 {skip['infer_fail']} / 結果None {skip['infer_none']} / "
+            f"払戻失敗 {skip['payout_fail']} / 未確定 {skip['no_result']}）。\n"
+            f"実行が早すぎる、または一部レースのスクレイプ失敗の可能性があります。"
+        )
 
     ok = _send_review_direct(stats, rates, date_label)
     if ok:
@@ -764,4 +821,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="振り返り自動集計 → Discord 通知")
     parser.add_argument("--date", type=str, default=None, help="対象日 YYYYMMDD（省略時は本日）")
     args = parser.parse_args()
-    run(args.date)
+    try:
+        run(args.date)
+    except Exception as e:
+        # モデルロード/依存関係/特徴量不整合などでの異常終了も検知して通知。
+        # 通知後に exit 1 で終わるので Actions 上は🔴（赤）のまま = ログも残る。
+        logger.exception("振り返り実行が異常終了しました")
+        try:
+            _dt = datetime.datetime.now(JST).strftime("%Y/%m/%d")
+        except Exception:
+            _dt = "?"
+        _send_alert(
+            f"🔴 **振り返りクラッシュ** | {_dt}\n"
+            f"`auto_review.py` が例外で停止しました:\n"
+            f"```{type(e).__name__}: {str(e)[:400]}```\n"
+            f"モデルロード/依存関係/特徴量不整合などの可能性。Actionsログを確認してください。"
+        )
+        sys.exit(1)
