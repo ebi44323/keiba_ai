@@ -508,9 +508,23 @@ def run(date_str: str = None):
         _fs = len(res_df)
         _odds_rank = (res_df["単勝オッズ"].rank(method="min").astype(int)
                       if "単勝オッズ" in res_df.columns else None)
+        # ── Phase1: 市場勝率（単勝オッズをオーバーラウンド補正して正規化）──────────
+        # 市場勝率_i = (1/オッズ_i) / Σ(1/オッズ_j)。控除率を除いた市場の勝利確率。
+        # エッジ = AI勝率 − 市場勝率（正＝AIが市場より強気＝妙味）。Phase2の勝負/回避
+        # ラベル再設計（マジックナンバー廃止・市場エッジ基準）の土台として蓄積する。
+        _mkt_ser = None
+        if "単勝オッズ" in res_df.columns:
+            _odds_ser = pd.to_numeric(res_df["単勝オッズ"], errors="coerce")
+            _inv = (1.0 / _odds_ser).where(_odds_ser > 0)
+            _inv_sum = float(_inv.sum(skipna=True))
+            if _inv_sum > 0:
+                _mkt_ser = _inv / _inv_sum
         for _pos, (_idx, _hr) in enumerate(res_df.iterrows()):
             _uban = _hr["馬番"]
             _ninki = int(_odds_rank.iloc[_pos]) if _odds_rank is not None else 0
+            _ai_win = float(_hr.get("勝率(AI予測)", 0) or 0)
+            _mkt = (float(_mkt_ser.iloc[_pos])
+                    if _mkt_ser is not None and pd.notna(_mkt_ser.iloc[_pos]) else None)
             race_detail_rows.append({
                 "日付": date_hf.replace("-", "/"),
                 "競馬場": venue, "R": r.get("num", ""), "レースID": r["id"],
@@ -523,6 +537,9 @@ def run(date_str: str = None):
                 "複勝率": round(float(_hr.get("複勝率(AI予測)", 0) or 0), 4),
                 "EV": round(float(_hr.get("期待値", 0) or 0), 2),
                 "複勝EV": round(float(_hr.get("複勝期待値", 0) or 0), 2),
+                # Phase1: 市場エッジ（Phase2ラベル再設計の土台）
+                "市場勝率": round(_mkt, 4) if _mkt is not None else None,
+                "エッジ": round(_ai_win - _mkt, 4) if _mkt is not None else None,
                 "1着": int(_uban in payouts["tansho"]),
                 "複勝内": int(_uban in payouts["fukusho"]),
                 "芝ダ": track_type, "距離": dist_val, "クラス": class_key,

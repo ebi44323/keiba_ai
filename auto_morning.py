@@ -361,6 +361,25 @@ def post_text_to_discord(webhook_url: str, content: str) -> bool:
         return False
 
 
+def _send_alert(text: str) -> bool:
+    """朝刊が全滅/クラッシュしたとき Discord に警告を送る（サイレント障害の検知用）。"""
+    if not DISCORD_WEBHOOK_URL:
+        return False
+    try:
+        resp = requests.post(
+            DISCORD_WEBHOOK_URL,
+            json={"content": text[:1900], "username": "keiba-ebye ⚠️"},
+            timeout=15,
+        )
+        if resp.status_code not in (200, 204):
+            logger.warning(f"警告送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"警告送信エラー: {e}")
+        return False
+
+
 # ─────────────────────────────────────────────────────────────
 # メイン処理
 # ─────────────────────────────────────────────────────────────
@@ -446,6 +465,11 @@ def run(date_str: str = None):
 
     if ok_count == 0:
         logger.error("全レースで推論失敗。投稿スキップ。")
+        _send_alert(
+            f"⚠️ **朝刊0件** | {date_label}\n"
+            f"開催 {len(races)}R を取得しましたが、全レースで推論に失敗しました。\n"
+            f"モデルロード/スクレイプ/特徴量不整合の可能性。Actionsログを確認してください。"
+        )
         return
 
     # src/reports.py のフォーマットで HTML / TXT 生成
@@ -476,4 +500,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="朝8時 全レース予想 → Discord")
     parser.add_argument("--date", type=str, default=None, help="対象日 YYYYMMDD（省略時は本日）")
     args = parser.parse_args()
-    run(args.date)
+    try:
+        run(args.date)
+    except Exception as e:
+        # モデルロード/依存関係などでの異常終了も検知して通知（通知後 exit 1 でActionsは🔴）。
+        logger.exception("朝刊実行が異常終了しました")
+        try:
+            _dt = datetime.datetime.now(JST).strftime("%Y/%m/%d")
+        except Exception:
+            _dt = "?"
+        _send_alert(
+            f"🔴 **朝刊クラッシュ** | {_dt}\n"
+            f"`auto_morning.py` が例外で停止しました:\n"
+            f"```{type(e).__name__}: {str(e)[:400]}```\n"
+            f"Actionsログを確認してください。"
+        )
+        sys.exit(1)

@@ -1,0 +1,49 @@
+name: 週末ヘルスチェック → Discord 警告
+
+# ================================================================
+# 日曜 21:00 JST（UTC 12:00）に実行。全通知（振り返り18:00 / まとめ20:30）が
+# 終わった後に、成績履歴 CSV に今週末の行が実際に書き込まれたかを検査する。
+# 見当たらなければ Discord に警告 → 「数ヶ月無言で蓄積されない」事故の再発防止。
+#
+# 【必要な GitHub Secrets】
+#   HF_TOKEN                    - HuggingFace APIトークン（read権限）
+#   HF_REPO_ID                 - 例: "yourname/keiba-ebye-models"
+#   DISCORD_REVIEW_WEBHOOK_URL - 振り返りチャンネル Webhook（無ければ DISCORD_WEBHOOK_URL）
+# ================================================================
+
+on:
+  schedule:
+    # 日曜 21:00 JST = 日曜 12:00 UTC
+    - cron: '0 12 * * 0'
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存パッケージインストール
+        run: |
+          pip install --quiet \
+            pandas==2.3.3 \
+            requests==2.32.5 \
+            pytz==2026.1 \
+            huggingface_hub==1.7.2
+
+      - name: ヘルスチェック実行
+        env:
+          HF_TOKEN:                   ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID:                 ${{ secrets.HF_REPO_ID }}
+          DISCORD_WEBHOOK_URL:        ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_REVIEW_WEBHOOK_URL: ${{ secrets.DISCORD_REVIEW_WEBHOOK_URL }}
+        run: python health_check.py

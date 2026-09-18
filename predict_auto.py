@@ -127,6 +127,29 @@ def _send_discord_direct(res_df, topics, reco, pace_text, conf_text,
         return False
 
 
+def _send_alert(text: str) -> bool:
+    """直前予想が全滅/クラッシュしたとき Discord に警告を送る（サイレント障害の検知用）。
+
+    15分毎に走るため「開催なし/対象レースなし」は正常が多い。ノイズを避けるため
+    アラートは (a) 例外クラッシュ (b) 対象レースがあったのに全て失敗 の2ケースに絞る。
+    """
+    if not DISCORD_WEBHOOK_URL:
+        return False
+    try:
+        resp = requests.post(
+            DISCORD_WEBHOOK_URL,
+            json={"content": text[:1900], "username": "keiba-ebye ⚠️"},
+            timeout=15,
+        )
+        if resp.status_code not in (200, 204):
+            logger.warning(f"警告送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"警告送信エラー: {e}")
+        return False
+
+
 def run(window_min: int = 10, window_max: int = 60):
     now = datetime.datetime.now(JST)
     date_str = now.strftime("%Y-%m-%d")
@@ -153,6 +176,7 @@ def run(window_min: int = 10, window_max: int = 60):
     logger.info(f"予想対象: {len(targets)} レース")
     bundle = load_bundle()
 
+    sent_ok = 0
     for race, mins_left in targets:
         race_id = race["id"]
         logger.info(f"推論中: {race['place']} {race['num']}R ({race_id}) 発走まで {mins_left}分")
@@ -181,9 +205,20 @@ def run(window_min: int = 10, window_max: int = 60):
         }
         ok = _send_discord_direct(res_df, topics, reco, pace_text, conf_text, race_info)
         if ok:
+            sent_ok += 1
             logger.info(f"Discord 送信成功: {race['place']} {race['num']}R")
         else:
             logger.warning(f"Discord 送信失敗: {race_id}")
+
+    # 対象レースがあったのに1件も送れなかった＝推論/送信の全滅（サイレント障害）
+    if targets and sent_ok == 0:
+        logger.error("対象レースがあったが1件も送信できず。")
+        _send_alert(
+            f"⚠️ **直前予想 全滅** | {now.strftime('%m/%d %H:%M')} JST\n"
+            f"発走 {window_min}〜{window_max}分前の {len(targets)}R を対象にしましたが、"
+            f"推論または送信が全て失敗しました。\n"
+            f"モデルロード/スクレイプ/特徴量不整合の可能性。Actionsログを確認してください。"
+        )
 
 
 if __name__ == "__main__":
@@ -191,4 +226,18 @@ if __name__ == "__main__":
     parser.add_argument("--window-min", type=int, default=10, help="発走まで何分以上のレースを対象にするか")
     parser.add_argument("--window-max", type=int, default=60, help="発走まで何分以内のレースを対象にするか")
     args = parser.parse_args()
-    run(args.window_min, args.window_max)
+    try:
+        run(args.window_min, args.window_max)
+    except Exception as e:
+        logger.exception("直前予想が異常終了しました")
+        try:
+            _dt = datetime.datetime.now(JST).strftime("%m/%d %H:%M")
+        except Exception:
+            _dt = "?"
+        _send_alert(
+            f"🔴 **直前予想クラッシュ** | {_dt} JST\n"
+            f"`predict_auto.py` が例外で停止しました:\n"
+            f"```{type(e).__name__}: {str(e)[:400]}```\n"
+            f"Actionsログを確認してください。"
+        )
+        sys.exit(1)
