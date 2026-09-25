@@ -128,6 +128,63 @@ def test_place_prob_invariants():
     assert np.all(bt_res <= 0.98 + 1e-9)
 
 
+def test_http_get_retry_semantics():
+    """http_get が requests.get のドロップイン置き換えとして振る舞うこと。
+
+    2026-09-25 追加。netkeiba の一時的な 403/429/5xx や接続断で全滅する
+    （朝刊0件・振り返り0件）事故を防ぐための共通リトライ。
+    """
+    import importlib
+    from src import config
+
+    real_requests = sys.modules.get('requests')
+
+    class _Resp:
+        def __init__(self, code): self.status_code = code
+
+    try:
+        # 一時的な 503 → リトライして成功する
+        state = {'n': 0}
+
+        class _Flaky:
+            @staticmethod
+            def get(url, headers=None, timeout=None, **kw):
+                state['n'] += 1
+                return _Resp(503 if state['n'] < 3 else 200)
+
+        sys.modules['requests'] = _Flaky
+        res = config.http_get('http://x', retries=2, backoff=1.0)
+        assert res.status_code == 200, '一時エラーからの復帰に失敗'
+        assert state['n'] == 3, f'リトライ回数が想定外: {state["n"]}'
+
+        # 恒久的な 403 → 例外にせずレスポンスを返す（呼び出し側の判定に委ねる）
+        class _Blocked:
+            @staticmethod
+            def get(*a, **k): return _Resp(403)
+
+        sys.modules['requests'] = _Blocked
+        assert config.http_get('http://x', retries=1, backoff=1.0).status_code == 403
+
+        # 全試行が例外 → 例外を送出する（従来の except 節がそのまま効く）
+        class _Boom:
+            @staticmethod
+            def get(*a, **k): raise ConnectionError('boom')
+
+        sys.modules['requests'] = _Boom
+        raised = False
+        try:
+            config.http_get('http://x', retries=1, backoff=1.0)
+        except ConnectionError:
+            raised = True
+        assert raised, '全失敗時に例外が送出されなかった'
+    finally:
+        if real_requests is not None:
+            sys.modules['requests'] = real_requests
+        else:
+            sys.modules.pop('requests', None)
+        importlib.reload(config)
+
+
 def test_no_shadowing_local_imports():
     """関数内 import がモジュール先頭の import を隠していないこと（UnboundLocalError 防止）。
 

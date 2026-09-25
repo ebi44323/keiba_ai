@@ -13,6 +13,77 @@ _DISCORD_WEBHOOK_URL        = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 _DISCORD_REVIEW_WEBHOOK_URL = (os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "").strip()) or _DISCORD_WEBHOOK_URL
 
 _DISCORD_QUEUE_FILE = "discord_queue.json"
+_POSTED_RACES_FILE  = "posted_races.json"
+
+
+# ==========================================
+# 「投稿済みレース」共有レジストリ（HF Hub）
+# ------------------------------------------
+# 2026-09-25 追加。直前予想は次の2経路から投稿されうる:
+#   (1) GitHub Actions の predict_auto.py（15分ごとのポーリング）
+#   (2) Streamlit アプリの自動投稿（画面を開いている間）
+# どちらも「そのレースを投稿したか」を知らないため、
+#   - (1) は 10〜60分前のレースを毎回投稿 → 同じレースが3〜4回流れる
+#   - (2) と (1) が同じレースを二重投稿する
+# という問題があった。投稿済み race_id を HF Hub の JSON で共有して1レース1回にする。
+#
+# 形式: {"YYYY-MM-DD": ["202606040801", ...]}（直近3日分のみ保持）
+# 取得に失敗したときは「未投稿」として扱う（投稿されない事故より重複の方がマシ）。
+# ==========================================
+def _posted_races_load() -> dict:
+    """投稿済みレースのレジストリ全体を返す。取得失敗時は空 dict。"""
+    if not _HF_TOKEN or not _HF_REPO_ID:
+        return {}
+    try:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(
+            repo_id=_HF_REPO_ID, filename=_POSTED_RACES_FILE,
+            repo_type="dataset", token=_HF_TOKEN, force_download=True,
+        )
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as _e:
+        # ファイルがまだ無い初回は例外になる（正常）
+        logger.info(f"posted_races.json 取得なし（初回/失敗）: {type(_e).__name__}")
+        return {}
+
+
+def posted_races_get(date_str: str) -> set:
+    """指定日（YYYY-MM-DD）に投稿済みの race_id 集合を返す。"""
+    try:
+        return set(_posted_races_load().get(date_str, []))
+    except Exception:
+        return set()
+
+
+def posted_races_mark(race_id: str, date_str: str) -> bool:
+    """race_id を投稿済みとして記録する（直近3日分のみ保持）。"""
+    if not _HF_TOKEN or not _HF_REPO_ID:
+        return False
+    try:
+        from huggingface_hub import HfApi
+        data = _posted_races_load()
+        ids = set(data.get(date_str, []))
+        if race_id in ids:
+            return True
+        ids.add(race_id)
+        data[date_str] = sorted(ids)
+        # 直近3日分だけ残す（無限に肥大化させない）
+        for old in sorted(data.keys())[:-3]:
+            data.pop(old, None)
+        buf = io.BytesIO(json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))
+        HfApi(token=_HF_TOKEN).upload_file(
+            path_or_fileobj=buf,
+            path_in_repo=_POSTED_RACES_FILE,
+            repo_id=_HF_REPO_ID,
+            repo_type="dataset",
+            commit_message=f"投稿済み記録 {date_str} {race_id}",
+        )
+        return True
+    except Exception as _e:
+        logger.warning(f"posted_races.json 保存失敗: {_e}")
+        return False
 
 
 # ==========================================

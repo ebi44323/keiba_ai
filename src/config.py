@@ -50,6 +50,50 @@ def safe_sleep(base=1.5, jitter=1.0):
     time.sleep(base + random.uniform(0, jitter))
 
 
+# ============================================================
+# HTTP GET（リトライ＋指数バックオフ）
+# ------------------------------------------------------------
+# 2026-09-25 追加。netkeiba のスクレイプは一時的な 403/429/5xx や接続断で
+# 簡単に失敗し、その結果「朝刊が0件」「振り返りが0件」といった全滅につながっていた
+# （2026-04〜05 は実際に数週間データが止まった）。全スクレイプをこの関数に通して
+# 短時間の失敗を吸収する。
+#
+# 挙動は requests.get のドロップイン置き換えになるようにしてある:
+#   - 成功/リトライ不能なステータスは Response をそのまま返す
+#   - 最後まで失敗したら最後の例外を送出する（＝従来どおり呼び出し側の except が拾う）
+# 403 もリトライ対象にしているのは、get_headers() が毎回 UA を選び直すため
+# 別の UA で通ることがあるから。
+# ============================================================
+RETRY_STATUS = (403, 429, 500, 502, 503, 504)
+
+
+def http_get(url, headers=None, timeout=10, retries=2, backoff=1.6, **kwargs):
+    """netkeiba 等への GET。一時エラーは指数バックオフで再試行する。
+
+    retries: 追加の再試行回数（0なら1回だけ叩く）。
+    """
+    import requests  # 遅延 import（config を軽量に保つ）
+
+    last_exc = None
+    last_res = None
+    for attempt in range(retries + 1):
+        try:
+            res = requests.get(url, headers=headers if headers is not None else get_headers(),
+                               timeout=timeout, **kwargs)
+            last_res = res
+            if res.status_code not in RETRY_STATUS:
+                return res
+            last_exc = None
+        except Exception as e:      # 接続断・タイムアウト・DNS など
+            last_exc = e
+        if attempt < retries:
+            # 指数バックオフ＋ジッタ（同時実行のワークフローが同期しないように）
+            time.sleep((backoff ** attempt) + random.uniform(0, 0.5))
+    if last_res is not None:
+        return last_res             # リトライ後も 403/5xx → 呼び出し側の判定に委ねる
+    raise last_exc                  # 全試行が例外 → 従来どおり例外を投げる
+
+
 def field_softmax_temperature(base_t, n_runners):
     """出走頭数に応じた softmax 温度（2026-08-16・小頭数の勝率膨張対策）。
 

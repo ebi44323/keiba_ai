@@ -36,7 +36,7 @@ from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_
 from src.core_model import prepare_model_and_data, _HF_TOKEN, _HF_REPO_ID
 from src.scraper import get_todays_races, get_weekend_dates, get_payouts, get_all_payouts, get_odds_from_soup, fetch_horse_last_race, fetch_odds_realtime
 from src.reports import generate_pdf_report, generate_txt_report
-from src.discord_utils import _push_discord_queue, send_discord_prediction, send_discord_review, _test_discord_webhook, _DISCORD_WEBHOOK_URL, _DISCORD_REVIEW_WEBHOOK_URL
+from src.discord_utils import _push_discord_queue, send_discord_prediction, send_discord_review, _test_discord_webhook, _DISCORD_WEBHOOK_URL, _DISCORD_REVIEW_WEBHOOK_URL, posted_races_get, posted_races_mark
 from src.inference import run_real_prediction
 from src.gemini_utils import generate_two_analysts, check_gemini_available, generate_review_analysis
 
@@ -140,6 +140,7 @@ st.sidebar.markdown("### 💬 Discord 連携")
 
 if not _DISCORD_WEBHOOK_URL:
     _discord_enabled = False
+    _discord_lead_min = 15
     st.sidebar.caption("💡 HuggingFace Secrets に以下を設定してください")
     st.sidebar.code("DISCORD_WEBHOOK_URL        # 直前予想チャンネル\nDISCORD_REVIEW_WEBHOOK_URL # 振り返りチャンネル")
 else:
@@ -148,6 +149,13 @@ else:
     _review_ok = bool(_DISCORD_REVIEW_WEBHOOK_URL and
                       _DISCORD_REVIEW_WEBHOOK_URL != _DISCORD_WEBHOOK_URL)
     st.sidebar.caption(f"📢 直前予想: ✅ 自動投稿ON")
+    # 自動投稿のリードタイム（2026-09-25: 旧実装は「発走4〜7分前」という3分幅の窓でしか
+    # 発火せず、その瞬間に画面を開いていないと永久に投稿されなかった。
+    # 「まだ投稿していないレースなら N 分前以内で投稿する」方式に変更）
+    _discord_lead_min = st.sidebar.slider(
+        "自動投稿するタイミング（発走何分前から）", 3, 30, 15, 1,
+        help="このレースをまだ投稿していなければ、発走までこの分数以内になった時点で自動投稿します",
+    )
     st.sidebar.caption(f"📊 振り返り: {'✅ 専用ch' if _review_ok else '⚠️ 予想chと共用'}")
 
     # 接続テストボタン
@@ -858,7 +866,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                 st.info(f"👉 **{next_race['place']} {next_race['num']}R** 「{next_race['title']}」 (あと **{mins_left}** 分)")
 
                 # ── オッズ自動再取得 ─────────────────────────────────
-                # 発走4〜7分前にDiscord通知、0〜6分前に画面を最新オッズで更新（常時ON）
+                # 発走 _discord_lead_min 分前以内でDiscord通知、0〜6分前に画面を最新オッズで更新（常時ON）
                 col_btn1, col_btn2 = st.columns([2, 1])
                 with col_btn1:
                     manual_run = st.button("🚀 keiba-ebye 予想起動！", type="primary")
@@ -866,19 +874,32 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                     force_refresh = st.button("🔄 オッズ再取得して更新", help="最新オッズで予想を再実行します")
 
                 # 自動トリガー判定
-                # discord_triggered: 発走4〜7分前に一度だけ → Discordにキュー追加（Cloudflare/GitHub Actionsが配信）
+                # discord_triggered: 「まだ投稿していないレース」が発走 _discord_lead_min 分前以内になったら発火
                 # auto_triggered:    発走0〜6分前に一度だけ → 画面の予想を更新
+                #
+                # ★2026-09-25 変更: 旧実装は `4 <= mins_left <= 7` という3分幅の窓でしか発火せず、
+                #   ちょうどその瞬間に画面を開いていないと投稿されない（＝ほぼ投稿されない）仕様だった。
+                #   投稿済みかどうかを唯一の判定基準にし、窓ではなく「N分前以内かつ未投稿」で発火させる。
                 discord_triggered = False
                 auto_triggered = False
-                _last_discord_key = f'last_discord_{next_race["id"]}'
+                _sent_key        = f'discord_sent_{next_race["id"]}'
                 _last_refresh_key = f'last_auto_{next_race["id"]}'
+                _already_sent    = bool(st.session_state.get(_sent_key, False))
 
-                # Discord通知: 発走4〜7分前の間に一度だけ発火
-                if 4 <= mins_left <= 7:
-                    if not st.session_state.get(_last_discord_key, False):
-                        discord_triggered = True
-                        st.session_state[_last_discord_key] = True
-                        st.info(f"📤 発走{mins_left}分前！Discordに送信します...")
+                # Discord通知: 未投稿のレースが発走 _discord_lead_min 分前以内になったら発火
+                # GitHub Actions(predict_auto.py) が既に投稿済みなら二重投稿しないよう、
+                # HF Hub の共有レジストリも確認する（重い処理なので窓に入ってからだけ引く）。
+                if (not _already_sent) and 0 <= mins_left <= _discord_lead_min:
+                    try:
+                        if next_race['id'] in posted_races_get(now.strftime('%Y-%m-%d')):
+                            st.session_state[_sent_key] = True
+                            _already_sent = True
+                            st.caption("📤 このレースは自動予想(GitHub Actions)が投稿済みです")
+                    except Exception:
+                        pass  # レジストリが引けなければ投稿を優先する
+                if (not _already_sent) and 0 <= mins_left <= _discord_lead_min:
+                    discord_triggered = True
+                    st.info(f"📤 発走{mins_left}分前（未投稿）！最新オッズで推論してDiscordに送信します...")
 
                 # 画面更新: 発走0〜6分前に一度だけ発火（最新オッズ取得）
                 if 0 <= mins_left <= 6:
@@ -944,7 +965,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                     if force_refresh or auto_triggered:
                         st.success("✅ オッズを再取得して予想を更新しました")
 
-                    # ── Discord自動投稿（discord_triggered: 15分前）──────
+                    # ── Discord自動投稿（未投稿 かつ 発走 _discord_lead_min 分前以内）──────
                     if discord_triggered and _discord_enabled and _DISCORD_WEBHOOK_URL:
                         _race_info = {
                             'place':   next_race['place'],
@@ -953,7 +974,7 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                             'mins_left': mins_left,
                             'race_id': next_race['id'],   # 重複防止キー
                         }
-                        _sent_key = f'discord_sent_{next_race["id"]}'
+                        # 投稿済みフラグは送信成功時のみ立てる（失敗したら次の再描画で再挑戦できる）
                         if not st.session_state.get(_sent_key, False):
                             _ok = send_discord_prediction(
                                 res_df, topics, reco, pace_text, conf_text,
@@ -961,9 +982,14 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
                             )
                             if _ok:
                                 st.session_state[_sent_key] = True
+                                # Actions 側が同じレースを再投稿しないよう共有レジストリにも記録
+                                try:
+                                    posted_races_mark(next_race['id'], now.strftime('%Y-%m-%d'))
+                                except Exception:
+                                    pass
                                 st.success("📤 Discordに予想を投稿しました！")
                             else:
-                                st.warning("⚠️ Discord投稿に失敗しました（ログを確認してください）")
+                                st.warning("⚠️ Discord投稿に失敗しました（次の更新で再試行します）")
 
                     # ── 手動Discord投稿ボタン ─────────────────────────
                     if _DISCORD_WEBHOOK_URL:
@@ -989,10 +1015,11 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
 
                 # 発走までの状況表示
                 if mins_left > 6:
-                    if mins_left > 20:
-                        st.caption(f"発走{mins_left}分前 — 4〜7分前になるとDiscordに自動通知、5分前に予想を更新します")
+                    if st.session_state.get(f'discord_sent_{next_race["id"]}', False):
+                        st.caption(f"発走{mins_left}分前 — 📤Discord投稿済み。5分前に最新オッズで予想を更新します")
                     else:
-                        st.caption(f"発走{mins_left}分前 — Discord通知済み。5分前に最新オッズで予想を更新します")
+                        st.caption(f"発走{mins_left}分前 — 発走{_discord_lead_min}分前以内になると"
+                                   f"Discordに自動投稿、5分前に最新オッズで予想を更新します")
             else:
                 st.success("🏁 本日の全レースは終了しました。")
             

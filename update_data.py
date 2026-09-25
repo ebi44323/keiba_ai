@@ -30,7 +30,7 @@ import sqlite3
 
 # src パッケージを import できるようにプロジェクトルートを path に追加
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.config import PLACE_DICT, VENUE_MAWARI, VENUE_CHIKEI, get_headers, safe_sleep
+from src.config import PLACE_DICT, VENUE_MAWARI, VENUE_CHIKEI, get_headers, safe_sleep, http_get
 
 # ================================================================
 # 設定
@@ -137,7 +137,7 @@ def get_race_ids_for_date(date_str):
         f'https://race.netkeiba.com/top/race_list.html?kaisai_date={date_str}',
     ]:
         try:
-            r = requests.get(url, headers=get_headers(), timeout=10); r.encoding='euc-jp'
+            r = http_get(url, headers=get_headers(), timeout=10); r.encoding='euc-jp'
             print(f"    [net] {url.split('?')[0].split('/')[-1]} → HTTP {r.status_code}")
             for a in BeautifulSoup(r.text,'html.parser').find_all('a', href=re.compile(r'race_id=(\d{12})')):
                 rid = re.search(r'race_id=(\d{12})',a['href']).group(1)
@@ -152,7 +152,7 @@ def get_race_ids_for_date(date_str):
     if not race_ids:
         try:
             url_db = f'https://db.netkeiba.com/race/list/{date_str}/'
-            r = requests.get(url_db, headers=get_headers(), timeout=10)
+            r = http_get(url_db, headers=get_headers(), timeout=10)
             r.encoding = 'euc-jp'
             print(f"    [net] db.netkeiba fallback → HTTP {r.status_code}")
             for m in re.findall(r'/race/(\d{12})', r.text):
@@ -170,7 +170,7 @@ def get_race_ids_for_date(date_str):
 def scrape_one_race(rid, date_str):
     rows = []
     try:
-        r = requests.get(f"https://db.netkeiba.com/race/{rid}/", headers=get_headers(), timeout=15)
+        r = http_get(f"https://db.netkeiba.com/race/{rid}/", headers=get_headers(), timeout=15, retries=2)
         r.encoding = 'euc-jp'
         soup = BeautifulSoup(r.text, 'html.parser')
 

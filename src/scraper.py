@@ -7,7 +7,7 @@ import logging
 import pandas as pd
 import numpy as np
 import streamlit as st
-from src.config import PLACE_DICT, get_headers
+from src.config import PLACE_DICT, get_headers, http_get
 
 logger = logging.getLogger('keiba_ebye')
 
@@ -24,7 +24,7 @@ def get_todays_races(date_str=None):
     ]
     for url in urls_to_try:
         try:
-            res = requests.get(url, headers=get_headers(), timeout=10)
+            res = http_get(url, headers=get_headers(), timeout=10)
             try:
                 _content = res.content.decode('utf-8')
             except UnicodeDecodeError:
@@ -61,7 +61,7 @@ def get_todays_races(date_str=None):
     if not races:
         url = f'https://db.netkeiba.com/race/list/{target_date_str}/'
         try:
-            res = requests.get(url, headers=get_headers(), timeout=10)
+            res = http_get(url, headers=get_headers(), timeout=10)
             try:
                 html_text = res.content.decode('utf-8')
             except UnicodeDecodeError:
@@ -104,7 +104,7 @@ def get_payouts(race_id):
     urls = [f"https://race.netkeiba.com/race/result.html?race_id={race_id}", f"https://db.netkeiba.com/race/{race_id}/"]
     for url in urls:
         try:
-            res = requests.get(url, headers=get_headers(), timeout=10)
+            res = http_get(url, headers=get_headers(), timeout=10)
             try:
                 _html = res.content.decode('utf-8')
             except UnicodeDecodeError:
@@ -148,7 +148,7 @@ def get_all_payouts(race_id):
     # 1. netkeiba (出馬表ページ ＆ 過去データベース 両対応)
     for url in [f"https://race.netkeiba.com/race/result.html?race_id={race_id}", f"https://db.netkeiba.com/race/{race_id}/"]:
         try:
-            res = requests.get(url, headers=get_headers(), timeout=10)
+            res = http_get(url, headers=get_headers(), timeout=10)
             html_bytes = res.content
             try:
                 html_text = html_bytes.decode('utf-8')
@@ -224,7 +224,7 @@ def get_all_payouts(race_id):
     try:
         yahoo_id = str(race_id)[2:]
         url_yh = f"https://sports.yahoo.co.jp/keiba/race/result/{yahoo_id}/"
-        res_y = requests.get(url_yh, headers=get_headers(), timeout=10)
+        res_y = http_get(url_yh, headers=get_headers(), timeout=10)
         soup_y = BeautifulSoup(res_y.text, 'html.parser')
         
         current_kind = None # 🌟 ここでも券種を記憶
@@ -326,7 +326,7 @@ def fetch_odds_realtime(race_id: str) -> tuple[dict, dict]:
             "Cache-Control": "no-cache, no-store",
             "Pragma": "no-cache",
         }
-        r = requests.get(api_url, headers=api_headers, timeout=5)
+        r = http_get(api_url, headers=api_headers, timeout=5, retries=1)
         api_data = _json.loads(r.text)
         if 'data' in api_data and 'odds' in api_data['data'] and '1' in api_data['data']['odds']:
             odds_raw = api_data['data']['odds']['1']
@@ -347,9 +347,9 @@ def fetch_odds_realtime(race_id: str) -> tuple[dict, dict]:
     # ── Yahoo競馬（フォールバック）──────────────────────────────
     if not odds_dict:
         try:
-            r_y = requests.get(
+            r_y = http_get(
                 f"https://sports.yahoo.co.jp/keiba/race/odds/tfw/{str(race_id)[2:]}/",
-                headers=get_headers(), timeout=5
+                headers=get_headers(), timeout=5, retries=1
             )
             soup_y = BeautifulSoup(r_y.text, 'html.parser')
             for tr in soup_y.find_all('tr'):
@@ -416,7 +416,7 @@ def fetch_horse_last_race(horse_id: str) -> dict:
     result = {}
     try:
         url = f"https://db.netkeiba.com/horse/{horse_id}/"
-        r = requests.get(url, headers=get_headers(), timeout=8)
+        r = http_get(url, headers=get_headers(), timeout=8)
         try:
             _html = r.content.decode('utf-8')
         except UnicodeDecodeError:
@@ -535,7 +535,7 @@ def fetch_oikiri_data(race_id: str) -> dict:
         url = f"https://race.netkeiba.com/race/oikiri.html?race_id={race_id}"
         headers = get_headers()
         headers['Referer'] = f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}'
-        r = requests.get(url, headers=headers, timeout=10)
+        r = http_get(url, headers=headers, timeout=10)
         try:
             content = r.content.decode('utf-8')
         except UnicodeDecodeError:

@@ -4,8 +4,11 @@
 - 発走まで window_min〜window_max 分のレースを対象に推論
 - Discord Webhook に直接送信（GitHub Actions は Discord への通信が可能）
 
+- 同じレースを何度も投稿しないよう、HF Hub の投稿済みレジストリ（posted_races.json）で
+  重複を防ぐ。アプリからの投稿とも共有されるため「1レース1回」になる。
+
 使い方:
-  python predict_auto.py [--window-min 10] [--window-max 60]
+  python predict_auto.py [--window-min 5] [--window-max 25]
 
 必要な環境変数:
   HF_TOKEN             - HuggingFace API トークン（read権限）
@@ -48,6 +51,7 @@ with mock.patch("streamlit.cache_resource", _passthrough), \
     from src.core_model import prepare_model_and_data
     from src.scraper import get_todays_races
     from src.inference import run_real_prediction
+    from src.discord_utils import posted_races_get, posted_races_mark
 
 JST = pytz.timezone("Asia/Tokyo")
 
@@ -150,7 +154,7 @@ def _send_alert(text: str) -> bool:
         return False
 
 
-def run(window_min: int = 10, window_max: int = 60):
+def run(window_min: int = 5, window_max: int = 25):
     now = datetime.datetime.now(JST)
     date_str = now.strftime("%Y-%m-%d")
     logger.info(f"実行日時: {now.strftime('%Y-%m-%d %H:%M')} JST")
@@ -173,7 +177,20 @@ def run(window_min: int = 10, window_max: int = 60):
         logger.info(f"対象レースなし (発走まで {window_min}〜{window_max} 分のレースがありません)")
         return
 
-    logger.info(f"予想対象: {len(targets)} レース")
+    # ── 投稿済みレースを除外（2026-09-25）────────────────────────────────
+    # 旧実装はウィンドウ(10〜60分前)に入っているレースを毎回投稿していたため、
+    # 15分ポーリングで同じレースが3〜4回 Discord に流れていた。
+    # HF Hub の共有レジストリで「1レース1回」にし、アプリからの投稿とも重複させない。
+    already = posted_races_get(date_str)
+    if already:
+        logger.info(f"本日の投稿済み: {len(already)}R")
+    fresh = [(r, m) for r, m in targets if r["id"] not in already]
+    if not fresh:
+        logger.info(f"対象 {len(targets)}R はすべて投稿済み。終了。")
+        return
+    targets = fresh
+
+    logger.info(f"予想対象: {len(targets)} レース（未投稿のみ）")
     bundle = load_bundle()
 
     sent_ok = 0
@@ -206,6 +223,8 @@ def run(window_min: int = 10, window_max: int = 60):
         ok = _send_discord_direct(res_df, topics, reco, pace_text, conf_text, race_info)
         if ok:
             sent_ok += 1
+            # 投稿できたレースだけ記録する（失敗したら次のポーリングで再挑戦される）
+            posted_races_mark(race_id, date_str)
             logger.info(f"Discord 送信成功: {race['place']} {race['num']}R")
         else:
             logger.warning(f"Discord 送信失敗: {race_id}")
@@ -223,8 +242,10 @@ def run(window_min: int = 10, window_max: int = 60):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="自動予想 → Discord 通知")
-    parser.add_argument("--window-min", type=int, default=10, help="発走まで何分以上のレースを対象にするか")
-    parser.add_argument("--window-max", type=int, default=60, help="発走まで何分以内のレースを対象にするか")
+    # 既定は 5〜25分前。幅20分 > ポーリング間隔15分 なので、cronが多少ずれても
+    # 各レースは必ず1回はウィンドウ内で観測される（投稿済みレジストリで重複は防ぐ）。
+    parser.add_argument("--window-min", type=int, default=5, help="発走まで何分以上のレースを対象にするか")
+    parser.add_argument("--window-max", type=int, default=25, help="発走まで何分以内のレースを対象にするか")
     args = parser.parse_args()
     try:
         run(args.window_min, args.window_max)

@@ -444,6 +444,10 @@ def run(date_str: str = None):
         # ── レース判定別（買うべき/見送り）本命成績 ─────────────────────────
         # confidence_text 先頭のラベル(🔥勝負 / ⚠️回避 / 🟡通常)を単一の真実の源として利用
         grade_line = (conf_text or "").split("\n")[0]
+        # 明細CSV用の短いラベル（Phase2のラベル別ROI集計に使う）
+        _grade_label = ("勝負" if "勝負" in grade_line else
+                        "回避" if "回避" in grade_line else
+                        "鉄板" if "鉄板" in grade_line else "通常")
         _tan_pay  = payouts["tansho"].get(honmei, 0)
         _fuku_pay = payouts["fukusho"].get(honmei, 0)
         if "勝負" in grade_line:
@@ -566,6 +570,12 @@ def run(date_str: str = None):
                 "1着": int(_uban in payouts["tansho"]),
                 "複勝内": int(_uban in payouts["fukusho"]),
                 "芝ダ": track_type, "距離": dist_val, "クラス": class_key,
+                # Phase2: レース判定ラベル（🔥勝負/⚠️回避/🟡通常）。
+                # 「ラベル別の実ROI」を後から集計して閾値を導出するために保存する。
+                "判定": _grade_label,
+                # 単勝払戻(円)。オッズから復元できるが、集計を単純にするため明示保存。
+                "単勝払戻": int(payouts["tansho"].get(_uban, 0)),
+                "複勝払戻": int(payouts["fukusho"].get(_uban, 0)),
             })
 
         _h_win  = honmei in payouts["tansho"]

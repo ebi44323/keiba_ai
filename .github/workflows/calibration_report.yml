@@ -1,0 +1,70 @@
+name: キャリブレーション診断 → Discord
+
+# ================================================================
+# 手動実行専用。HF Hub の ai_race_history.csv（本番OOS）を読み、
+# AI勝率のキャリブレーション（過信度）とラベル閾値の材料を計測してレポートする。
+#
+# ★ 測定専用。モデルも推論も一切変更しない（Phase 2 の判断材料を出すだけ）。
+#   HF_TOKEN を持つのは Actions 側だけなので、ローカルでは実行できない。
+#
+# 【必要な GitHub Secrets】
+#   HF_TOKEN / HF_REPO_ID
+#   DISCORD_REVIEW_WEBHOOK_URL（無ければ DISCORD_WEBHOOK_URL）
+# ================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: '直近何日分を対象にするか（0=全期間）'
+        default: '120'
+      discord:
+        description: 'Discordにも投稿する (yes/no)'
+        default: 'yes'
+
+jobs:
+  calibration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存パッケージインストール
+        run: |
+          pip install --quiet \
+            pandas==2.3.3 \
+            numpy==2.4.2 \
+            requests==2.32.5 \
+            huggingface_hub==1.7.2
+
+      - name: キャリブレーション診断
+        env:
+          HF_TOKEN:                   ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID:                 ${{ secrets.HF_REPO_ID }}
+          DISCORD_WEBHOOK_URL:        ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_REVIEW_WEBHOOK_URL: ${{ secrets.DISCORD_REVIEW_WEBHOOK_URL }}
+        run: |
+          DAYS="${{ github.event.inputs.days || '120' }}"
+          ARGS="--days $DAYS --save-csv calibration_data.csv"
+          if [ "${{ github.event.inputs.discord || 'yes' }}" = "yes" ]; then
+            ARGS="$ARGS --discord"
+          fi
+          python calibration_report.py $ARGS | tee calibration_report.txt
+
+      - name: レポートを成果物として保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-report
+          path: |
+            calibration_report.txt
+            calibration_data.csv
+          if-no-files-found: ignore

@@ -7,6 +7,7 @@ import re
 import datetime
 import logging
 import traceback
+from src.config import http_get
 from src.utils import get_headers, resolve_name, VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class
 from src.scraper import fetch_horse_last_race, fetch_oikiri_data
 from src.gemini_utils import score_oikiri_comments, check_gemini_available
@@ -62,7 +63,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         _ts = int(_t.time())
         odds_api_url = f'https://race.netkeiba.com/api/api_get_jra_odds.html?type=1&action=init&race_id={race_id}&_={_ts}'
         api_headers = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36","Referer":f"https://race.netkeiba.com/odds/index.html?type=b1&race_id={race_id}","X-Requested-With":"XMLHttpRequest","Cache-Control":"no-cache, no-store","Pragma":"no-cache"}
-        r_api = requests.get(odds_api_url, headers=api_headers, timeout=5)
+        r_api = http_get(odds_api_url, headers=api_headers, timeout=5, retries=1)
         api_data = json.loads(r_api.text)
         if 'data' in api_data and 'odds' in api_data['data'] and '1' in api_data['data']['odds']:
             odds_raw = api_data['data']['odds']['1']
@@ -85,7 +86,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
 
     if not odds_dict:
         try:
-            r_yahoo = requests.get(f"https://sports.yahoo.co.jp/keiba/race/odds/tfw/{str(race_id)[2:]}/", headers=get_headers(), timeout=5)
+            r_yahoo = http_get(f"https://sports.yahoo.co.jp/keiba/race/odds/tfw/{str(race_id)[2:]}/", headers=get_headers(), timeout=5, retries=1)
             soup_y = BeautifulSoup(r_yahoo.text, 'html.parser')
             for tr in soup_y.find_all('tr'):
                 tds = tr.find_all('td')
@@ -100,7 +101,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
 
     for fetch_url in [f'https://race.netkeiba.com/race/shutuba.html?race_id={race_id}',f'https://race.netkeiba.com/race/result.html?race_id={race_id}',f'https://db.netkeiba.com/race/{race_id}/']:
         try:
-            r = requests.get(fetch_url, headers=get_headers(), timeout=10)
+            r = http_get(fetch_url, headers=get_headers(), timeout=10, retries=2)
             try:
                 _html = r.content.decode('utf-8')
             except UnicodeDecodeError:
