@@ -640,6 +640,31 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         elif nige_count==0: pace_text=f"🐌 【スローペース濃厚】 確たる逃げ馬が不在。先行馬({senko_count}頭)の押し切り、前残りに注意。"
         else: pace_text=f"🐎 【ミドルペース】 逃げ馬{nige_count}頭、先行馬{senko_count}頭。平均的なペースで実力が反映されやすい展開。"
 
+        # ── 展開予想（想定ペース・想定隊列）2026-09-26 ────────────────────
+        # ⚠️ 表示専用。統計テーブル(src/pace_tables.json)の lookup のみで、
+        #    モデル特徴量・勝率・◎選定には一切影響しない（＝再学習不要）。
+        #    枠の着順への影響は既存の特徴量 `枠_コース_着順パーセント` が担っており、
+        #    ここで出すのは「1角でどの位置を取りそうか」というメカニズム側の情報。
+        # 返り値の9タプルは変えず、pace_text への追記と df_test への列追加で渡す。
+        try:
+            from src.pace_model import predict_pace, predict_formation
+            _runners = df_test[[c for c in ('馬番', '馬名', '前走_前半コーナー率', '脚質カテゴリ')
+                                if c in df_test.columns]].to_dict('records')
+            _pace = predict_pace(_runners, place, track_type, distance)
+            _form = predict_formation(_runners, place, track_type, distance)
+            if _form:
+                _by_num = {str(f['馬番']): f for f in _form}
+                _key = df_test['馬番'].astype(str)
+                df_test['想定隊列順']   = _key.map(lambda k: _by_num.get(k, {}).get('rank'))
+                df_test['想定ゾーン']   = _key.map(lambda k: _by_num.get(k, {}).get('zone', ''))
+                df_test['想定位置率']   = _key.map(lambda k: _by_num.get(k, {}).get('mid'))
+                df_test['想定位置帯lo'] = _key.map(lambda k: _by_num.get(k, {}).get('lo'))
+                df_test['想定位置帯hi'] = _key.map(lambda k: _by_num.get(k, {}).get('hi'))
+            if _pace.get('label') and _pace['label'] != '不明':
+                pace_text = f"{pace_text}\n{_pace['text']}"
+        except Exception as _pe:
+            logger.warning(f'展開予想の算出をスキップ: {_pe}')
+
         # アンサンブル: 3モデルの予測を結合
         # ── 絶対スコア正規化（2026-07-25）─────────────────────────────
         # bundleにscore_norms(学習データ基準の1〜99%tile)があれば、それを固定基準に normalize。
