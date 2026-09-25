@@ -535,12 +535,18 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
         if '想定隊列順' in df_res.columns and df_res['想定隊列順'].notna().any():
             try:
                 import streamlit.components.v1 as components
-                from src.formation_view import build_formation_html, rows_from_df
-                _rows = rows_from_df(df_res)
+                from src.formation_view import build_race_sim_html, sim_rows_from_df
+                _rows = sim_rows_from_df(df_res)
                 if _rows:
-                    _h = build_formation_html(_rows, autoplay=True, include_script=True)
-                    # 馬数に応じて高さを確保（1頭19px + ヘッダ/フッタ）
-                    components.html(_h, height=96 + 19 * len(_rows), scrolling=False)
+                    # 距離は特徴量として res_df に入っているのでそこから取る
+                    try:
+                        _dist = int(float(df_res['距離'].iloc[0])) if '距離' in df_res.columns else 1600
+                    except (TypeError, ValueError):
+                        _dist = 1600
+                    _h = build_race_sim_html(_rows, distance=_dist,
+                                             autoplay=True, include_assets=True)
+                    # 馬数に応じて高さを確保（1頭18px + ヘッダ/結果/注記）
+                    components.html(_h, height=110 + 18 * len(_rows), scrolling=False)
             except Exception as _fe:
                 st.caption(f"隊列シミュレーションを表示できませんでした: {_fe}")
 

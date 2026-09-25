@@ -1,212 +1,227 @@
 """
-formation_view.py — 想定隊列シミュレーター（アニメーション表示）
+formation_view.py — レースシミュレーター（競馬中継風アニメーション）
 
-src/pace_model.py が出した「想定隊列」を、ゲートから1角までの動きとして見せる。
+ゲート → 想定隊列 → 直線の追い比べ → ゴール までを走らせて見せる。
 アプリ（Streamlit）と朝刊HTML（完全オフライン）で**同じ部品**を使う。
 
 ★設計方針
-  - **外部ライブラリ・外部通信ゼロ**（インラインCSS/JSのみ）。朝刊はDL後オフラインで
+  - **外部ライブラリ・外部通信ゼロ**（インラインCSS/JS）。朝刊はDL後オフラインで
     見るため、CDNを1つでも使うと競馬場で動かなくなる。
-  - **点ではなく帯**。位置の実測ばらつきは SD 0.275（14頭立てで±3.6頭分）あるので、
-    馬の後ろにぶれ幅のハローを敷き、確定情報のように見せない。
-  - 縦の並びは**馬番順**（上が内枠）＝真上から見た俯瞰。内外の並びも同時に読める。
-  - 横は走行位置。ゲートで固まって出て、1角にかけて隊列が縦長に散っていく。
+  - **着順は毎回 AI勝率にもとづく抽選**（Plackett-Luce）。同じレースでも再生のたびに
+    結果が変わる。これは演出であると同時に**正直さの担保**でもある:
+    勝率20%の馬は10回まわせば約2回しか勝たない、が体感で分かる。
+    「AIが選んだ1着」を毎回同じに見せると、確率予測を確定予想のように誤解させてしまう。
+  - **道中の位置は pace_model の想定隊列**（前走位置率との相関 +0.441・実測）。
+    直線での動きは着順への補間であり、そこは演出であることを画面にも明記する。
 
 使い方:
-    from src.formation_view import build_formation_html, FORMATION_SCRIPT
+    from src.formation_view import build_race_sim_html, RACE_SIM_ASSETS
     # 単体（アプリ）
-    html = build_formation_html(rows, autoplay=True, include_script=True)
-    # 朝刊のように何レースも並べるとき: スクリプトは1回だけ出す
-    head = FORMATION_SCRIPT
-    body = "".join(build_formation_html(r, autoplay=False, include_script=False) for r in races)
+    html = build_race_sim_html(rows, distance=1600, autoplay=True, include_assets=True)
+    # 朝刊のように何レースも並べるとき: アセットは1回だけ
+    head = RACE_SIM_ASSETS
+    body = "".join(build_race_sim_html(r, include_assets=False) for r in races)
 
 rows: 各馬 dict のリスト
-    馬番, 馬名, 印, mid（0=前〜1=後）, lo, hi, 勝率, zone
+    馬番, 馬名, 印, mid（0=前〜1=後・想定隊列）, 勝率
 """
 
 import json
 import html as _html
 
-# ── 共有スクリプト（朝刊では1回だけ埋め込む）──────────────────────────────
-# requestAnimationFrame でゲート→1角の位置を補間する。CSSトランジションではなく
-# JSで描くのは、ぶれ幅ハローを進行に合わせて広げたいため（序盤は確定的、
-# 隊列が決まるにつれ不確実性が見えてくる、という見せ方）。
-FORMATION_SCRIPT = """
-<style>
-.kbfm{position:relative;background:linear-gradient(180deg,#eef6ee,#e3efe3);border:1px solid #cfe0cf;
- border-radius:10px;padding:8px 10px 6px;margin:8px 0;overflow:hidden}
-.kbfm .kbfm-turf{position:absolute;inset:0;background:repeating-linear-gradient(90deg,
- rgba(255,255,255,.35) 0 2px,transparent 2px 46px);pointer-events:none}
-.kbfm-hd{display:flex;justify-content:space-between;align-items:center;font-size:11px;
- color:#4a6b4a;margin-bottom:4px;position:relative}
-.kbfm-btn{cursor:pointer;border:1px solid #9bbf9b;background:#fff;color:#2f5d2f;border-radius:12px;
- padding:1px 10px;font-size:11px;line-height:1.6}
-.kbfm-btn:active{transform:scale(.96)}
-.kbfm-lane{position:relative;height:17px;margin:1px 0}
-.kbfm-halo{position:absolute;top:2px;height:13px;border-radius:7px;opacity:0;transition:opacity .3s}
-.kbfm-h{position:absolute;top:0;height:17px;display:flex;align-items:center;gap:3px;
- white-space:nowrap;transform:translateX(-50%)}
-.kbfm-pill{display:inline-flex;align-items:center;justify-content:center;min-width:19px;height:15px;
- border-radius:8px;color:#fff;font-size:10px;font-weight:700;padding:0 3px;
- box-shadow:0 1px 2px rgba(0,0,0,.25)}
-.kbfm-nm{font-size:10px;color:#33513a;max-width:82px;overflow:hidden;text-overflow:ellipsis}
-.kbfm-goal{position:absolute;top:0;bottom:0;width:0;border-left:2px dashed #b04a4a;opacity:.5}
-.kbfm-ft{font-size:10px;color:#6b7d6b;margin-top:3px;position:relative}
-@media (prefers-color-scheme:dark){
- .kbfm{background:linear-gradient(180deg,#26332a,#1e2a22);border-color:#3c5240}
- .kbfm-hd,.kbfm-ft{color:#9ec49e}.kbfm-nm{color:#c8dcc8}
- .kbfm-btn{background:#2c3d30;color:#bfe0bf;border-color:#4e6b52}}
-</style>
-<script>
-(function(){
- if(window.__kbfmInit) return; window.__kbfmInit=1;
- function run(el){
-  var data=JSON.parse(el.getAttribute('data-h')||'[]'); if(!data.length) return;
-  var lanes=el.querySelectorAll('.kbfm-h'), halos=el.querySelectorAll('.kbfm-halo');
-  var t0=null, DUR=2600;
-  el.classList.add('kbfm-playing');
-  function frame(ts){
-   if(t0===null) t0=ts;
-   var p=Math.min((ts-t0)/DUR,1);
-   // ゲートで少し溜めてから伸びる（イーズアウト）
-   var e=p<0.12?0:1-Math.pow(1-(p-0.12)/0.88,3);
-   for(var i=0;i<data.length;i++){
-    var d=data[i];
-    // x: 8%（ゲート）→ 最終位置。pos=0(想定先頭)が右端側に来るよう反転
-    var fx=20+(1-d.pos)*68, x=8+(fx-8)*e;
-    lanes[i].style.left=x+'%';
-    // ぶれ幅。枠外にはみ出すと切れて見えるので [0,100] に収める
-    var hw=Math.min(d.band*62,46), L=Math.max(0,x-hw/2), R=Math.min(100,x+hw/2);
-    halos[i].style.left=L+'%';
-    halos[i].style.width=Math.max(R-L,1)+'%';
-    halos[i].style.opacity=(e*0.22).toFixed(3);
-   }
-   if(p<1){requestAnimationFrame(frame);} else {el.classList.remove('kbfm-playing');}
-  }
-  requestAnimationFrame(frame);
- }
- window.kbfmPlay=function(btn){var el=btn.closest('.kbfm');el.__done=1;run(el);};
- var io=('IntersectionObserver' in window)?new IntersectionObserver(function(es){
-   es.forEach(function(x){
-     if(x.isIntersecting&&!x.target.__done){x.target.__done=1;run(x.target);io.unobserve(x.target);}
-   });},{threshold:.35}):null;
- // 朝刊はカードをJSで作り直すので、描画後に再スキャンできるよう関数を公開する。
- // 画面に入ったレースだけ1回再生（36レース同時再生で重くならないように）。
- window.kbfmScan=function(){
-  document.querySelectorAll('.kbfm').forEach(function(el){
-   if(el.__seen) return; el.__seen=1;
-   if(el.getAttribute('data-auto')==='1'){el.__done=1;run(el);}
-   else if(io){io.observe(el);}
-  });
- };
- if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',window.kbfmScan);}
- else{window.kbfmScan();}
-})();
-</script>
-"""
-
 _MARK_COLOR = {'◎': '#c0392b', '○': '#2471a3', '〇': '#2471a3', '▲': '#1e8449',
                '△': '#8e6a1f', '☆': '#7d3c98'}
 
 
-def mark_color(mark: str, win: float) -> str:
+def mark_color(mark: str, win: float = 0.0) -> str:
     """印とAI勝率から表示色を決める（朝刊HTML側からも使う）。"""
-    return _color(mark, win)
-
-
-def _color(mark: str, win: float) -> str:
     m = (mark or '').strip()
     if m in _MARK_COLOR:
         return _MARK_COLOR[m]
-    # 無印はAI勝率が高いほど濃いグレー
-    return '#8a9aa5' if win < 0.08 else '#5d6d78'
+    return '#8a9aa5' if (win or 0) < 0.08 else '#5d6d78'
 
 
-def build_formation_html(rows: list, race_label: str = '', pace_text: str = '',
-                         autoplay: bool = True, include_script: bool = False) -> str:
-    """想定隊列アニメーションのHTMLを返す。
+# ── 共有アセット（朝刊では1回だけ埋め込む）──────────────────────────────
+RACE_SIM_ASSETS = """
+<style>
+.kbrs{position:relative;background:linear-gradient(180deg,#dff0e0,#cfe6d2 62%,#b9d8be);
+ border:1px solid #bcd6bf;border-radius:10px;padding:8px 10px 6px;margin:8px 0;overflow:hidden}
+.kbrs-hd{display:flex;align-items:center;gap:8px;font-size:11px;color:#31543a;margin-bottom:5px}
+.kbrs-rem{font-weight:800;font-size:15px;color:#1d4427;font-variant-numeric:tabular-nums;
+ background:rgba(255,255,255,.7);border-radius:6px;padding:0 7px}
+.kbrs-btn{margin-left:auto;cursor:pointer;border:1px solid #8fb894;background:#fff;color:#245c2f;
+ border-radius:12px;padding:1px 11px;font-size:11px;line-height:1.7;white-space:nowrap}
+.kbrs-btn:active{transform:scale(.96)}
+.kbrs-track{position:relative;border-radius:6px;overflow:hidden;
+ background:repeating-linear-gradient(90deg,rgba(255,255,255,.28) 0 2px,transparent 2px 52px)}
+.kbrs-goal{position:absolute;top:0;bottom:0;left:94%;width:5px;
+ background:repeating-linear-gradient(180deg,#fff 0 5px,#111 5px 10px);opacity:.85}
+.kbrs-lane{position:relative;height:16px;margin:1px 0}
+.kbrs-h{position:absolute;top:0;height:16px;display:flex;align-items:center;gap:3px;
+ white-space:nowrap;transform:translateX(-100%);will-change:left}
+.kbrs-pill{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:14px;
+ border-radius:7px;color:#fff;font-size:10px;font-weight:800;padding:0 3px;
+ box-shadow:0 1px 2px rgba(0,0,0,.28)}
+.kbrs-nm{font-size:10px;color:#2c4a33;max-width:74px;overflow:hidden;text-overflow:ellipsis}
+.kbrs-ord{font-size:9.5px;font-weight:800;color:#fff;background:#1d4427;border-radius:6px;
+ padding:0 4px;opacity:0;transition:opacity .25s}
+.kbrs-res{font-size:10.5px;color:#2c4a33;margin-top:4px;min-height:14px;font-weight:700}
+.kbrs-ft{font-size:9.5px;color:#5c7361;margin-top:2px;line-height:1.45}
+@media (prefers-color-scheme:dark){
+ .kbrs{background:linear-gradient(180deg,#22322a,#1a2720 62%,#152019);border-color:#3a5240}
+ .kbrs-hd,.kbrs-res{color:#a8cdad}.kbrs-nm{color:#bcd8c0}.kbrs-ft{color:#7e9a84}
+ .kbrs-rem{color:#d6f0d9;background:rgba(0,0,0,.35)}
+ .kbrs-btn{background:#2a3d30;color:#bfe0bf;border-color:#4c6a52}
+ .kbrs-ord{background:#bfe0bf;color:#1a2720}}
+</style>
+<script>
+(function(){
+ if(window.__kbrsInit) return; window.__kbrsInit=1;
+ var EASE=function(x){return 1-Math.pow(1-x,3);};
 
-    autoplay=True  … 表示と同時に再生（アプリ用・1レースずつ表示するため）
-    autoplay=False … 画面に入ったとき1回だけ再生（朝刊用・36レース分の負荷対策）
-    include_script … 共有CSS/JSを同梱するか（朝刊では最初の1回だけTrue）
-    """
-    if not rows:
-        return ''
-    # ── 横位置は「想定順位」で等間隔に配る ──────────────────────────────
-    # mid（回帰の条件付き平均）は中央へ圧縮され、14頭でも 0.26〜0.68 にしか散らない。
-    # そのまま描くと全馬が画面中央に団子になって隊列が読めない。
-    # 我々が本当に知っているのは *順序* （前走位置率との相関 +0.441）なので、順位で配る。
-    # 一方 **ぶれ幅（ハロー）は実測SDのまま**描くので、「順番は目安・かなり入れ替わる」
-    # という情報は失われない（ハロー同士が大きく重なるのが正しい絵）。
-    valid = []
-    for r in rows:
-        try:
-            m = float(r.get('mid', 0.5))
-        except (TypeError, ValueError):
-            continue
-        valid.append((m, r))
-    valid.sort(key=lambda x: x[0])
-    n_v = max(len(valid) - 1, 1)
-    pct_by_id = {id(r): i / n_v for i, (_, r) in enumerate(valid)}
+ // AI勝率を重みにした Plackett-Luce 抽選。1着の出現率が勝率どおりになる。
+ function sampleOrder(ws){
+  var idx=ws.map(function(_,i){return i;}), w=ws.slice(), out=[];
+  while(idx.length){
+   var s=0,i; for(i=0;i<idx.length;i++) s+=w[idx[i]];
+   var r=Math.random()*s, a=0, pick=idx.length-1;
+   for(i=0;i<idx.length;i++){a+=w[idx[i]]; if(r<=a){pick=i;break;}}
+   out.push(idx[pick]); idx.splice(pick,1);
+  }
+  return out; // out[k] = k着の馬インデックス
+ }
 
-    data, lanes = [], []
-    # 縦は馬番順＝真上から見た内→外
-    for r in sorted((r for _, r in valid), key=lambda x: (x.get('馬番') or 0)):
-        try:
-            mid = float(r.get('mid', 0.5)); lo = float(r.get('lo', mid)); hi = float(r.get('hi', mid))
-        except (TypeError, ValueError):
-            continue
-        pct = pct_by_id.get(id(r), 0.5)
-        win = float(r.get('勝率', 0) or 0)
-        mark = str(r.get('印', '') or '')
-        col = _color(mark, win)
-        num = int(r.get('馬番') or 0)
-        name = _html.escape(str(r.get('馬名', ''))[:7])
-        # pos = 描画位置（順位ベース）/ band = ぶれ幅（実測SDのまま）
-        data.append({'pos': round(pct, 4), 'band': round(max(hi - lo, 0.02), 4)})
-        lanes.append(
-            f'<div class="kbfm-lane">'
-            f'<div class="kbfm-halo" style="background:{col}"></div>'
-            f'<div class="kbfm-h" style="left:8%">'
-            f'<span class="kbfm-pill" style="background:{col}">{num}</span>'
-            f'<span class="kbfm-nm">{mark}{name}</span></div></div>')
+ function build(el){
+  var hs=JSON.parse(el.getAttribute('data-h')||'[]');
+  if(!hs.length){el.style.display='none';return null;}
+  var dist=parseInt(el.getAttribute('data-dist')||'0',10)||1600;
+  var lanes=hs.map(function(h){
+   return '<div class="kbrs-lane"><div class="kbrs-h" style="left:6%">'
+    +'<span class="kbrs-ord"></span>'
+    +'<span class="kbrs-pill" style="background:'+h.c+'">'+h.no+'</span>'
+    +'<span class="kbrs-nm">'+h.mk+h.nm+'</span></div></div>';
+  }).join('');
+  el.innerHTML='<div class="kbrs-hd"><span>🏇 レースシミュレーション</span>'
+   +'<span class="kbrs-rem">残り'+dist+'m</span>'
+   +'<span class="kbrs-btn">▶ 出走</span></div>'
+   +'<div class="kbrs-track"><div class="kbrs-goal"></div>'+lanes+'</div>'
+   +'<div class="kbrs-res"></div>'
+   +'<div class="kbrs-ft">道中の位置は想定隊列（実測にもとづく）、着順は<b>AI勝率による抽選</b>です。'
+   +'再生するたび結果が変わります＝それが確率予想の実際の姿です。</div>';
+  var st={hs:hs,dist:dist,el:el,wins:{},runs:0,
+   lanes:el.querySelectorAll('.kbrs-h'),ords:el.querySelectorAll('.kbrs-ord'),
+   rem:el.querySelector('.kbrs-rem'),res:el.querySelector('.kbrs-res'),
+   btn:el.querySelector('.kbrs-btn')};
+  st.btn.addEventListener('click',function(){play(st);});
+  el.__st=st; return st;
+ }
 
-    head = (f'<span>🐎 想定隊列シミュレーション{" ｜ " + _html.escape(race_label) if race_label else ""}'
-            f'</span><span class="kbfm-btn" onclick="kbfmPlay(this)">▶ 再生</span>')
-    foot = ('ゲート→1角の想定。<b>薄い帯＝位置のぶれ幅</b>（実測SD±1・14頭立てで±3.6頭分）。'
-            '位置は目安で、帯が重なる馬同士は先行争いになりやすい読みです。')
-    if pace_text:
-        foot = _html.escape(pace_text) + '<br>' + foot
-    return ((FORMATION_SCRIPT if include_script else '') +
-            f'<div class="kbfm" data-auto="{1 if autoplay else 0}" '
-            f'data-h=\'{json.dumps(data, separators=(",", ":"))}\'>'
-            f'<div class="kbfm-turf"></div>'
-            f'<div class="kbfm-hd">{head}</div>'
-            f'<div style="position:relative">'
-            f'<div class="kbfm-goal" style="left:90%"></div>'
-            + ''.join(lanes) +
-            f'</div><div class="kbfm-ft">{foot}</div></div>')
+ function play(st){
+  if(st.running) return; st.running=true; st.runs++;
+  var hs=st.hs,n=hs.length;
+  var order=sampleOrder(hs.map(function(h){return Math.max(h.w,0.001);}));
+  var place=new Array(n); order.forEach(function(hi,k){place[hi]=k;});
+  // 最終x: 1着を94%に置き、以降は等間隔で後ろへ（画面内に収める）
+  var gap=Math.min(56/Math.max(n-1,1),5.2);
+  var xf=hs.map(function(_,i){return 94-place[i]*gap;});
+  // 道中x: 想定隊列（mid 0=前）を 26〜82% に展開
+  var xm=hs.map(function(h){return 26+(1-h.e)*56;});
+  st.ords.forEach(function(o){o.style.opacity=0;o.textContent='';});
+  st.res.textContent='';
+  var t0=null,DUR=5200;
+  function frame(ts){
+   if(t0===null)t0=ts;
+   var p=Math.min((ts-t0)/DUR,1);
+   st.rem.textContent='残り'+(Math.ceil(st.dist*(1-p)/50)*50)+'m';
+   for(var i=0;i<n;i++){
+    var x;
+    if(p<0.18){ x=6+(xm[i]-6)*EASE(p/0.18); }              // ゲート→隊列形成
+    else if(p<0.68){                                        // 道中（わずかに息を入れる）
+     x=xm[i]+Math.sin((p-0.18)*11+i)*0.5;
+    }else{                                                  // 直線の追い比べ
+     var q=(p-0.68)/0.32; q=q<0.5?2*q*q:1-Math.pow(-2*q+2,2)/2;
+     x=xm[i]+(xf[i]-xm[i])*q;
+    }
+    st.lanes[i].style.left=x+'%';
+   }
+   if(p<1){requestAnimationFrame(frame);}
+   else{
+    for(var k=0;k<Math.min(3,n);k++){
+     var hi=order[k]; st.ords[hi].textContent=(k+1)+'着'; st.ords[hi].style.opacity=1;
+    }
+    var w=hs[order[0]];
+    st.wins[w.no]=(st.wins[w.no]||0)+1;
+    var tally=Object.keys(st.wins).sort(function(a,b){return st.wins[b]-st.wins[a];})
+      .slice(0,3).map(function(k){return k+'番 '+st.wins[k]+'回';}).join(' / ');
+    st.res.textContent='🏁 '+w.no+'番 '+w.nm+' が1着（AI勝率'+(w.w*100).toFixed(1)+'%）'
+      +'　▶ '+st.runs+'回中: '+tally;
+    st.btn.textContent='▶ もう一度';
+    st.running=false;
+   }
+  }
+  requestAnimationFrame(frame);
+ }
+
+ var io=('IntersectionObserver' in window)?new IntersectionObserver(function(es){
+   es.forEach(function(x){
+    if(x.isIntersecting&&!x.target.__done){x.target.__done=1;
+     if(x.target.__st)play(x.target.__st); io.unobserve(x.target);}
+   });},{threshold:.4}):null;
+
+ // 朝刊はカードをJSで作り直すので、描画後に再スキャンできるよう公開する。
+ window.kbrsScan=function(){
+  document.querySelectorAll('.kbrs').forEach(function(el){
+   if(el.__seen)return; el.__seen=1;
+   var st=build(el); if(!st)return;
+   if(el.getAttribute('data-auto')==='1'){el.__done=1;play(st);}
+   else if(io){io.observe(el);}
+  });
+ };
+ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',window.kbrsScan);}
+ else{window.kbrsScan();}
+})();
+</script>
+"""
 
 
-def rows_from_df(df, limit: int = 18) -> list:
-    """res_df（inference の戻り）から build_formation_html 用の rows を作る。"""
-    need = '想定位置率'
-    if df is None or need not in getattr(df, 'columns', []):
+def sim_rows_from_df(df, limit: int = 18) -> list:
+    """res_df（inference の戻り）からシミュレーター用の行データを作る。"""
+    if df is None or '想定位置率' not in getattr(df, 'columns', []):
         return []
     out = []
     for _, r in df.head(limit).iterrows():
-        if r.get(need) is None:
-            continue
         try:
-            mid = float(r[need])
+            mid = float(r['想定位置率'])
         except (TypeError, ValueError):
             continue
-        out.append({
-            '馬番': r.get('馬番'), '馬名': r.get('馬名', ''), '印': r.get('印', ''),
-            'mid': mid,
-            'lo': float(r.get('想定位置帯lo', mid) or mid),
-            'hi': float(r.get('想定位置帯hi', mid) or mid),
-            '勝率': float(r.get('勝率(AI予測)', 0) or 0),
-            'zone': r.get('想定ゾーン', ''),
-        })
-    return out
+        win = float(r.get('勝率(AI予測)', 0) or 0)
+        mark = str(r.get('印', '') or '')
+        try:
+            no = int(float(r.get('馬番', 0) or 0))
+        except (TypeError, ValueError):
+            no = 0
+        out.append({'no': no, 'nm': str(r.get('馬名', ''))[:7], 'mk': mark,
+                    'c': mark_color(mark, win), 'w': round(win, 4), 'e': round(mid, 4)})
+    # 縦は馬番順＝上が内枠
+    return sorted(out, key=lambda x: x['no'])
+
+
+def build_race_sim_html(rows: list, distance=1600, autoplay: bool = True,
+                        include_assets: bool = False) -> str:
+    """レースシミュレーターのHTMLを返す。
+
+    autoplay=True  … 表示と同時に出走（アプリ用・1レースずつ表示するため）
+    autoplay=False … 画面に入ったとき1回だけ出走（朝刊用・36レース分の負荷対策）
+    include_assets … 共有CSS/JSを同梱するか（朝刊では最初の1回だけTrue）
+    """
+    if not rows:
+        return ''
+    try:
+        d = int(float(distance or 1600))
+    except (TypeError, ValueError):
+        d = 1600
+    safe = [{'no': r['no'], 'nm': _html.escape(str(r['nm'])), 'mk': _html.escape(str(r['mk'])),
+             'c': r['c'], 'w': r['w'], 'e': r['e']} for r in rows]
+    return ((RACE_SIM_ASSETS if include_assets else '') +
+            f'<div class="kbrs" data-auto="{1 if autoplay else 0}" data-dist="{d}" '
+            f'data-h=\'{json.dumps(safe, ensure_ascii=False, separators=(",", ":"))}\'></div>')
