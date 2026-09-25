@@ -159,23 +159,35 @@ def _ci_str(k: int, n: int) -> str:
 
 
 def roi(sub: pd.DataFrame, kind: str = "tan") -> tuple:
-    """(回収率%, 的中数, 件数)。払戻列があれば使い、無ければオッズから復元する。"""
+    """(回収率%, 的中数, 件数)。
+
+    ⚠️ 2026-09-25 修正: 払戻列は 2026-09-25 以降の振り返りからしか記録されないため、
+    古い行（列なし=NaN）と新しい行が同じCSVに混在する。旧実装は「部分集合のどこかに
+    払戻>0があれば全行で払戻列を使う」判定だったので、古い行の払戻が0扱いになり
+    回収率が極端に低く出ていた（全体96.8%→10.3%の原因）。
+    行ごとに「払戻列があればそれ、無ければオッズから復元」と判定する。
+    """
     n = len(sub)
     if n == 0:
         return 0.0, 0, 0
     if kind == "tan":
         hit = (sub["1着"] == 1)
-        if "単勝払戻" in sub.columns and pd.to_numeric(sub["単勝払戻"], errors="coerce").fillna(0).sum() > 0:
-            ret = pd.to_numeric(sub["単勝払戻"], errors="coerce").fillna(0).sum()
-        else:
-            ret = (sub.loc[hit, "単勝オッズ"].fillna(0) * 100).sum()
+        pay = (pd.to_numeric(sub["単勝払戻"], errors="coerce")
+               if "単勝払戻" in sub.columns else pd.Series(np.nan, index=sub.index))
+        fallback = (pd.to_numeric(sub["単勝オッズ"], errors="coerce").fillna(0) * 100).where(hit, 0.0)
+        ret = float(pay.where(pay.notna(), fallback).sum())
     else:
         hit = (sub["複勝内"] == 1)
-        if "複勝払戻" in sub.columns and pd.to_numeric(sub["複勝払戻"], errors="coerce").fillna(0).sum() > 0:
-            ret = pd.to_numeric(sub["複勝払戻"], errors="coerce").fillna(0).sum()
-        else:
-            return float("nan"), int(hit.sum()), n   # 複勝は払戻列が無いと復元不可
-    return round(float(ret) / (n * 100) * 100, 1), int(hit.sum()), n
+        if "複勝払戻" not in sub.columns:
+            return float("nan"), int(hit.sum()), n   # 複勝はオッズから復元できない
+        pay = pd.to_numeric(sub["複勝払戻"], errors="coerce")
+        covered = pay.notna()
+        if covered.sum() == 0:
+            return float("nan"), int(hit.sum()), n
+        # 払戻が記録されている行だけで計算する（母数もその行数に合わせる）
+        return (round(float(pay[covered].sum()) / (int(covered.sum()) * 100) * 100, 1),
+                int(hit[covered].sum()), int(covered.sum()))
+    return round(ret / (n * 100) * 100, 1), int(hit.sum()), n
 
 
 # ──────────────────────────────────────────────────────────────
@@ -215,8 +227,10 @@ def build_report(df: pd.DataFrame) -> str:
     # ── 2. ◎(AI順位1)のキャリブレーション・頭数帯別 ───────────────
     h = df[df["AI順位"] == 1].copy()
     add("【2. 本命◎ の予測 vs 実績（頭数帯別）】")
-    add("  z = (実際の勝ち数 − AI予測の期待勝ち数) / 標準偏差。|z|<2 は誤差の範囲、")
-    add("  |z|>=3 は『この帯だけ何かが起きている』外れ帯として ★ を付け、全体から除いて再計算する。")
+    add("  zAI  = (実際の勝ち数 − AI予測の期待勝ち数) / 標準偏差")
+    add("  z市場 = 同じものを市場（オッズ）基準で見た値。**外れ帯★の判定はこちらで行う**。")
+    add("  ※ AI基準で判定すると、AIに系統的なズレがある場合に全部の帯が『外れ』に見えてしまい、")
+    add("     ズレの証拠そのものを除外してしまう。較正済みの市場を物差しにするのが正しい。")
     add("  " + "-" * 70)
     add(f"  {'頭数帯':>8} {'R数':>5} {'◎勝':>4} {'AI予測':>7} {'期待':>6} {'zAI':>6} "
         f"{'市場':>6} {'z市場':>6} {'実勝率':>7} {'95%CI':>13} {'単ROI':>7}")
@@ -230,11 +244,16 @@ def build_report(df: pd.DataFrame) -> str:
         k = int((s["1着"] == 1).sum())
         p_ai = s["AI勝率"].to_numpy(dtype=float)
         z_ai = pb_z(k, p_ai)
-        mkt = s["市場勝率"].dropna().to_numpy(dtype=float) if "市場勝率" in s.columns else np.array([])
-        z_mk = pb_z(k * len(mkt) / max(n, 1), mkt) if len(mkt) else float("nan")
+        # 市場基準の z は「市場勝率が記録されている行」だけで、その行の勝敗と突き合わせる
+        # （旧実装は観測勝利数をカバー率で按分しており不正確だった）
+        s_mkt = s.dropna(subset=["市場勝率"]) if "市場勝率" in s.columns else s.iloc[0:0]
+        mkt = s_mkt["市場勝率"].to_numpy(dtype=float)
+        z_mk = pb_z(int((s_mkt["1着"] == 1).sum()), mkt) if len(mkt) else float("nan")
         r, _, _ = roi(s, "tan")
-        flag = "★" if abs(z_ai) >= 3 else " "
-        if abs(z_ai) >= 3:
+        # 外れ帯の判定は市場基準を優先（市場データが薄い帯のみAI基準にフォールバック）
+        z_judge = z_mk if len(mkt) >= 20 else z_ai
+        flag = "★" if abs(z_judge) >= 3 else " "
+        if abs(z_judge) >= 3:
             outliers.append((name, lo, hi))
         add(f" {flag}{name:>8} {n:5d} {k:4d} {p_ai.mean()*100:6.1f}% {p_ai.sum():6.1f} {z_ai:+6.2f} "
             f"{(mkt.mean()*100 if len(mkt) else float('nan')):5.1f}% {z_mk:+6.2f} "
@@ -244,12 +263,13 @@ def build_report(df: pd.DataFrame) -> str:
         n = len(s)
         k = int((s["1着"] == 1).sum())
         p_ai = s["AI勝率"].to_numpy(dtype=float)
-        mkt = s["市場勝率"].dropna().to_numpy(dtype=float) if "市場勝率" in s.columns else np.array([])
+        s_mkt = s.dropna(subset=["市場勝率"]) if "市場勝率" in s.columns else s.iloc[0:0]
+        mkt = s_mkt["市場勝率"].to_numpy(dtype=float)
+        z_mk = pb_z(int((s_mkt["1着"] == 1).sum()), mkt) if len(mkt) else float("nan")
         r, _, _ = roi(s, "tan")
         add(f"  {label:>8} {n:5d} {k:4d} {p_ai.mean()*100:6.1f}% {p_ai.sum():6.1f} "
             f"{pb_z(k, p_ai):+6.2f} {(mkt.mean()*100 if len(mkt) else float('nan')):5.1f}% "
-            f"{(pb_z(k*len(mkt)/max(n,1), mkt) if len(mkt) else float('nan')):+6.2f} "
-            f"{k/n*100:6.1f}% {_ci_str(k, n):>13} {r:6.1f}%")
+            f"{z_mk:+6.2f} {k/n*100:6.1f}% {_ci_str(k, n):>13} {r:6.1f}%")
         return n, k, p_ai.mean(), (mkt.mean() if len(mkt) else float("nan"))
 
     add("  " + "-" * 70)
@@ -310,7 +330,11 @@ def build_report(df: pd.DataFrame) -> str:
     add("【3. 事後の温度補正 T* の推定】")
     add("  レース内で p^(1/T) 再正規化。T>1で過信を緩和。順位は不変＝◎選定に影響しない。")
 
-    grid = [round(x, 2) for x in np.arange(0.6, 3.01, 0.05)]
+    # 2026-09-25: 旧実装は下限0.60で、実データの最適値がちょうど0.60＝探索範囲の端で
+    # 止まっていた（本当の最適はもっと下かもしれず、値を信用できない）。範囲を広げ、
+    # 端に張り付いたら警告する。
+    T_LO, T_HI = 0.35, 3.0
+    grid = [round(x, 2) for x in np.arange(T_LO, T_HI + 0.001, 0.05)]
 
     def _fit_t(sub: pd.DataFrame) -> tuple:
         """そのデータでの最適 T と logloss を返す。"""
@@ -357,6 +381,9 @@ def build_report(df: pd.DataFrame) -> str:
     vals = [best_t] + [t for _, t in checks if not math.isnan(t)]
     spread = max(vals) - min(vals) if len(vals) > 1 else 0.0
     add("")
+    if best_t <= T_LO + 0.01 or best_t >= T_HI - 0.01:
+        add(f"  ⚠️ T* が探索範囲の端（{best_t:.2f}）に張り付いている。真の最適はこの外側の可能性があり、")
+        add(f"     この値自体を採用してはいけない。")
     if spread > 0.3:
         add(f"  ⚠️ **T* が切り口によって {min(vals):.2f}〜{max(vals):.2f} とばらついている（幅 {spread:.2f}）。**")
         add(f"     まだ推定が安定していない。この段階で推論に入れてはいけない。")
