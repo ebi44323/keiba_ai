@@ -128,6 +128,41 @@ def test_place_prob_invariants():
     assert np.all(bt_res <= 0.98 + 1e-9)
 
 
+def test_no_shadowing_local_imports():
+    """関数内 import がモジュール先頭の import を隠していないこと（UnboundLocalError 防止）。
+
+    2026-09-20 の振り返りクラッシュの再発防止:
+      auto_review.run() の途中に `import pandas as pd` があり、pd が run() のローカル変数に
+      なったため、関数前半の pd 参照が UnboundLocalError で落ちて Discord に何も飛ばなかった。
+    """
+    import ast
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    targets = ['auto_review.py', 'auto_morning.py', 'predict_auto.py',
+               'auto_weekend_summary.py', 'health_check.py']
+    problems = []
+    for fname in targets:
+        path = os.path.join(root, fname)
+        if not os.path.exists(path):
+            continue
+        tree = ast.parse(open(path, encoding='utf-8').read())
+        # モジュール先頭（トップレベル）で束縛された import 名
+        top = set()
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for a in node.names:
+                    top.add((a.asname or a.name).split('.')[0])
+        # 関数内の import で同じ名前を再束縛していないか
+        for fn in [n for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            for node in ast.walk(fn):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for a in node.names:
+                        name = (a.asname or a.name).split('.')[0]
+                        if name in top:
+                            problems.append(f'{fname}:{node.lineno} {fn.name}() が "{name}" を再import')
+    assert not problems, 'モジュール先頭の import を関数内で隠している: ' + ' / '.join(problems)
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]
     failed = 0

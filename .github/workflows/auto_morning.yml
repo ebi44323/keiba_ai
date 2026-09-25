@@ -1,11 +1,20 @@
 name: 朝刊予想 → Discord 投稿
 
 # ================================================================
-# 土日 7:00 JST（金曜 22:40 UTC / 土曜 22:40 UTC）に実行し
-# 当日の全開催レース予想を .txt と .html ファイルとして Discord に投稿する。
+# 毎日 5:40 JST（前日 20:40 UTC）に実行し、当日の全開催レース予想を
+# .txt と .html ファイルとして Discord に投稿する。
 # GitHub Actions は Discord への直接通信が可能なため、キュー経由ではなく直接送信。
-# ※ 実行に最大40分かかる＋GitHub Actionsのスケジュール遅延があるため、
-#   「9時前投稿」を確実にするため 8:00→7:00 開始に前倒し（2026-09-19）。
+#
+# ★ 2026-09-25 の変更点:
+#   1) 開始を 7:00 → 5:40 JST に前倒し。全レース推論に30〜40分＋Actionsの起動遅延が
+#      最大30分ほど乗るため、7:00開始では投稿が8〜9時台にずれ込んでいた。
+#      5:40開始なら遅延を見込んでも 8時台までにほぼ確実に届く。
+#      （オッズは前日夜の前売りが出ているので5時台でも取得できる）
+#   2) 土日のみ（'* * 5,6'）→ 毎日に変更。祝日の月曜開催・火曜開催
+#      （例: 2026-09-21/22）で朝刊が出なかったため。無開催日は
+#      auto_morning.py が静かに終了する（平日は Discord 通知も出さない）。
+#   3) timeout を 40 → 75 分に拡大。スクリプト側にも時間予算（--budget-min）を持たせ、
+#      予算超過時は「そこまでの結果」で投稿を打ち切る（timeout で無投稿になるのを防ぐ）。
 #   毎時0分はrunner混雑で遅延しやすいため :40 に設定。
 #
 # 【必要な GitHub Secrets】
@@ -16,9 +25,8 @@ name: 朝刊予想 → Discord 投稿
 
 on:
   schedule:
-    # 土曜 7:00 JST = 金曜 22:40 UTC → cron: '40 22 * * 5'
-    # 日曜 7:00 JST = 土曜 22:40 UTC → cron: '40 22 * * 6'
-    - cron: '40 22 * * 5,6'
+    # 毎日 5:40 JST = 前日 20:40 UTC（開催の有無はスクリプト側で判定）
+    - cron: '40 20 * * *'
   workflow_dispatch:
     inputs:
       date:
@@ -28,7 +36,7 @@ on:
 jobs:
   morning-predict:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 75
 
     steps:
       - name: リポジトリをチェックアウト
@@ -60,13 +68,14 @@ jobs:
           HF_REPO_ID:          ${{ secrets.HF_REPO_ID }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # schedule 実行時は UTC 23:xx なので翌日 JST が対象日
+          # schedule 実行時は UTC 20:40 なので JST では翌日が対象日
           # workflow_dispatch 時は inputs.date を使う（空なら auto_morning.py 側で当日扱い）
+          # --budget-min: ジョブの timeout(75分) より手前で推論を打ち切り、必ず投稿する
           DATE_ARG="${{ github.event.inputs.date }}"
           if [ -n "$DATE_ARG" ]; then
-            python auto_morning.py --date "$DATE_ARG"
+            python auto_morning.py --date "$DATE_ARG" --budget-min 60
           else
-            # UTCの翌日（=JSTの当日）をYYYYMMDD形式で渡す
+            # UTC+9h（=JSTの当日）をYYYYMMDD形式で渡す
             NEXT_DAY=$(date -u -d "+9 hours" +%Y%m%d)
-            python auto_morning.py --date "$NEXT_DAY"
+            python auto_morning.py --date "$NEXT_DAY" --budget-min 60
           fi

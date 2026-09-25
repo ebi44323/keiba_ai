@@ -54,6 +54,23 @@ def get_last_weekend() -> tuple[str, str]:
     return sat.strftime("%Y%m%d"), sun.strftime("%Y%m%d")
 
 
+def _chunk_lines(lines, limit: int = 1900):
+    """行リストを Discord の2000字制限に収まるチャンクへ分割（``` を跨がないよう閉じ開きする）。"""
+    chunks, buf, in_fence = [], "", False
+    for ln in lines:
+        closing = 4 if in_fence else 0
+        if buf and len(buf) + len(ln) + 1 + closing > limit:
+            chunks.append(buf + "\n```" if in_fence else buf)
+            buf = "```\n" + ln if in_fence else ln
+        else:
+            buf = f"{buf}\n{ln}" if buf else ln
+        if ln.strip().startswith("```"):
+            in_fence = not in_fence
+    if buf:
+        chunks.append(buf + "\n```" if in_fence else buf)
+    return chunks
+
+
 def _f(row: dict, key: str) -> float:
     try:
         v = row.get(key, 0)
@@ -194,16 +211,18 @@ def run(sat_str: str = None, sun_str: str = None):
     if not review_url:
         logger.error("DISCORD_WEBHOOK_URL / DISCORD_REVIEW_WEBHOOK_URL が未設定のため Discord 送信をスキップ")
         return
+    # 旧実装は msg[:1990] で末尾（芝/ダート成績など）が切り落とされていたため分割送信にする。
     try:
-        resp = requests.post(
-            review_url,
-            json={"content": msg[:1990], "username": "keiba-ebye 📊週末"},
-            timeout=15,
-        )
-        if resp.status_code in (200, 204):
-            logger.info("Discord 送信成功")
-        else:
-            logger.error(f"Discord 送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
+        for _i, _c in enumerate(_chunk_lines(msg.split("\n"))):
+            resp = requests.post(
+                review_url,
+                json={"content": _c, "username": "keiba-ebye 📊週末"},
+                timeout=15,
+            )
+            if resp.status_code in (200, 204):
+                logger.info(f"Discord 送信成功 (chunk {_i+1})")
+            else:
+                logger.error(f"Discord 送信失敗 HTTP {resp.status_code}: {resp.text[:200]}")
     except Exception as e:
         logger.error(f"Discord 送信エラー: {e}")
 

@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-08-29d")
+st.caption("v2026-09-25a")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -1048,12 +1048,22 @@ if action in ["⏩ 次のレースを予想", "🔍 レースを指定して予�
 elif action == "📅 今週末の全レース予想":
     st.subheader("📅 今週末 (土・日) の先取り予想")
     sat_str, sun_str = get_weekend_dates()
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns([1, 1, 1.4])
     with col1: run_sat = st.button(f"🚀 土曜日 ({sat_str[4:6]}/{sat_str[6:]}) の予想", type="primary")
     with col2: run_sun = st.button(f"🚀 日曜日 ({sun_str[4:6]}/{sun_str[6:]}) の予想", type="primary")
+    # 祝日の月曜開催・火曜開催（例: 2026-09-21/22）は土日ボタンでは選べないため、
+    # 任意の日付を指定して同じ一括予想を回せるようにする（2026-09-25追加）。
+    with col3:
+        _any_date = st.date_input("その他の開催日（祝日開催など）",
+                                  value=None, format="YYYY/MM/DD",
+                                  key="weekend_any_date")
+        run_any = st.button("🚀 指定日の予想", disabled=_any_date is None)
 
-    if run_sat or run_sun:
-        _td = sat_str if run_sat else sun_str
+    if run_sat or run_sun or run_any:
+        if run_any:
+            _td = _any_date.strftime("%Y%m%d")
+        else:
+            _td = sat_str if run_sat else sun_str
         st.session_state["weekend_date"] = _td
         st.session_state["weekend_results"] = []
         with st.spinner("出馬表を収集中..."):

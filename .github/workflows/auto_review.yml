@@ -1,9 +1,17 @@
 name: 自動振り返り → Discord 通知
 
 # ================================================================
-# 土日 18:00 JST（UTC 9:00）に当日の全レースを振り返り、
+# 毎日 18:00 JST（UTC 9:00）に当日の全レースを振り返り、
 # 本命◎・期待値馬の成績を集計して Discord に送信する。
-# ※ ユーザー希望により 19:30→18:00 に変更（2026-09-19）。
+# さらに日曜は、振り返りに続けて「土日合算まとめ」も同じジョブで送信する。
+#
+# ※ 2026-09-25: 土日のみ（cron '0 9 * * 0,6'）→ 毎日に変更。
+#   祝日の月曜開催・火曜開催（例: 2026-09-21/22）で振り返りが一切走らず、
+#   その日の成績が ai_daily_history.csv に残らなかったため。
+#   無開催の平日は auto_review.py 側で「開催なし」を検知して静かに終了する
+#   （Discord 通知もアラートも出ない）。
+#
+# ※ 投稿は 18:00 JST（19:30→18:00 に変更 2026-09-19）。
 #   ⚠️ 夏場は最終レースが 18:30 頃まであるため、真夏は最終レースの結果が
 #      未確定のまま集計される可能性がある（秋冬は最終16:30〜17:00で問題なし）。
 #      真夏に不完全になる場合は 19:00〜19:30 に戻すか、確定レースのみ集計する調整を検討。
@@ -17,18 +25,21 @@ name: 自動振り返り → Discord 通知
 
 on:
   schedule:
-    # 土曜・日曜 UTC 9:00 = JST 18:00
-    - cron: '0 9 * * 0,6'
+    # 毎日 UTC 9:00 = JST 18:00（開催の有無はスクリプト側で判定）
+    - cron: '0 9 * * *'
   workflow_dispatch:
     inputs:
       date:
         description: '対象日 YYYYMMDD（省略時は当日 JST）'
         default: ''
+      weekend_summary:
+        description: '土日合算まとめも送る (auto/yes/no・auto=日曜のみ)'
+        default: 'auto'
 
 jobs:
   review:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: リポジトリをチェックアウト
@@ -66,4 +77,32 @@ jobs:
             python auto_review.py --date "$DATE_ARG"
           else
             python auto_review.py
+          fi
+
+      # 日曜は当日の振り返りに続けて土日合算まとめも投稿する（ユーザー希望 2026-09-25）。
+      # 振り返りが失敗しても部分集計のまとめは出したいので if: always()。
+      - name: 土日合算まとめ（日曜のみ）
+        if: always()
+        env:
+          HF_TOKEN:                  ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID:                ${{ secrets.HF_REPO_ID }}
+          DISCORD_WEBHOOK_URL:       ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_REVIEW_WEBHOOK_URL: ${{ secrets.DISCORD_REVIEW_WEBHOOK_URL }}
+        run: |
+          MODE="${{ github.event.inputs.weekend_summary }}"
+          MODE="${MODE:-auto}"
+          DATE_ARG="${{ github.event.inputs.date }}"
+          # 対象日の曜日（1=月 … 7=日）。--date 指定時はその日付を基準にする。
+          if [ -n "$DATE_ARG" ]; then
+            DOW=$(date -u -d "${DATE_ARG:0:4}-${DATE_ARG:4:2}-${DATE_ARG:6:2}" +%u)
+          else
+            DOW=$(TZ=Asia/Tokyo date +%u)
+          fi
+          if [ "$MODE" = "no" ]; then
+            echo "weekend_summary=no のためスキップ"
+          elif [ "$MODE" = "yes" ] || [ "$DOW" = "7" ]; then
+            echo "土日合算まとめを送信します (DOW=$DOW, MODE=$MODE)"
+            python auto_weekend_summary.py
+          else
+            echo "日曜ではないためスキップ (DOW=$DOW)"
           fi

@@ -384,22 +384,27 @@ def _send_alert(text: str) -> bool:
 # メイン処理
 # ─────────────────────────────────────────────────────────────
 
-def run(date_str: str = None):
-    now = datetime.datetime.now(JST)
+def run(date_str: str = None, budget_min: float = 0):
+    started = datetime.datetime.now(JST)
+    now = started
     target_dt = datetime.datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=JST) if date_str else now
     date_label = target_dt.strftime("%Y/%m/%d")
     date_str8  = target_dt.strftime("%Y%m%d")
     date_hf    = target_dt.strftime("%Y-%m-%d")
 
-    logger.info(f"朝刊予想 対象日: {date_label}")
+    logger.info(f"朝刊予想 対象日: {date_label}（時間予算 {budget_min or '無制限'} 分）")
 
     races = get_todays_races(date_str8)
     if not races:
+        # 2026-09-25: 祝日の月曜・火曜開催に対応するため毎日実行に変更した。
+        # 無開催の平日に毎朝「開催がありません」を投稿すると通知がノイズになるので、
+        # 土日（ほぼ必ず開催がある日）だけ一言出し、平日はログのみで静かに終了する。
         logger.info("本日の開催なし。終了。")
-        post_text_to_discord(
-            DISCORD_WEBHOOK_URL,
-            f"🐴 **keiba-ebye** {date_label} — 本日はJRAの開催がありません。"
-        )
+        if target_dt.weekday() in (5, 6):
+            post_text_to_discord(
+                DISCORD_WEBHOOK_URL,
+                f"🐴 **keiba-ebye** {date_label} — 本日はJRAの開催がありません。"
+            )
         return
 
     logger.info(f"{len(races)} レース取得。モデルロード中...")
@@ -414,8 +419,20 @@ def run(date_str: str = None):
     results_list = []
     ok_count = 0
     venues = sorted(set(r["place"] for r in races))
+    skipped_budget = 0
 
-    for r in races:
+    for _ri, r in enumerate(races):
+        # ── 時間予算チェック（Actionsのtimeoutで「無投稿」になるのを防ぐ）──────
+        # 予算を超えたら残りの推論を諦め、ここまでの結果で朝刊を投稿する。
+        if budget_min:
+            elapsed = (datetime.datetime.now(JST) - started).total_seconds() / 60
+            if elapsed >= budget_min:
+                skipped_budget = len(races) - _ri
+                logger.warning(
+                    f"時間予算 {budget_min}分 を超過（経過 {elapsed:.1f}分）。"
+                    f"残り {skipped_budget}R の推論を打ち切って投稿します。"
+                )
+                break
         logger.info(f"  推論: {r['place']} {r['num']}R ({r['id']})")
         try:
             res_df, topics_list, reco, pace_text, conf_text, track_type, _, distance, err = run_real_prediction(
@@ -479,9 +496,11 @@ def run(date_str: str = None):
 
     # Discord サマリーメッセージ（ファイルと一緒に投稿）
     gemini_note = "🤖 11R Gemini AIコメント付き" if GEMINI_API_KEY else ""
+    budget_note = (f"\n⏱️ 実行時間の上限に達したため {skipped_budget}R は未掲載です"
+                   f"（発走前の直前予想でカバーされます）" if skipped_budget else "")
     summary = (
         f"🐴 **keiba-ebye AI朝刊予想** | {date_label}\n"
-        f"開催: **{' / '.join(venues)}** 全**{ok_count}**レース\n"
+        f"開催: **{' / '.join(venues)}** 全**{ok_count}**レース{budget_note}\n"
         f"▼ 本日の全レース予想を .txt / .html で添付しました（全頭表示）\n"
         f"⭐=EV1.5以上  🔥=EV2.0以上  🎯=穴馬マーク  {gemini_note}\n"
         f"-# keiba-ebye 自動予想 / 馬券は自己責任でお願いします"
@@ -497,11 +516,13 @@ def run(date_str: str = None):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="朝8時 全レース予想 → Discord")
+    parser = argparse.ArgumentParser(description="朝刊 全レース予想 → Discord")
     parser.add_argument("--date", type=str, default=None, help="対象日 YYYYMMDD（省略時は本日）")
+    parser.add_argument("--budget-min", type=float, default=0,
+                        help="推論の時間予算（分）。超過したらそこまでの結果で投稿する。0=無制限")
     args = parser.parse_args()
     try:
-        run(args.date)
+        run(args.date, args.budget_min)
     except Exception as e:
         # モデルロード/依存関係などでの異常終了も検知して通知（通知後 exit 1 でActionsは🔴）。
         logger.exception("朝刊実行が異常終了しました")

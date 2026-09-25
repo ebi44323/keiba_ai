@@ -512,39 +512,39 @@ def main():
         print(f"⚠️ {PED_CSV} が見つかりません。血統はWeb取得のみになります。")
 
     # 取得対象日付の決定
+    # ★2026-09-25: 従来は「土日だけ」を対象にしていたため、祝日の月曜開催・火曜開催
+    #   （例: 2026-09-21 敬老の日 / 09-22）のレースが学習データに永久に入らなかった。
+    #   通常モードと --from は全曜日を対象にする（無開催日は get_race_ids_for_date が
+    #   0件を返すだけなので実害はなく、コストは1日あたり1リクエスト程度）。
+    #   ギャップ検出モード(--all)だけは走査範囲が数年に及ぶため、開催がありうる
+    #   土日＋月火に絞る（水〜金の開催は極めて稀・必要なら --from で個別に取得する）。
     today = datetime.date.today()
     if from_date is not None:
-        # --from YYYYMMDD モード: 指定日以降の全土日（既存IDはスクレイプ時にスキップ）
-        target_dates = [
-            d.date() for d in pd.date_range(start=from_date, end=today)
-            if d.weekday() in (5, 6)
-        ]
+        # --from YYYYMMDD モード: 指定日以降の全日（既存IDはスクレイプ時にスキップ）
+        target_dates = [d.date() for d in pd.date_range(start=from_date, end=today)]
     elif fetch_all and df_existing is not None:
-        # ギャップ検出モード: 既存データの最古日から今日まで、土日で未収録の日付を全部対象にする
+        # ギャップ検出モード: 既存データの最古日から今日まで、未収録の開催候補日を全部対象にする
+        RACE_CANDIDATE_WD = (5, 6, 0, 1)   # 土日＋祝日開催の月火
         existing_dates = set(
             pd.to_datetime(df_existing['日付'], errors='coerce').dt.date.dropna().unique()
         )
         data_start = min(existing_dates)
-        all_weekends = [
+        all_candidates = [
             d.date() for d in pd.date_range(start=data_start, end=today)
-            if d.weekday() in (5, 6)
+            if d.weekday() in RACE_CANDIDATE_WD
         ]
-        target_dates = [d for d in all_weekends if d not in existing_dates]
+        target_dates = [d for d in all_candidates if d not in existing_dates]
         if not target_dates:
             # ギャップなし → 最新日以降を探す（新規データ取得）
             last_dt = pd.to_datetime(df_existing['日付'], errors='coerce').max()
             start_d = (last_dt + pd.Timedelta(days=1)).date()
-            target_dates = [d.date() for d in pd.date_range(start=start_d, end=today) if d.weekday() in (5,6)]
+            target_dates = [d.date() for d in pd.date_range(start=start_d, end=today)]
         else:
             print(f"⚠️  {len(target_dates)} 日分のギャップを検出: {[str(d) for d in target_dates]}")
     else:
-        target_dates = []
-        for w in range(weeks_back):
-            base = today - datetime.timedelta(weeks=w)
-            sat  = base - datetime.timedelta(days=(base.weekday()-5)%7)
-            for d in [sat, sat+datetime.timedelta(days=1)]:
-                if d <= today: target_dates.append(d)
-        target_dates = sorted(set(target_dates))
+        # 通常モード: 直近 weeks_back 週間の「全日」（土日だけでなく祝日開催も拾う）
+        start_d = today - datetime.timedelta(weeks=weeks_back)
+        target_dates = [d.date() for d in pd.date_range(start=start_d, end=today)]
 
     if not target_dates:
         print("✅ 取得対象日なし（データは最新です）")
@@ -553,36 +553,57 @@ def main():
 
     # スクレイプ
     all_new_rows = []
+    n_found_ids = 0        # 対象日で見つかったレースID総数
+    n_unscraped = 0        # 未取得（＝今回スクレイプすべき）レース数
+    n_scrape_ok = 0        # 実際に行を取れたレース数
+    weekend_targets = [d for d in target_dates if d.weekday() in (5, 6)]
     for d in target_dates:
         date_str = d.strftime('%Y%m%d')
         print(f"\n--- {d.strftime('%Y/%m/%d')} ---")
         race_ids = get_race_ids_for_date(date_str)
         print(f"  レース数: {len(race_ids)}")
+        n_found_ids += len(race_ids)
         for rid in race_ids:
             if rid in existing_ids:
                 print(f"  スキップ（既存）: {rid}")
                 continue
+            n_unscraped += 1
             print(f"  取得中: {rid}")
             rows = scrape_one_race(rid, date_str)
             if rows:
                 all_new_rows.extend(rows)
+                n_scrape_ok += 1
                 print(f"    → {len(rows)}頭")
             safe_sleep(2.0, 1.5)
 
-    print(f"\n新規データ: {len(all_new_rows)}行")
+    print(f"\n新規データ: {len(all_new_rows)}行"
+          f"（発見 {n_found_ids}R / 未取得 {n_unscraped}R / 取得成功 {n_scrape_ok}R）")
     if not all_new_rows:
-        # 対象土日があったのに0件 = netkeibaブロック等でスクレイプが壊れている疑い → アラート
-        if target_dates:
-            _dates_str = "・".join(str(d) for d in target_dates[:6])
+        # ★2026-09-25: 従来は「対象日があって0件ならアラート」だったが、全曜日を対象に
+        #   するようにしたことで『既に全部取得済み＝正常』でも毎回アラートが飛ぶようになる。
+        #   異常と言えるのは次の2つだけなので、条件を絞り込む。
+        #     (a) 土日を対象にしたのにレースIDが1件も見つからない → ブロック/構造変更の疑い
+        #     (b) 未取得レースがあったのに1件もスクレイプできなかった → 結果ページ取得の失敗
+        if weekend_targets and n_found_ids == 0:
+            _dates_str = "・".join(str(d) for d in weekend_targets[:6])
             _alert_discord(
-                "🛑 **週次データ取得が0件でした**\n"
-                f"対象日: {len(target_dates)}日（{_dates_str}...）だったのに新規レースを取得できませんでした。\n"
+                "🛑 **週次データ取得: レースIDが0件**\n"
+                f"土日を含む {len(target_dates)}日（{_dates_str}...）を見にいきましたが、"
+                "レースIDを1件も取得できませんでした。\n"
                 "netkeibaのブロックやページ構造変更の可能性があります。"
                 "`python update_data.py --test` で確認してください。"
             )
-            print("⚠️ 対象日があるのに0件。異常の可能性ありアラート送信。")
+            print("⚠️ 土日対象なのにレースID 0件。アラート送信。")
+        elif n_unscraped > 0:
+            _alert_discord(
+                "🛑 **週次データ取得が0件でした**\n"
+                f"未取得のレースが {n_unscraped}R あったのに、1件もスクレイプできませんでした。\n"
+                "netkeibaのブロックやページ構造変更の可能性があります。"
+                "`python update_data.py --test` で確認してください。"
+            )
+            print("⚠️ 未取得レースがあるのに0件。異常の可能性ありアラート送信。")
         else:
-            print("新しいデータはありませんでした（対象日なし・正常）。")
+            print("新しいデータはありませんでした（すべて取得済み・正常）。")
         return
 
     df_new_raw = pd.DataFrame(all_new_rows)

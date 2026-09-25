@@ -1,9 +1,13 @@
-name: 週末ヘルスチェック → Discord 警告
+name: 開催日ヘルスチェック → Discord 警告
 
 # ================================================================
-# 日曜 21:00 JST（UTC 12:00）に実行。全通知（振り返り18:00 / まとめ20:30）が
-# 終わった後に、成績履歴 CSV に今週末の行が実際に書き込まれたかを検査する。
+# 毎日 21:30 JST（UTC 12:30）に実行。その日の通知（振り返り18:00 / 日曜のまとめ）が
+# 終わった後に、成績履歴 CSV に「実際に開催があった日」の行が書き込まれたかを検査する。
 # 見当たらなければ Discord に警告 → 「数ヶ月無言で蓄積されない」事故の再発防止。
+#
+# ★2026-09-25: 日曜のみ → 毎日に変更。祝日の月曜開催・火曜開催の振り返りが
+#   欠けても、旧実装（今週の土曜以降の行があるか）では検知できなかったため。
+#   直近7日の開催日を netkeiba で調べて突き合わせる方式に変更した（正常時は無通知）。
 #
 # 【必要な GitHub Secrets】
 #   HF_TOKEN                    - HuggingFace APIトークン（read権限）
@@ -13,9 +17,13 @@ name: 週末ヘルスチェック → Discord 警告
 
 on:
   schedule:
-    # 日曜 21:00 JST = 日曜 12:00 UTC
-    - cron: '0 12 * * 0'
+    # 毎日 21:30 JST = 12:30 UTC
+    - cron: '30 12 * * *'
   workflow_dispatch:
+    inputs:
+      days:
+        description: '何日前まで検査するか（既定7）'
+        default: '7'
 
 jobs:
   health-check:
@@ -46,4 +54,4 @@ jobs:
           HF_REPO_ID:                 ${{ secrets.HF_REPO_ID }}
           DISCORD_WEBHOOK_URL:        ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_REVIEW_WEBHOOK_URL: ${{ secrets.DISCORD_REVIEW_WEBHOOK_URL }}
-        run: python health_check.py
+        run: python health_check.py --days "${{ github.event.inputs.days || '7' }}"

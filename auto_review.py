@@ -15,6 +15,8 @@
 
 import os
 import sys
+import io
+import json
 import argparse
 import datetime
 import logging
@@ -61,6 +63,28 @@ with mock.patch("streamlit.cache_resource", _passthrough), \
     from src.utils import classify_race_class
 
 JST = pytz.timezone("Asia/Tokyo")
+
+
+def _chunk_lines(lines, limit: int = 1900):
+    """行リストを Discord の2000字制限に収まるチャンクへ分割する。
+
+    ``` コードブロックの途中で切れると Discord 側の整形が崩れるため、
+    分割時に開いているフェンスを閉じ、次チャンク冒頭で開き直す。
+    """
+    chunks, buf, in_fence = [], "", False
+    for ln in lines:
+        # このチャンクを閉じるのに必要な追加分（フェンスを閉じる3文字＋改行）
+        closing = 4 if in_fence else 0
+        if buf and len(buf) + len(ln) + 1 + closing > limit:
+            chunks.append(buf + "\n```" if in_fence else buf)
+            buf = "```\n" + ln if in_fence else ln
+        else:
+            buf = f"{buf}\n{ln}" if buf else ln
+        if ln.strip().startswith("```"):
+            in_fence = not in_fence
+    if buf:
+        chunks.append(buf + "\n```" if in_fence else buf)
+    return chunks
 
 
 def _send_review_direct(stats: dict, rates: dict, date_label: str) -> bool:
@@ -186,14 +210,7 @@ def _send_review_direct(stats: dict, rates: dict, date_label: str) -> bool:
         "-# keiba-ebye / 結果は参考情報です",
     ]
     # 情報量が増え 2000字上限を超えるため、行単位で 1900字以内に分割送信する。
-    chunks, buf = [], ""
-    for ln in lines:
-        if len(buf) + len(ln) + 1 > 1900:
-            chunks.append(buf); buf = ln
-        else:
-            buf = f"{buf}\n{ln}" if buf else ln
-    if buf:
-        chunks.append(buf)
+    chunks = _chunk_lines(lines)
     try:
         ok_all = True
         for _ci, _c in enumerate(chunks):
@@ -250,13 +267,19 @@ def run(date_str: str = None):
 
     races = get_todays_races(date_str8)
     if not races:
-        logger.warning("指定日のレースなし。スクレイプ失敗の可能性。")
-        _send_alert(
-            f"⚠️ **振り返り異常** | {date_label}\n"
-            f"開催レースを1件も取得できませんでした（`get_todays_races` が空）。\n"
-            f"netkeibaのブロック/構造変更、または本当に無開催の可能性があります。"
-            f"Actionsログを確認してください。"
-        )
+        # 2026-09-25: 祝日の月曜・火曜開催に対応するため毎日実行に変更した。
+        # 無開催の平日は「正常」なので黙って終了する（毎日アラートが飛ぶのを防ぐ）。
+        # 土日はほぼ必ず開催があるため、0件ならスクレイプ異常の疑いとして警告を出す。
+        if target_dt.weekday() in (5, 6):
+            logger.warning("土日なのにレース0件。スクレイプ失敗の可能性。")
+            _send_alert(
+                f"⚠️ **振り返り異常** | {date_label}\n"
+                f"開催レースを1件も取得できませんでした（`get_todays_races` が空）。\n"
+                f"netkeibaのブロック/構造変更、または本当に無開催の可能性があります。"
+                f"Actionsログを確認してください。"
+            )
+        else:
+            logger.info("本日は開催なし（平日）。正常終了。")
         return
 
     logger.info(f"{len(races)} レース取得。モデルロード中...")
@@ -670,11 +693,11 @@ def run(date_str: str = None):
 
     # ── HF Hub に ai_daily_history.csv を保存 ────────────────────────────
     try:
-        import io
-        import pandas as pd
+        # ⚠️ ここで `import pandas as pd` を書くと pd が run() のローカル変数になり、
+        #    関数の前半（市場勝率の計算など）での pd 参照が UnboundLocalError になる。
+        #    （2026-09-20 の振り返りクラッシュの原因。pandas/io/json はモジュール先頭で import 済み）
         from huggingface_hub import HfApi, hf_hub_download
 
-        import json
         daily_row = {
             "日付":              date_hf.replace("-", "/"),
             # 本命◎
@@ -803,7 +826,6 @@ def run(date_str: str = None):
     # ── 機能A: レース×馬 明細を ai_race_history.csv に蓄積 ────────────────────
     if race_detail_rows:
         try:
-            import io
             from huggingface_hub import HfApi, hf_hub_download
             new_detail = pd.DataFrame(race_detail_rows)
             try:
