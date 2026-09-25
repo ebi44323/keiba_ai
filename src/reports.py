@@ -156,6 +156,7 @@ main{margin-top:12px;display:flex;flex-direction:column;gap:12px}
 footer{max-width:680px;margin:20px auto 0;padding:0 14px;color:var(--muted);font-size:11px;line-height:1.5}
 @media (min-width:760px){ main{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start} }
 </style>
+__FORMATION_ASSETS__
 <div class="wrap">
   <header class="top">
     <div class="brand">
@@ -279,6 +280,7 @@ function build(){
       +(extra?('<button class="toggle" type="button">＋ 全'+rc.horses.length+'頭を表示</button>'):'')
       +((rc.reason&&rc.reason!=='—')?('<div class="reason">🧠 <b>◎の根拠</b>：'+rc.reason+'</div>'):'')
       +memoHtml
+      +fmHtml(rc)
       +'<div class="reco">💰 <b>買い目</b>：'+(rc.reco||'—')+'</div>'
       +gemHtml
       +'</div>';
@@ -291,6 +293,23 @@ function build(){
     }
     main.appendChild(card);
   }
+  if(window.kbfmScan) window.kbfmScan();
+}
+function fmHtml(rc){
+  if(!rc.fm||!rc.fm.length) return "";
+  var lanes=rc.fm.map(function(h){
+    return '<div class="kbfm-lane"><div class="kbfm-halo" style="background:'+h.c+'"></div>'
+      +'<div class="kbfm-h" style="left:8%"><span class="kbfm-pill" style="background:'+h.c+'">'
+      +h.no+'</span><span class="kbfm-nm">'+h.mk+h.nm+'</span></div></div>';
+  }).join("");
+  var data=rc.fm.map(function(h){return {pos:h.pos,band:h.band};});
+  return '<div class="kbfm" data-auto="0" data-h=''+JSON.stringify(data)+''>'
+    +'<div class="kbfm-turf"></div>'
+    +'<div class="kbfm-hd"><span>🐎 想定隊列シミュレーション</span>'
+    +'<span class="kbfm-btn" onclick="kbfmPlay(this)">▶ 再生</span></div>'
+    +'<div style="position:relative"><div class="kbfm-goal" style="left:90%"></div>'+lanes+'</div>'
+    +'<div class="kbfm-ft">ゲート→1角の想定。<b>薄い帯＝位置のぶれ幅</b>'
+    +'（実測SD±1・14頭立てで±3.6頭分）。順番は目安で、帯が重なる馬は先行争いになりやすい読みです。</div></div>';
 }
 function wireChips(rowId,set){
   document.getElementById(rowId).addEventListener("click",function(e){
@@ -388,6 +407,28 @@ def generate_pdf_report(results_list, ev_threshold=1.5, all_memos: dict = None):
                 gem = {'model': r.get('gemini_model', ''),
                        'h': {'c': (gh or {}).get('comment', ''), 'b': (gh or {}).get('bet', '')},
                        'a': {'c': (ga or {}).get('comment', ''), 'b': (ga or {}).get('bet', '')}}
+            # ── 想定隊列（アニメーション用）2026-09-26 ──────────────────
+            # 表示専用。位置は順位ベース、band は実測SDのぶれ幅。
+            fm = []
+            if '想定位置率' in df.columns:
+                try:
+                    from src.formation_view import rows_from_df, mark_color
+                    _fr = rows_from_df(df)
+                    _sorted = sorted(_fr, key=lambda x: x['mid'])
+                    _den = max(len(_sorted) - 1, 1)
+                    _pos = {id(x): i / _den for i, x in enumerate(_sorted)}
+                    for _x in sorted(_fr, key=lambda v: (v.get('馬番') or 0)):
+                        fm.append({
+                            'no': int(_x.get('馬番') or 0),
+                            'nm': str(_x.get('馬名', ''))[:7],
+                            'mk': str(_x.get('印', '') or ''),
+                            'c': mark_color(_x.get('印', ''), _x.get('勝率', 0)),
+                            'pos': round(_pos.get(id(_x), 0.5), 4),
+                            'band': round(max(float(_x['hi']) - float(_x['lo']), 0.02), 4),
+                        })
+                except Exception as _fe:
+                    logger.warning(f'想定隊列の生成をスキップ: {_fe}')
+
             races_data.append({
                 'v': r.get('place', ''), 'r': r.get('num', ''),
                 't': r.get('time', '') or '', 'title': r.get('title', '') or '',
@@ -396,10 +437,16 @@ def generate_pdf_report(results_list, ev_threshold=1.5, all_memos: dict = None):
                 'pace': (r.get('pace', '') or '').replace('**', ''),
                 'reason': _race_reason(r.get('topics', [])),
                 'reco': reco, 'horses': horses, 'memos': memos, 'gemini': gem,
+                'fm': fm,
             })
 
         date_str = results_list[0].get('date', '') if results_list else ''
+        try:
+            from src.formation_view import FORMATION_SCRIPT as _FM_ASSETS
+        except Exception:
+            _FM_ASSETS = ''
         html = (_MORNING_TEMPLATE
+                .replace('__FORMATION_ASSETS__', _FM_ASSETS)
                 .replace('__DATA__', json.dumps(races_data, ensure_ascii=False))
                 .replace('__DATE__', str(date_str)))
         return html.encode('utf-8')

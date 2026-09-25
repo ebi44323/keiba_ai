@@ -533,39 +533,16 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
         #    位置の実測ばらつきは SD 0.275（14頭立てで±3.6頭分）あるため、
         #    点ではなく「帯」で描く。細い縦線が想定中央、帯がぶれ幅。
         if '想定隊列順' in df_res.columns and df_res['想定隊列順'].notna().any():
-            st.markdown("##### 🐎 想定隊列（1角付近）")
-            _fm = df_res.dropna(subset=['想定隊列順']).sort_values('想定隊列順')
-            _rows = []
-            for _, _h in _fm.iterrows():
-                _lo = float(_h.get('想定位置帯lo', 0) or 0) * 100
-                _hi = float(_h.get('想定位置帯hi', 1) or 1) * 100
-                _mid = float(_h.get('想定位置率', 0.5) or 0.5) * 100
-                _mark = str(_h.get('印', '') or '')
-                _wp = float(_h.get('勝率(AI予測)', 0) or 0)
-                # ◎は赤、他の印は青、無印はグレー。濃さはAI勝率に連動させる。
-                _col = '#c0392b' if _mark == '◎' else '#2471a3' if _mark.strip() else '#9aa5b1'
-                _alpha = 0.18 + min(_wp * 2.4, 0.55)
-                _rows.append(
-                    f'<div style="display:flex;align-items:center;gap:6px;margin:3px 0">'
-                    f'<div style="width:76px;font-size:12px;text-align:right;white-space:nowrap">'
-                    f'<b style="color:{_col}">{_mark or "　"}</b>{int(_h["馬番"])}番</div>'
-                    f'<div style="width:96px;font-size:12px;overflow:hidden;text-overflow:ellipsis;'
-                    f'white-space:nowrap">{_h.get("馬名","")}</div>'
-                    f'<div style="flex:1;position:relative;height:16px;background:#f1f3f5;'
-                    f'border-radius:8px;min-width:120px">'
-                    f'<div style="position:absolute;left:{_lo:.1f}%;width:{max(_hi-_lo,1):.1f}%;'
-                    f'top:0;bottom:0;background:{_col};opacity:{_alpha:.2f};border-radius:8px"></div>'
-                    f'<div style="position:absolute;left:{_mid:.1f}%;top:-2px;bottom:-2px;width:2px;'
-                    f'background:{_col}"></div></div>'
-                    f'<div style="width:42px;font-size:11px;color:#666">{_h.get("想定ゾーン","")}</div>'
-                    f'<div style="width:44px;font-size:11px;color:#666;text-align:right">'
-                    f'{_wp*100:.1f}%</div></div>')
-            st.markdown(
-                '<div style="font-size:11px;color:#888;display:flex;justify-content:space-between;'
-                'padding:0 46px 0 178px"><span>◀ 前</span><span>後 ▶</span></div>'
-                + "".join(_rows), unsafe_allow_html=True)
-            st.caption("帯＝想定位置のぶれ幅（実測SD±1）・縦線＝想定中央・右端＝AI勝率。"
-                       "位置は目安であり、帯が重なる馬同士は先行争いになりやすい読みです。")
+            try:
+                import streamlit.components.v1 as components
+                from src.formation_view import build_formation_html, rows_from_df
+                _rows = rows_from_df(df_res)
+                if _rows:
+                    _h = build_formation_html(_rows, autoplay=True, include_script=True)
+                    # 馬数に応じて高さを確保（1頭19px + ヘッダ/フッタ）
+                    components.html(_h, height=96 + 19 * len(_rows), scrolling=False)
+            except Exception as _fe:
+                st.caption(f"隊列シミュレーションを表示できませんでした: {_fe}")
 
         ev_horses = df_res[(df_res.index < 5) & (df_res['期待値'] >= sim_ev_filter)]
         if not ev_horses.empty:
