@@ -15,9 +15,10 @@ src/pace_tables.json に保存する。推論側はこのJSONを lookup する�
   - 隊列: 前走の位置率 → 今走の位置率 の相関 +0.441（R²0.194）。
     ただし各馬のばらつき SD≈0.27（14頭立てで±3.6頭分）。
     → 点ではなく**帯（中央値±SD）**で提示する。
-  - 枠順: 全体では相関 +0.007 とほぼ無効。**芝は外枠ほど後方・ダートは外枠ほど前**と
-    符号が逆で打ち消し合うため、単一の枠番では学べない。
-    → **(競馬場×芝ダ) 別の枠効果テーブル**として持つ。効果量は最大でも0.07（1頭分弱）。
+  - 枠順: 全体では相関 +0.007 とほぼ無効。芝/ダートで符号が逆なうえ、**同じ競馬場でも
+    距離で符号が反転する**（東京ダ1600m -0.036＝芝スタートで外が前 / 東京ダ1300m +0.037）。
+    → **(競馬場×芝ダ×距離)** を主テーブルにし、不足時のみ (競馬場×芝ダ) へフォールバック。
+    効果量は最大 0.187（新潟芝1000＝直線競馬）で、14頭立てなら約2.5頭分と無視できない。
 """
 
 import json
@@ -31,7 +32,8 @@ CSV = "learning_data_perfect_tier.csv"
 OUT = "src/pace_tables.json"
 
 MIN_RACES_PER_COND = 20     # コース条件の最低レース数
-MIN_ROWS_PER_DRAW  = 3000   # 枠効果を採用する最低サンプル
+MIN_ROWS_PER_DRAW      = 3000   # 枠効果(競馬場×芝ダ)を採用する最低サンプル
+MIN_ROWS_PER_DRAW_DIST = 700    # 枠効果(競馬場×芝ダ×距離)を採用する最低サンプル
 
 
 def _load():
@@ -89,7 +91,7 @@ def build_pace(df):
 
 
 def build_positions(df):
-    """想定隊列: 前走位置率→今走位置率の回帰＋(競馬場×芝ダ)別の枠効果。"""
+    """想定隊列: 前走位置率→今走位置率の回帰＋(競馬場×芝ダ×距離)別の枠効果。"""
     d = df.dropna(subset=['馬番', '出走頭数', '最初のコーナー順位',
                           '前走コーナー順位']).copy()
     d = d[d['出走頭数'] >= 8].sort_values(['馬ID', '日付'])
@@ -105,26 +107,48 @@ def build_positions(df):
     b = np.linalg.lstsq(X, d.y.to_numpy(), rcond=None)[0]
     resid = d.y.to_numpy() - X @ b
 
-    # 枠効果: (競馬場×芝ダ) 別に、内枠と外枠の残差の差。
-    # 全体では 芝(外ほど後) と ダート(外ほど前) が打ち消し合って相関 +0.007 になるため、
-    # コース別に持たないと学べない。
+    # 枠効果: 内枠と外枠の残差の差（正=外枠ほど後方 / 負=外枠ほど前）。
+    #
+    # ★2026-09-25 修正: 当初は (競馬場×芝ダ) 別だったが、**距離別に符号が反転する**ため
+    #   平均すると情報が消えていた。実測:
+    #     東京ダ1600m -0.036（外ほど前・芝スタート） vs 東京ダ1300m +0.037（外ほど後方）
+    #     → (競馬場×芝ダ) にまとめると 東京ダート +0.007 ≒ ゼロ になっていた。
+    #   外枠有利なダートは**芝スタートのコース**（東京ダ1600・中京ダ1400・阪神ダ2000 等）に
+    #   集中しており、ダート発走のコースは逆に外枠が後方になる。
+    #   芝も距離差が大きい（中京芝1600 +0.117 / 新潟芝1000 -0.187＝直線競馬で外有利）。
+    #   → (競馬場×芝ダ×距離) を主テーブルにし、サンプル不足時のみ (競馬場×芝ダ) へ落とす。
     d['_resid'] = resid
+    d['_dist'] = d['距離'].astype('Int64')
+
+    def _eff(s):
+        inn = s[s.draw <= .25]['_resid'].mean()
+        out = s[s.draw >= .75]['_resid'].mean()
+        if np.isnan(inn) or np.isnan(out):
+            return None
+        return round(float(out - inn), 4)
+
+    draw_dist = {}
+    for (v, t, dd), s in d.groupby(['競馬場', '芝/ダート', '_dist']):
+        if len(s) < MIN_ROWS_PER_DRAW_DIST:
+            continue
+        e = _eff(s)
+        if e is not None:
+            draw_dist[f"{v}|{t}|{int(dd)}"] = e
+
     draw = {}
     for (v, t), s in d.groupby(['競馬場', '芝/ダート']):
         if len(s) < MIN_ROWS_PER_DRAW:
             continue
-        inn = s[s.draw <= .25]['_resid'].mean()
-        out = s[s.draw >= .75]['_resid'].mean()
-        if np.isnan(inn) or np.isnan(out):
-            continue
-        # draw(0→1) に対する線形の傾きとして保存（内0.0を基準に外で +eff）
-        draw[f"{v}|{t}"] = round(float(out - inn), 4)
+        e = _eff(s)
+        if e is not None:
+            draw[f"{v}|{t}"] = e
 
     return dict(
         pos_intercept=round(float(b[0]), 5),
         pos_slope=round(float(b[1]), 5),
         pos_sd=round(float(resid.std()), 5),
         pos_rows=int(len(d)),
+        draw_effect_dist=draw_dist,
         draw_effect=draw,
     )
 
@@ -140,7 +164,9 @@ def main():
     print("想定隊列のテーブル生成...")
     tables.update(build_positions(df))
     print(f"  位置回帰: y = {tables['pos_intercept']:.3f} + {tables['pos_slope']:.3f}×前走位置率 "
-          f"(SD {tables['pos_sd']:.3f}) / 枠効果 {len(tables['draw_effect'])} コース")
+          f"(SD {tables['pos_sd']:.3f})")
+    print(f"  枠効果: 距離別 {len(tables['draw_effect_dist'])} 条件 / "
+          f"フォールバック {len(tables['draw_effect'])} コース")
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(tables, f, ensure_ascii=False, indent=1)
     print(f"✅ {OUT} を保存しました")

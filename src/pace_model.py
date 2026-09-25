@@ -10,9 +10,12 @@ pace_model.py — 展開予想（想定ペース・想定隊列）
              R² は 芝0.12 / ダート0.057 と弱い → **秒数を断言せず5段階ラベル**。
     隊列  … 前走位置率との相関 +0.441（R²0.194）。各馬のSDは 0.275 で、
              14頭立てなら ±3.6頭分ぶれる → **点ではなく帯（中央値±SD）**で返す。
-    枠順  … 全体では相関 +0.007 とほぼ無効。芝は外枠ほど後方・ダートは外枠ほど前と
-             **符号が逆で打ち消し合う**ため、(競馬場×芝ダ)別のテーブルで補正する。
-             効果量は最大 0.07（1頭分弱）なので、あくまで微調整。
+    枠順  … 全体では相関 +0.007 とほぼ無効。芝/ダートで符号が逆なうえ、**同じ競馬場でも
+             距離で符号が反転する**。外枠が前に行けるダートは**芝スタートのコース**に
+             集中している（東京ダ1600 -0.036 / 中京ダ1400 -0.034）のに対し、
+             ダート発走は逆に外が後方（東京ダ1300 +0.034）。粒度を落とすと打ち消し合って
+             消えるため **(競馬場×芝ダ×距離)** で持つ。最大は新潟芝1000 の -0.182
+             （直線競馬で外有利）＝16頭立てで約2.7頭分と、無視できない大きさ。
 
 使い方:
     from src.pace_model import predict_pace, predict_formation
@@ -143,7 +146,26 @@ def predict_pace(runners: list, venue: str, track: str, distance) -> dict:
             'text': text, 'confident': confident}
 
 
-def predict_formation(runners: list, venue: str = '', track: str = '') -> list:
+def _draw_effect(venue: str, track: str, distance) -> float:
+    """枠効果（正=外枠ほど後方 / 負=外枠ほど前）。距離別テーブルを優先する。
+
+    ★同じ競馬場でも距離で符号が反転するため、距離を落とすと情報が消える。
+      例: 東京ダ1600m -0.036（芝スタートで外が前）/ 東京ダ1300m +0.034
+          → (競馬場×芝ダ)にまとめると 東京ダート +0.003 ≒ ゼロになってしまう。
+    """
+    t = _tables()
+    try:
+        d = int(float(distance))
+    except (TypeError, ValueError):
+        d = 0
+    v = t.get('draw_effect_dist', {}).get(f'{venue}|{track}|{d}')
+    if v is not None:
+        return float(v)
+    return float(t.get('draw_effect', {}).get(f'{venue}|{track}', 0.0))
+
+
+def predict_formation(runners: list, venue: str = '', track: str = '',
+                      distance=None) -> list:
     """想定隊列を「帯」で返す（1角付近の想定位置）。
 
     戻り値: runners と同じ並びの list。各要素:
@@ -157,7 +179,7 @@ def predict_formation(runners: list, venue: str = '', track: str = '') -> list:
         return []
     a, b = t.get('pos_intercept', 0.26), t.get('pos_slope', 0.44)
     sd = t.get('pos_sd', 0.275)
-    draw_eff = t.get('draw_effect', {}).get(f'{venue}|{track}', 0.0)
+    draw_eff = _draw_effect(venue, track, distance)
     n = len(runners)
 
     out = []
