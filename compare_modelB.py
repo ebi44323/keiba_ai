@@ -28,12 +28,23 @@ import validate_model as V  # _load_features, _prep, PARAMS_A, PARAMS_C, W_A/B/C
 from src.features_engine import CAT_FEATURES, NUM_FEATURES, TE_COLS
 
 # ── 対決するモデルBパラメータ ────────────────────────────────────────────────
-B_CURRENT = dict(n_estimators=685, learning_rate=0.029074, num_leaves=15, max_bin=228,
-                 cat_smooth=39.9527, colsample_bytree=0.8848, subsample=0.7033,
-                 min_child_samples=70, random_state=123, importance_type='gain')
-B_NEW = dict(n_estimators=344, learning_rate=0.025325, num_leaves=37, max_bin=217,
-             cat_smooth=46.1425, colsample_bytree=0.8668, subsample=0.7016,
-             min_child_samples=73, random_state=123, importance_type='gain')
+# B_CURRENT = 現在 src/core_model.py に入っている＝本番で動いている値。
+# B_NEW     = 貼り替え候補（Optuna の提案）。両者を同一foldで学習・評価して直接比較する。
+#
+# ★ 履歴（CVスコアは実施日で検証期間が変わるため、実施日をまたいだ比較は不可。
+#    採用可否は必ずこのスクリプトの同一fold対決で判定すること）
+#   - 2026-04-03 Optuna: n=685, leaves=15 … 旧採用
+#   - 2026-07-25 Optuna: n=344, leaves=37 … 2026-07-26 採用（現行）
+#       同一fold対決: AUC 0.7608→0.7629 / 単勝回収率 68.2%→71.8% で勝ち
+#   - 2026-09-25 Optuna: n=282, leaves=26 … ★未検証・未採用（下の B_NEW）
+#       アプリのチューニングUIで取得。cat_smooth 46.14→6.30・min_child_samples 73→33 と
+#       カテゴリ/葉の正則化を大きく緩める提案のため、AUCだけでなく回収率とECEを要確認。
+B_CURRENT = dict(n_estimators=344, learning_rate=0.025325, num_leaves=37, max_bin=217,
+                 cat_smooth=46.1425, colsample_bytree=0.8668, subsample=0.7016,
+                 min_child_samples=73, random_state=123, importance_type='gain')
+B_NEW = dict(n_estimators=282, learning_rate=0.021897, num_leaves=26, max_bin=221,
+             cat_smooth=6.2950, colsample_bytree=0.7948, subsample=0.8008,
+             min_child_samples=33, random_state=123, importance_type='gain')
 
 
 def _norm_abs(x_tr, x_te):
@@ -125,8 +136,8 @@ def main():
     print('\n' + '=' * 66)
     print(f'  モデルB パラメータ直接対決  （{n_races:,}レース / {len(res):,}頭 OOS・同一fold）')
     print('=' * 66)
-    for tag, label in [('current', '現行 (n=685, leaves=15)'),
-                       ('new', 'Optuna新 (n=344, leaves=37)')]:
+    for tag, label in [('current', f"現行 (n={B_CURRENT['n_estimators']}, leaves={B_CURRENT['num_leaves']})"),
+                       ('new', f"Optuna新 (n={B_NEW['n_estimators']}, leaves={B_NEW['num_leaves']})")]:
         pcol = f'p_{tag}'
         t = V._top1(res, pcol)
         _, ece = V._calibration(res, pcol)
