@@ -156,6 +156,19 @@ main{margin-top:12px;display:flex;flex-direction:column;gap:12px}
 footer{max-width:680px;margin:20px auto 0;padding:0 14px;color:var(--muted);font-size:11px;line-height:1.5}
 @media (min-width:760px){ main{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start} }
 </style>
+<style>
+.simrow{display:flex;gap:6px;margin:7px 13px 0;flex-wrap:wrap}
+.simbet{flex:1 1 30%;min-width:88px;background:var(--money-bg);border-radius:9px;padding:5px 7px;text-align:center}
+.simbet .bn{font-size:10.5px;color:var(--muted);font-weight:700}
+.simbet .bp{font-size:16px;font-weight:900;color:var(--money);font-variant-numeric:tabular-nums}
+.simbet .bt{font-size:9.5px;color:var(--muted)}
+.rsnbox{margin:7px 13px 0;display:flex;flex-direction:column;gap:3px}
+.rsn{font-size:12px;line-height:1.45;padding:4px 8px;border-radius:7px;background:var(--line2)}
+.rsn.good{background:var(--money-bg);color:var(--money)}
+.rsn.warn{background:var(--warn-bg);color:var(--warn)}
+.gd{flex:0 0 auto;font-size:10.5px;font-weight:900;color:#fff;border-radius:5px;padding:1px 6px}
+.simnote{font-size:9.5px;color:var(--muted);margin:4px 13px 0;line-height:1.4}
+</style>
 __FORMATION_ASSETS__
 <div class="wrap">
   <header class="top">
@@ -271,6 +284,7 @@ function build(){
     const distLine=(rc.track||'')+(rc.dist?rc.dist+'m':'');
     card.innerHTML=
       '<div class="chead"><span class="venue">'+rc.v+'</span><span class="rno num">'+rc.r+'R</span>'
+      +(rc.gd?('<span class="gd" style="background:'+rc.gc+'">'+rc.gd+'</span>'):'')
       +'<span class="meta">'+(rc.t?('<span class="num">'+rc.t+'</span><span class="dot"></span>'):'')+'<span>'+distLine+'</span></span>'
       +'<span class="badge '+rc.conf+'">'+(rc.conf==="勝負"?"🔥 勝負":rc.conf==="回避"?"⚠️ 回避":"🟡 通常")+'</span></div>'
       +(rc.title?('<div class="rtitle">'+rc.title+'</div>'):'')
@@ -281,6 +295,8 @@ function build(){
       +((rc.reason&&rc.reason!=='—')?('<div class="reason">🧠 <b>◎の根拠</b>：'+rc.reason+'</div>'):'')
       +memoHtml
       +fmHtml(rc)
+      +rsnHtml(rc)
+      +simHtml(rc)
       +'<div class="reco">💰 <b>買い目</b>：'+(rc.reco||'—')+'</div>'
       +gemHtml
       +'</div>';
@@ -294,6 +310,21 @@ function build(){
     main.appendChild(card);
   }
   if(window.kbrsScan) window.kbrsScan();
+}
+function rsnHtml(rc){
+  if(!rc.rsn||!rc.rsn.length) return "";
+  return '<div class="rsnbox">'+rc.rsn.map(function(x){
+    return '<div class="rsn '+(x.l||'')+'">'+x.e+' '+x.t+'</div>';
+  }).join("")+'</div>';
+}
+function simHtml(rc){
+  if(!rc.sim||!rc.sim.length) return "";
+  return '<div class="simrow">'+rc.sim.map(function(b){
+    return '<div class="simbet"><div class="bn">'+b.n+'</div><div class="bp">'+b.p+'%</div>'
+      +'<div class="bt">'+b.pt+'点</div></div>';
+  }).join("")+'</div>'
+  +'<div class="simnote">◎軸・相手4頭で4000回シミュレーションした的中確率。'
+  +'単勝の勝率から全着順を組み立てた推定です。</div>';
 }
 function fmHtml(rc){
   if(!rc.fm||!rc.fm.length) return "";
@@ -406,6 +437,26 @@ def generate_pdf_report(results_list, ev_threshold=1.5, all_memos: dict = None):
                 except Exception as _fe:
                     logger.warning(f'レースシミュレーターの生成をスキップ: {_fe}')
 
+            # ── 券種別の的中確率・◎の根拠・注意フラグ（2026-09-26）──────
+            sim_bets, reasons, grade = [], [], ['', '']
+            try:
+                from src.race_sim import simulate_race
+                _sm = simulate_race(df, n_sims=4000, seed=42)
+                if _sm.get('bets'):
+                    sim_bets = [{'n': k, 'p': round(v['prob'] * 100, 1), 'pt': v['points']}
+                                for k, v in _sm['bets'].items()]
+            except Exception as _se:
+                logger.warning(f'券種確率の算出をスキップ: {_se}')
+            try:
+                from src.insights import race_reasons, race_grade_label
+                _tr = str(df['芝/ダート'].iloc[0]) if '芝/ダート' in df.columns else ''
+                _di = float(df['距離'].iloc[0]) if '距離' in df.columns else None
+                reasons = [{'e': e, 't': t, 'l': l} for e, t, l in
+                           race_reasons(df, r.get('pace', '') or '', r.get('place', ''), _tr, _di)]
+                grade = list(race_grade_label(r.get('title', '')))
+            except Exception as _ie:
+                logger.warning(f'根拠の生成をスキップ: {_ie}')
+
             races_data.append({
                 'v': r.get('place', ''), 'r': r.get('num', ''),
                 't': r.get('time', '') or '', 'title': r.get('title', '') or '',
@@ -414,7 +465,8 @@ def generate_pdf_report(results_list, ev_threshold=1.5, all_memos: dict = None):
                 'pace': (r.get('pace', '') or '').replace('**', ''),
                 'reason': _race_reason(r.get('topics', [])),
                 'reco': reco, 'horses': horses, 'memos': memos, 'gemini': gem,
-                'fm': fm,
+                'fm': fm, 'sim': sim_bets, 'rsn': reasons,
+                'gd': grade[0], 'gc': grade[1],
             })
 
         date_str = results_list[0].get('date', '') if results_list else ''

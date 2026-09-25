@@ -550,6 +550,58 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
             except Exception as _fe:
                 st.caption(f"隊列シミュレーションを表示できませんでした: {_fe}")
 
+        # ── ◎の根拠（このレース固有）2026-09-26 ────────────────────────
+        try:
+            from src.insights import race_reasons, danger_favorites, horse_flags
+            _venue = st.session_state.get('_cur_venue', '')
+            _track = str(df_res['芝/ダート'].iloc[0]) if '芝/ダート' in df_res.columns else ''
+            _dist2 = float(df_res['距離'].iloc[0]) if '距離' in df_res.columns else None
+            _rs = race_reasons(df_res, pace_text or '', _venue, _track, _dist2)
+            if _rs:
+                _top = df_res.iloc[0]
+                st.markdown(f"##### 🧠 ◎{_top.get('馬名','')} を推す理由")
+                for _e, _t, _lv in _rs:
+                    if _lv == 'good':  st.success(f"{_e} {_t}")
+                    elif _lv == 'warn': st.warning(f"{_e} {_t}")
+                    else:               st.info(f"{_e} {_t}")
+            _dg = danger_favorites(df_res)
+            if _dg:
+                st.error("⚠️ **危険な人気馬**：" + " / ".join(
+                    f"{int(n)}番 {nm}（{o:.1f}倍なのにAI勝率{w*100:.1f}%）" for n, nm, o, w in _dg))
+        except Exception as _ie:
+            st.caption(f"根拠の生成に失敗: {_ie}")
+
+        # ── モンテカルロ・シミュレーション（券種別の的中確率）2026-09-26 ──
+        try:
+            from src.race_sim import simulate_race
+            _n_sims = st.select_slider("シミュレーション回数", [1000, 4000, 20000, 100000],
+                                       value=4000, key=f"nsim_{_key}")
+            _sim = simulate_race(df_res, n_sims=int(_n_sims), seed=42)
+            if _sim:
+                st.markdown(f"##### 🎲 {_sim['n_sims']:,}回シミュレーションの着度数")
+                _sdf = pd.DataFrame([{
+                    '印': h['印'], '馬番': h['馬番'], '馬名': h['馬名'],
+                    'オッズ': h['odds'],
+                    '1着率': f"{h['win']*100:.1f}%",
+                    '連対率': f"{h['top2']*100:.1f}%",
+                    '複勝圏率': f"{h['top3']*100:.1f}%",
+                    '単勝EV': round(h['win'] * h['odds'], 2),
+                } for h in _sim['horses'][:10]])
+                st.dataframe(_sdf, hide_index=True, width='stretch')
+                if _sim.get('bets'):
+                    st.markdown("##### 🎯 ◎軸・相手4頭で買ったときの的中確率")
+                    _cols = st.columns(len(_sim['bets']))
+                    for _c, (_bn, _bv) in zip(_cols, _sim['bets'].items()):
+                        _c.metric(f"{_bn}（{_bv['points']}点）",
+                                  f"{_bv['prob']*100:.1f}%",
+                                  help=f"{_sim['n_sims']:,}回中 {int(_bv['prob']*_sim['n_sims']):,}回的中")
+                st.caption(
+                    "⚠️ 入力は**単勝の勝率のみ**で、そこから全着順を組み立てる仮定（Plackett-Luce）の推定です。"
+                    "複勝単体の確率は、実データでキャリブレーション済みの『複勝率(AI予測)』の方が信頼できます。"
+                    "組み合わせ馬券は他に推定手段が無いためここで出しています。")
+        except Exception as _se:
+            st.caption(f"シミュレーションに失敗: {_se}")
+
         ev_horses = df_res[(df_res.index < 5) & (df_res['期待値'] >= sim_ev_filter)]
         if not ev_horses.empty:
             st.error(f"💰 **【期待値レーダー発動】** {', '.join(ev_horses['馬名'].tolist())} に妙味あり！")
@@ -1229,6 +1281,50 @@ elif action == "📅 今週末の全レース予想":
 
 elif action == "📝 1日の振り返り (答え合わせ)":
     st.subheader("📝 1日のレース結果とAI予想の答え合わせ")
+
+    # ── 蓄積データからの答え合わせ（2026-09-26）──────────────────────
+    # 当たった時だけでなく外した時も見せる。長く使ってもらう上ではここが効く。
+    with st.expander("📚 これまでの答え合わせ（蓄積データから・レース単位）", expanded=False):
+        try:
+            from huggingface_hub import hf_hub_download
+            _p = hf_hub_download(_HF_REPO_ID, "ai_race_history.csv",
+                                 repo_type="dataset", token=_HF_TOKEN)
+            _rh = pd.read_csv(_p, dtype={"レースID": str})
+            _rh["日付"] = pd.to_datetime(_rh["日付"], errors="coerce")
+            _rh = _rh.dropna(subset=["日付"])
+            _days = sorted(_rh["日付"].dt.date.unique(), reverse=True)
+            _sel = st.selectbox("日付", _days, key="ansdate")
+            _d = _rh[_rh["日付"].dt.date == _sel]
+            _recs = []
+            for _rid, _g in _d.groupby("レースID"):
+                _g = _g.sort_values("AI順位")
+                _hon = _g.iloc[0]
+                _win = _g[_g["1着"] == 1]
+                _recs.append({
+                    "R": _hon.get("R", ""), "競馬場": _hon.get("競馬場", ""),
+                    "◎": f'{int(_hon["馬番"])}番 {_hon.get("馬名","")}',
+                    "◎AI勝率": f'{float(_hon.get("AI勝率",0))*100:.1f}%',
+                    "◎オッズ": _hon.get("単勝オッズ", ""),
+                    "結果": "🎯的中" if int(_hon.get("1着", 0)) == 1
+                            else ("△複勝圏" if int(_hon.get("複勝内", 0)) == 1 else "✗"),
+                    "実際の1着": (f'{int(_win.iloc[0]["馬番"])}番 {_win.iloc[0].get("馬名","")}'
+                                 if not _win.empty else "-"),
+                    "1着のAI順位": (int(_win.iloc[0]["AI順位"]) if not _win.empty else None),
+                })
+            _rdf = pd.DataFrame(_recs).sort_values(["競馬場", "R"])
+            _n = len(_rdf)
+            _hit = int((_rdf["結果"] == "🎯的中").sum())
+            _fuku = int((_rdf["結果"] != "✗").sum())
+            _c1, _c2, _c3 = st.columns(3)
+            _c1.metric("◎の勝率", f"{_hit/max(_n,1)*100:.1f}%", f"{_hit}/{_n}R")
+            _c2.metric("◎の複勝率", f"{_fuku/max(_n,1)*100:.1f}%", f"{_fuku}/{_n}R")
+            _c3.metric("1着馬のAI平均順位", f"{_rdf['1着のAI順位'].mean():.1f}位")
+            st.dataframe(_rdf, hide_index=True, width='stretch')
+            st.caption("『1着のAI順位』が小さいほどAIが勝ち馬を上位で拾えています。"
+                       "外したレースも並べています — 当たりだけ見せても実力は分かりません。")
+        except Exception as _ae:
+            st.info(f"蓄積データを読めませんでした（振り返りがまだ走っていない可能性）: {_ae}")
+
     target_date = st.date_input("振り返りたい日付を選択", datetime.date.today() - datetime.timedelta(days=1))
 
     # 日付が変わったら前のキャッシュをクリア
