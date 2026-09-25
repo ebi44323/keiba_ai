@@ -545,8 +545,8 @@ def display_result(df_res, topics, reco, pace_text, confidence_text, show_change
                         _dist = 1600
                     _h = build_race_sim_html(_rows, distance=_dist,
                                              autoplay=True, include_assets=True)
-                    # 馬数に応じて高さを確保（1頭18px + ヘッダ/結果/注記）
-                    components.html(_h, height=110 + 18 * len(_rows), scrolling=False)
+                    # 馬数に応じて高さを確保（1頭18px + ヘッダ/1〜3着パネル/払戻/注記）
+                    components.html(_h, height=186 + 18 * len(_rows), scrolling=False)
             except Exception as _fe:
                 st.caption(f"隊列シミュレーションを表示できませんでした: {_fe}")
 

@@ -65,8 +65,29 @@ RACE_SIM_ASSETS = """
 .kbrs-nm{font-size:10px;color:#2c4a33;max-width:74px;overflow:hidden;text-overflow:ellipsis}
 .kbrs-ord{font-size:9.5px;font-weight:800;color:#fff;background:#1d4427;border-radius:6px;
  padding:0 4px;opacity:0;transition:opacity .25s}
-.kbrs-res{font-size:10.5px;color:#2c4a33;margin-top:4px;min-height:14px;font-weight:700}
+.kbrs-podium{margin-top:6px;display:flex;flex-direction:column;gap:3px;min-height:18px}
+.kbrs-pod{display:flex;align-items:center;gap:7px;background:rgba(255,255,255,.78);
+ border-radius:7px;padding:3px 8px;opacity:0;transform:translateY(5px);
+ transition:opacity .32s,transform .32s}
+.kbrs-pod.show{opacity:1;transform:none}
+.kbrs-pod .rk{font-weight:900;font-size:14px;color:#1d4427;width:34px;flex:0 0 auto}
+.kbrs-pod.p1 .rk{color:#b8860b;font-size:16px}
+.kbrs-pod .bn{display:inline-flex;align-items:center;justify-content:center;min-width:22px;
+ height:18px;border-radius:5px;color:#fff;font-weight:800;font-size:12px;flex:0 0 auto}
+.kbrs-pod .hn{font-weight:800;font-size:14px;color:#1b3323;flex:1 1 auto;min-width:0;
+ overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kbrs-pod.p1 .hn{font-size:15.5px}
+.kbrs-pod .od{font-weight:800;font-size:13px;color:#8a4b12;flex:0 0 auto;
+ font-variant-numeric:tabular-nums}
+.kbrs-pay{font-size:12px;font-weight:800;color:#1a7a4c;margin-top:3px;opacity:0;
+ transition:opacity .35s}
+.kbrs-pay.show{opacity:1}
+.kbrs-res{font-size:10.5px;color:#2c4a33;margin-top:3px;min-height:13px;font-weight:700}
 .kbrs-ft{font-size:9.5px;color:#5c7361;margin-top:2px;line-height:1.45}
+@media (prefers-color-scheme:dark){
+ .kbrs-pod{background:rgba(0,0,0,.34)}
+ .kbrs-pod .rk{color:#bfe0bf}.kbrs-pod.p1 .rk{color:#e8c46a}
+ .kbrs-pod .hn{color:#dcecdf}.kbrs-pod .od{color:#e8b77a}.kbrs-pay{color:#5cc88c}}
 @media (prefers-color-scheme:dark){
  .kbrs{background:linear-gradient(180deg,#22322a,#1a2720 62%,#152019);border-color:#3a5240}
  .kbrs-hd,.kbrs-res{color:#a8cdad}.kbrs-nm{color:#bcd8c0}.kbrs-ft{color:#7e9a84}
@@ -105,11 +126,20 @@ RACE_SIM_ASSETS = """
    +'<span class="kbrs-rem">残り'+dist+'m</span>'
    +'<span class="kbrs-btn">▶ 出走</span></div>'
    +'<div class="kbrs-track"><div class="kbrs-goal"></div>'+lanes+'</div>'
+   +'<div class="kbrs-podium">'
+   +'<div class="kbrs-pod p1"><span class="rk">1着</span><span class="bn"></span>'
+   +'<span class="hn"></span><span class="od"></span></div>'
+   +'<div class="kbrs-pod p2"><span class="rk">2着</span><span class="bn"></span>'
+   +'<span class="hn"></span><span class="od"></span></div>'
+   +'<div class="kbrs-pod p3"><span class="rk">3着</span><span class="bn"></span>'
+   +'<span class="hn"></span><span class="od"></span></div></div>'
+   +'<div class="kbrs-pay"></div>'
    +'<div class="kbrs-res"></div>'
    +'<div class="kbrs-ft">道中の位置は想定隊列（実測にもとづく）、着順は<b>AI勝率による抽選</b>です。'
    +'再生するたび結果が変わります＝それが確率予想の実際の姿です。</div>';
   var st={hs:hs,dist:dist,el:el,wins:{},runs:0,
    lanes:el.querySelectorAll('.kbrs-h'),ords:el.querySelectorAll('.kbrs-ord'),
+   pods:el.querySelectorAll('.kbrs-pod'),pay:el.querySelector('.kbrs-pay'),
    rem:el.querySelector('.kbrs-rem'),res:el.querySelector('.kbrs-res'),
    btn:el.querySelector('.kbrs-btn')};
   st.btn.addEventListener('click',function(){play(st);});
@@ -118,48 +148,75 @@ RACE_SIM_ASSETS = """
 
  function play(st){
   if(st.running) return; st.running=true; st.runs++;
-  var hs=st.hs,n=hs.length;
+  var hs=st.hs,n=hs.length,i,k;
   var order=sampleOrder(hs.map(function(h){return Math.max(h.w,0.001);}));
-  var place=new Array(n); order.forEach(function(hi,k){place[hi]=k;});
-  // 最終x: 1着を94%に置き、以降は等間隔で後ろへ（画面内に収める）
-  var gap=Math.min(56/Math.max(n-1,1),5.2);
-  var xf=hs.map(function(_,i){return 94-place[i]*gap;});
-  // 道中x: 想定隊列（mid 0=前）を 26〜82% に展開
-  var xm=hs.map(function(h){return 26+(1-h.e)*56;});
+  var place=new Array(n); order.forEach(function(hi,kk){place[hi]=kk;});
+
+  // ── 最終x: 前は詰まって後ろほど離れる（実際の入線＝ハナ差の叩き合い＋後方は大差）──
+  var gaps=[0],acc=0;
+  for(k=1;k<n;k++){ acc+=1.0+k*0.22; gaps.push(acc); }
+  var scale=Math.min(58/Math.max(acc,1),1.6);
+  var xf=hs.map(function(_,idx){return 94-gaps[place[idx]]*scale;});
+
+  // ── 道中x: 想定隊列（e: 0=前）を 24〜80% に展開 ──
+  var xm=hs.map(function(h){return 24+(1-h.e)*56;});
+
+  // ── 直線の仕掛け: 後ろの馬ほど遅く動き出して鋭く伸びる（差し・追込の見せ場）──
+  //    毎回わずかに乱数を混ぜるので、同じ着順でも運び方が変わる。
+  var kick=hs.map(function(h){return 0.60+h.e*0.13+Math.random()*0.04;});
+  var sharp=hs.map(function(h){return 1.7+h.e*1.5;});   // 後方馬ほど加速が鋭い
+
   st.ords.forEach(function(o){o.style.opacity=0;o.textContent='';});
-  st.res.textContent='';
-  var t0=null,DUR=5200;
+  st.pods.forEach(function(p){p.classList.remove('show');});
+  st.pay.classList.remove('show'); st.res.textContent='';
+  var t0=null,DUR=8200;
   function frame(ts){
    if(t0===null)t0=ts;
    var p=Math.min((ts-t0)/DUR,1);
    st.rem.textContent='残り'+(Math.ceil(st.dist*(1-p)/50)*50)+'m';
-   for(var i=0;i<n;i++){
+   for(i=0;i<n;i++){
     var x;
-    if(p<0.18){ x=6+(xm[i]-6)*EASE(p/0.18); }              // ゲート→隊列形成
-    else if(p<0.68){                                        // 道中（わずかに息を入れる）
-     x=xm[i]+Math.sin((p-0.18)*11+i)*0.5;
-    }else{                                                  // 直線の追い比べ
-     var q=(p-0.68)/0.32; q=q<0.5?2*q*q:1-Math.pow(-2*q+2,2)/2;
+    if(p<0.14){ x=6+(xm[i]-6)*EASE(p/0.14); }               // ゲート→隊列形成
+    else if(p<kick[i]){                                      // 道中（息を入れる・小さな出入り）
+     x=xm[i]+Math.sin((p-0.14)*9+i*1.7)*0.6;
+    }else{                                                   // 直線: 仕掛けてから鋭く伸びる
+     var q=(p-kick[i])/(1-kick[i]);
+     q=Math.pow(q,1.0)*0.25+Math.pow(q,sharp[i])*0.75;       // 序盤ゆるく→末脚で一気に
      x=xm[i]+(xf[i]-xm[i])*q;
     }
     st.lanes[i].style.left=x+'%';
    }
    if(p<1){requestAnimationFrame(frame);}
-   else{
-    for(var k=0;k<Math.min(3,n);k++){
-     var hi=order[k]; st.ords[hi].textContent=(k+1)+'着'; st.ords[hi].style.opacity=1;
-    }
-    var w=hs[order[0]];
-    st.wins[w.no]=(st.wins[w.no]||0)+1;
-    var tally=Object.keys(st.wins).sort(function(a,b){return st.wins[b]-st.wins[a];})
-      .slice(0,3).map(function(k){return k+'番 '+st.wins[k]+'回';}).join(' / ');
-    st.res.textContent='🏁 '+w.no+'番 '+w.nm+' が1着（AI勝率'+(w.w*100).toFixed(1)+'%）'
-      +'　▶ '+st.runs+'回中: '+tally;
-    st.btn.textContent='▶ もう一度';
-    st.running=false;
-   }
+   else{finish(st,order);}
   }
   requestAnimationFrame(frame);
+ }
+
+ function finish(st,order){
+  var hs=st.hs,n=hs.length,k;
+  for(k=0;k<Math.min(3,n);k++){
+   var hi=order[k];
+   st.ords[hi].textContent=(k+1)+'着'; st.ords[hi].style.opacity=1;
+   var pod=st.pods[k],h=hs[hi];
+   pod.querySelector('.bn').textContent=h.no;
+   pod.querySelector('.bn').style.background=h.c;
+   pod.querySelector('.hn').textContent=(h.mk?h.mk+' ':'')+h.nm;
+   pod.querySelector('.od').textContent=(h.o>0?h.o.toFixed(1)+'倍':'—');
+   (function(el,d){setTimeout(function(){el.classList.add('show');},d);})(pod,k*220);
+  }
+  for(k=n;k<3;k++){ if(st.pods[k]) st.pods[k].style.display='none'; }
+  var w=hs[order[0]];
+  if(w.o>0){
+   st.pay.textContent='💰 単勝 '+Math.round(w.o*100).toLocaleString()+'円'
+     +(hs[order[1]]&&hs[order[1]].o>0?'　／　馬連の目安 '+w.no+'-'+hs[order[1]].no:'');
+   setTimeout(function(){st.pay.classList.add('show');},700);
+  }
+  st.wins[w.no]=(st.wins[w.no]||0)+1;
+  var tally=Object.keys(st.wins).sort(function(a,b){return st.wins[b]-st.wins[a];})
+    .slice(0,3).map(function(kk){return kk+'番 '+st.wins[kk]+'回';}).join(' / ');
+  st.res.textContent='この馬のAI勝率 '+(w.w*100).toFixed(1)+'%　▶ '+st.runs+'回中: '+tally;
+  st.btn.textContent='▶ もう一度';
+  st.running=false;
  }
 
  var io=('IntersectionObserver' in window)?new IntersectionObserver(function(es){
@@ -200,8 +257,13 @@ def sim_rows_from_df(df, limit: int = 18) -> list:
             no = int(float(r.get('馬番', 0) or 0))
         except (TypeError, ValueError):
             no = 0
-        out.append({'no': no, 'nm': str(r.get('馬名', ''))[:7], 'mk': mark,
-                    'c': mark_color(mark, win), 'w': round(win, 4), 'e': round(mid, 4)})
+        try:
+            odds = round(float(r.get('単勝オッズ', 0) or 0), 1)
+        except (TypeError, ValueError):
+            odds = 0.0
+        out.append({'no': no, 'nm': str(r.get('馬名', ''))[:9], 'mk': mark,
+                    'c': mark_color(mark, win), 'w': round(win, 4),
+                    'e': round(mid, 4), 'o': odds})
     # 縦は馬番順＝上が内枠
     return sorted(out, key=lambda x: x['no'])
 
@@ -221,7 +283,7 @@ def build_race_sim_html(rows: list, distance=1600, autoplay: bool = True,
     except (TypeError, ValueError):
         d = 1600
     safe = [{'no': r['no'], 'nm': _html.escape(str(r['nm'])), 'mk': _html.escape(str(r['mk'])),
-             'c': r['c'], 'w': r['w'], 'e': r['e']} for r in rows]
+             'c': r['c'], 'w': r['w'], 'e': r['e'], 'o': r.get('o', 0)} for r in rows]
     return ((RACE_SIM_ASSETS if include_assets else '') +
             f'<div class="kbrs" data-auto="{1 if autoplay else 0}" data-dist="{d}" '
             f'data-h=\'{json.dumps(safe, ensure_ascii=False, separators=(",", ":"))}\'></div>')
