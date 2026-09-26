@@ -328,8 +328,9 @@ function simHtml(rc){
 }
 function fmHtml(rc){
   if(!rc.fm||!rc.fm.length) return "";
-  return '<div class="kbrs" data-auto="0" data-dist="'+(rc.dist||1600)+'" data-h=''
-    +JSON.stringify(rc.fm).replace(/'/g,"&#39;")+''></div>';
+  // 属性はダブルクォートで囲み &,",<  を実体参照化（Python文字列内で \' を使うと消えて構文エラーになるため）
+  return '<div class="kbrs" data-auto="0" data-dist="'+(rc.dist||1600)+'" data-h="'
+    +JSON.stringify(rc.fm).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;")+'"></div>';
 }
 function wireChips(rowId,set){
   document.getElementById(rowId).addEventListener("click",function(e){

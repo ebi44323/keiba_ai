@@ -220,6 +220,32 @@ def test_no_shadowing_local_imports():
     assert not problems, 'モジュール先頭の import を関数内で隠している: ' + ' / '.join(problems)
 
 
+def test_morning_html_js_syntax():
+    """朝刊HTMLテンプレートの <script> が JS として構文エラーにならないこと。
+
+    2026-09-26 の朝刊が真っ白になった件の再発防止:
+      reports.py の通常の Python 文字列内に JS の \\' を書いたため Python 側で \\ が消え、
+      `data-h=''` という構文エラーになり、スクリプト全体が停止してカードが1枚も描画されなかった。
+    esprima（pip install esprima）があれば完全な構文チェック、無ければ既知パターンだけ検出する。
+    """
+    import re
+    from src.reports import _MORNING_TEMPLATE
+    scripts = re.findall(r'<script[^>]*>(.*?)</script>', _MORNING_TEMPLATE, re.S)
+    assert scripts, 'テンプレートに <script> が見つからない'
+    assert "=''\n" not in _MORNING_TEMPLATE, "JS に =''（消えたエスケープ）が残っている"
+    try:
+        import esprima
+    except ImportError:
+        return
+    for i, s in enumerate(scripts):
+        # 生成時に埋め込まれるプレースホルダがあれば JS として有効な値に差し替える
+        s = re.sub(r'__[A-Z_]+__', '[]', s)
+        try:
+            esprima.parseScript(s)
+        except Exception as e:
+            raise AssertionError(f'script[{i}] JS構文エラー: {e}')
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]
     failed = 0
