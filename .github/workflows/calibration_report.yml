@@ -21,6 +21,9 @@ on:
       discord:
         description: 'Discordにも投稿する (yes/no)'
         default: 'yes'
+      sim_t:
+        description: '【7】影響シミュレーションの T（空欄=推定した T* を使う）'
+        default: ''
 
 jobs:
   calibration:
@@ -54,6 +57,10 @@ jobs:
         run: |
           DAYS="${{ github.event.inputs.days || '120' }}"
           ARGS="--days $DAYS --save-csv calibration_data.csv"
+          SIM_T="${{ github.event.inputs.sim_t }}"
+          if [ -n "$SIM_T" ]; then
+            ARGS="$ARGS --sim-t $SIM_T"
+          fi
           if [ "${{ github.event.inputs.discord || 'yes' }}" = "yes" ]; then
             ARGS="$ARGS --discord"
           fi

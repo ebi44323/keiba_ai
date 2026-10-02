@@ -193,7 +193,160 @@ def roi(sub: pd.DataFrame, kind: str = "tan") -> tuple:
 # ──────────────────────────────────────────────────────────────
 # レポート本体
 # ──────────────────────────────────────────────────────────────
-def build_report(df: pd.DataFrame) -> str:
+# ──────────────────────────────────────────────────────────────
+# T を本番に入れたときの影響シミュレーション（2026-10-02 追加）
+# ------------------------------------------------------------
+# 「p^(1/T) はレース内の順位を変えない＝◎は不変」は**EV優先の◎昇格を無視した話**。
+# 本番（朝刊/直前/振り返り すべて ev_first=True）は inference.py で
+#   勝率 >= max(0.25, 1.4/頭数, 0.18) かつ 勝率×min(オッズ,40) >= 1.5
+# の馬を◎へ昇格させる。T<1 で上位の勝率が 25% を超えると、この昇格が動き出す。
+# 勝負/回避ラベルも絶対値の閾値なので分布が変わる。ここではそれを過去データで再現する。
+# ⚠️ inference.py の該当ロジック（L819-893）を変えたら、ここも合わせること。
+# ──────────────────────────────────────────────────────────────
+EV_THRESHOLD, MIN_WIN_PROB, EV_ODDS_CAP, EV_KACHI = 1.5, 0.18, 40.0, 2.0
+
+
+def _race_decision(g: pd.DataFrame, pcol: str, unraced: bool = False) -> dict:
+    """1レース分について、inference.py と同じ規則で ◎ とラベルを決める。
+
+    g は1レースの全馬。pcol の勝率で並べ直した「純AI順」から出発する。
+    ※ 本番の昇格は EV×(1+穴馬スコア×0.5) で比較するが、穴馬スコアは履歴に無いので EV で代用。
+    unraced: 未出走馬混在（履歴に無いので呼び出し側で推定して渡す）。
+    """
+    g = g.sort_values(pcol, ascending=False).reset_index(drop=True)
+    p = g[pcol].to_numpy(dtype=float)
+    odds = pd.to_numeric(g["単勝オッズ"], errors="coerce").to_numpy(dtype=float)
+    n = len(g)
+    floor = max(0.25, 1.4 / max(n, 1), MIN_WIN_PROB)
+    promo = p * np.minimum(odds, EV_ODDS_CAP)
+    ok = (promo >= EV_THRESHOLD) & (p >= floor) & ~np.isnan(odds)
+    top = 0
+    if ok.any():
+        top = int(np.argmax(np.where(ok, promo, -np.inf)))
+    order = [top] + [i for i in range(n) if i != top]
+    p1 = p[top]
+    p2 = p[order[1]] if n >= 2 else 0.0
+    diff = p1 - p2
+    ev = p * np.nan_to_num(odds, nan=10.0)
+    top_ev = min(float(ev[top]), 50.0)
+    tekkan = p1 >= 0.20 and diff >= 0.05
+    kachi = tekkan or (p1 >= 0.18 and diff >= 0.03) or (p1 >= 0.15 and p1 >= 1.35 * p2) or top_ev >= EV_KACHI
+    haran = diff <= 0.02 and p1 < 0.14
+    label = "勝負" if kachi else ("回避" if (unraced or haran) else "通常")
+    # 超狙い馬（上位5頭×EV>=1.5）/ 穴馬（6位以下×EV>=1.5）: res_df の並び＝order
+    ranks = np.empty(n, dtype=int)
+    ranks[order] = np.arange(n)
+    return {
+        "レースID": g["レースID"].iloc[0],
+        "honmei": g.iloc[top],
+        "promoted": top != 0,
+        "label": label,
+        "haran": haran,
+        "choko": g[(ranks < 5) & (ev >= 1.5)],
+        "ana": g[(ranks >= 5) & (ev >= 1.5)],
+        "p1": p1,
+    }
+
+
+def simulate_temperature_impact(df: pd.DataFrame, t: float) -> list:
+    """T=1（現状）と T=t を同じ規則で再現し、◎・ラベル・EV馬の変化と実成績を並べる。"""
+    L = []
+    add = L.append
+    work = df.reset_index(drop=True).copy()
+    work["_p1"] = work["AI勝率"].astype(float)
+    work["_pt"] = apply_temperature(work, t)
+
+    dec = {"cur": [], "new": []}
+    for _, g in work.groupby("レースID", sort=False):
+        if len(g) < 2:
+            continue
+        # 未出走混在は履歴に無い。記録上『回避』なのに拮抗(haran)でないレースを未出走混在とみなす
+        # （本番の回避は 未出走混在 or 拮抗 の2通りしかないため）。判定列が無い古い行は False。
+        c0 = _race_decision(g, "_p1")
+        logged = g["判定"].dropna().astype(str) if "判定" in g.columns else pd.Series(dtype=str)
+        unraced = bool(len(logged)) and ("回避" in logged.iloc[0]) and not c0["haran"]
+        dec["cur"].append(_race_decision(g, "_p1", unraced))
+        dec["new"].append(_race_decision(g, "_pt", unraced))
+    nr = len(dec["cur"])
+
+    add(f"【7. T={t:.2f} を本番に入れたときの影響（再現シミュレーション）】")
+    add("  ※ p^(1/T) で順位は変わらないが、EV優先の◎昇格（勝率>=25%等の絶対閾値）と")
+    add("    勝負/回避ラベル（絶対閾値）は動く。inference.py と同じ規則で過去レースを再判定した。")
+
+    # 再現精度: T=1 の再判定が、実際に記録された◎・判定とどれだけ一致するか
+    logged_top = (work[work["AI順位"] == 1].set_index("レースID")["馬番"]
+                  if "馬番" in work.columns else pd.Series(dtype=object))
+    m_hit = m_n = 0
+    l_hit = l_n = 0
+    for d in dec["cur"]:
+        rid = d["レースID"]
+        if rid in logged_top.index and "馬番" in d["honmei"].index:
+            m_n += 1
+            m_hit += int(str(logged_top[rid]) == str(d["honmei"]["馬番"]))
+        lbl = d["honmei"].get("判定") if "判定" in d["honmei"].index else None
+        if isinstance(lbl, str) and lbl:
+            l_n += 1
+            l_hit += int(d["label"] in lbl)
+    if m_n:
+        add(f"  再現精度（T=1.00 の再判定 vs 実際の記録）: ◎一致 {m_hit}/{m_n} ({m_hit/m_n*100:.0f}%)"
+            + (f" / 判定一致 {l_hit}/{l_n} ({l_hit/l_n*100:.0f}%)" if l_n else ""))
+        add("  （◎の不一致は 穴馬スコア・振り返り時と本番時のオッズ差 による。9割を切るなら下の数字は割り引く）")
+    add("  " + "-" * 64)
+
+    def _honmei_df(ds):
+        return pd.DataFrame([d["honmei"] for d in ds])
+
+    def _row(name, sub):
+        if len(sub) == 0:
+            return f"  {name:>14} {0:5d}"
+        r, k, n = roi(sub, "tan")
+        return (f"  {name:>14} {n:5d} {k/max(n,1)*100:7.1f}% {_ci_str(k, n):>13} {r:7.1f}%")
+
+    hdr = f"  {'':>14} {'R数':>5} {'実勝率':>8} {'95%CI':>13} {'単ROI':>8}"
+    for key, lbl in (("cur", "現状 T=1.00"), ("new", f"補正 T={t:.2f}")):
+        ds = dec[key]
+        hm = _honmei_df(ds)
+        n_promo = sum(d["promoted"] for d in ds)
+        p1s = np.array([d["p1"] for d in ds])
+        add(f"  ● {lbl}: EV昇格で◎が入れ替わる {n_promo}/{nr}R ・ ◎勝率 平均{p1s.mean()*100:.1f}% "
+            f"/ 25%超 {int((p1s >= 0.25).sum())}R")
+        add(hdr)
+        add(_row("◎ 全体", hm))
+        labels = pd.Series([d["label"] for d in ds])
+        for lab in ("勝負", "通常", "回避"):
+            add(_row(f"◎ {lab}", hm[(labels == lab).to_numpy()]))
+        choko = pd.concat([d["choko"] for d in ds]) if ds else pd.DataFrame()
+        ana = pd.concat([d["ana"] for d in ds]) if ds else pd.DataFrame()
+        add(_row("超狙い馬(頭)", choko))
+        add(_row("穴馬(頭)", ana))
+        add("")
+
+    # ◎が変わるレースだけを抜き出して、旧◎と新◎を直接比べる
+    changed = [(c, n) for c, n in zip(dec["cur"], dec["new"])
+               if str(c["honmei"].get("馬番")) != str(n["honmei"].get("馬番"))]
+    add(f"  ● ◎が変わるレース: {len(changed)}/{nr}R")
+    if changed:
+        add(hdr)
+        add(_row("旧◎", pd.DataFrame([c["honmei"] for c, _ in changed])))
+        add(_row("新◎", pd.DataFrame([n["honmei"] for _, n in changed])))
+        new_odds = pd.to_numeric(pd.Series([n["honmei"]["単勝オッズ"] for _, n in changed]), errors="coerce")
+        old_odds = pd.to_numeric(pd.Series([c["honmei"]["単勝オッズ"] for c, _ in changed]), errors="coerce")
+        add(f"  ◎のオッズ中央値: 旧 {old_odds.median():.1f}倍 → 新 {new_odds.median():.1f}倍")
+        if len(changed) < 30:
+            add("  ⚠️ 30R未満。勝率・ROIの差は誤差の範囲として読むこと（件数の変化だけを見る）。")
+
+    # ラベル遷移（現状→補正）
+    trans = pd.crosstab(pd.Series([d["label"] for d in dec["cur"]], name="現状"),
+                        pd.Series([d["label"] for d in dec["new"]], name="補正後"))
+    add("")
+    add("  ● ラベル遷移（行=現状 / 列=補正後・R数）")
+    for line in trans.to_string().split("\n"):
+        add("    " + line)
+    add("")
+    return L
+
+
+def build_report(df: pd.DataFrame, sim_t: float = None) -> str:
     L = []
     add = L.append
 
@@ -328,7 +481,8 @@ def build_report(df: pd.DataFrame) -> str:
 
     # ── 3. 温度補正の推定（＋安定性チェック）──────────────────────
     add("【3. 事後の温度補正 T* の推定】")
-    add("  レース内で p^(1/T) 再正規化。T>1で過信を緩和。順位は不変＝◎選定に影響しない。")
+    add("  レース内で p^(1/T) 再正規化。T>1で過信を緩和・T<1で尖らせる。純AI順位は不変だが、")
+    add("  EV優先の◎昇格と勝負/回避ラベルは絶対閾値なので動く（→【7】で影響を再現）。")
 
     # 2026-09-25: 旧実装は下限0.60で、実データの最適値がちょうど0.60＝探索範囲の端で
     # 止まっていた（本当の最適はもっと下かもしれず、値を信用できない）。範囲を広げ、
@@ -472,6 +626,8 @@ def build_report(df: pd.DataFrame) -> str:
                 f"vs 実 {(mh['1着']==1).mean()*100:.1f}%")
         add("")
 
+    L.extend(simulate_temperature_impact(df, sim_t if sim_t else best_t))
+
     add("=" * 62)
     add("【判定】")
     blockers = []
@@ -489,7 +645,8 @@ def build_report(df: pd.DataFrame) -> str:
         add("     だけは今でも読める指標なので、方向性の確認にはそちらを使う。")
     else:
         add(f"  ✅ 採用条件を満たしている。事後温度 T={best_t:.2f} の導入を検討してよい。")
-        add("     （順位は不変なので◎選定は変わらず、再学習も不要）")
+        add("     （再学習は不要。ただし【7】のとおり EV昇格の◎とラベルが動くので、")
+        add("       EVの勝率フロア・ラベル閾値の見直しと同じ変更でまとめて入れること）")
         add("  → 次に p1/p2 比・AI勝率バケットの実ROIから 🔥勝負/⚠️回避 の閾値を引き直す。")
     add("=" * 62)
     return "\n".join(L)
@@ -523,6 +680,8 @@ def main():
     ap = argparse.ArgumentParser(description="勝率キャリブレーション診断（測定専用）")
     ap.add_argument("--days", type=int, default=120, help="直近何日分を対象にするか（0=全期間）")
     ap.add_argument("--discord", action="store_true", help="結果を Discord に投稿する")
+    ap.add_argument("--sim-t", type=float, default=0.0,
+                    help="【7】の影響シミュレーションに使う T（0=推定した T* を使う）")
     ap.add_argument("--save-csv", type=str, default="", help="対象データをCSVに保存")
     args = ap.parse_args()
 
@@ -539,7 +698,7 @@ def main():
         df.to_csv(args.save_csv, index=False)
         logger.info(f"{args.save_csv} に保存しました")
 
-    report = build_report(df)
+    report = build_report(df, sim_t=args.sim_t or None)
     print(report)
     if args.discord:
         post_discord(report)
