@@ -29,7 +29,7 @@ logger = logging.getLogger('keiba_ebye')
 st.set_page_config(page_title="keiba-ebye 予測ダッシュボード", page_icon="🐴", layout="wide")
 st.title("🐴 keiba-ebye 予測ダッシュボード")
 st.markdown("えーびーあい (ebi × AI × Eye) が、極限まで高められた精度でお宝馬を暴き出すかも。。。。")
-st.caption("v2026-10-09a")
+st.caption("v2026-10-10a")
 
 from src.features_engine import NUM_FEATURES, CAT_FEATURES, TE_COLS, classify_style
 from src.utils import VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class, resolve_name, get_headers
@@ -1185,6 +1185,9 @@ elif action == "📅 今週末の全レース予想":
                     _results.append({
                         "date": f"{_td[:4]}年{_td[4:6]}月{_td[6:]}日",
                         "place": _place or _r["place"], "num": _r["num"],
+                        # 朝刊HTMLの発走時刻ソート・レース格バッジ用（auto_morning.py と同じ形式）
+                        "title": _r.get("title", ""),
+                        "time": _r["time"].strftime("%H:%M") if _r.get("time") else "",
                         "track": _track, "dist": _dist,
                         "pace": _pace, "confidence": _conf,
                         "df": _res_df, "topics": _topics, "reco": _reco,

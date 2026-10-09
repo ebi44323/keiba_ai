@@ -242,7 +242,8 @@ def _race_decision(g: pd.DataFrame, pcol: str, unraced: bool = False) -> dict:
     ev = p * np.nan_to_num(odds, nan=10.0)
     top_ev = min(float(ev[top]), 50.0)
     tekkan = p1 >= 0.20 and diff >= 0.05
-    kachi = tekkan or (p1 >= 0.18 and diff >= 0.03) or (p1 >= 0.15 and p1 >= 1.35 * p2) or top_ev >= EV_KACHI
+    kachi_prob = tekkan or (p1 >= 0.18 and diff >= 0.03) or (p1 >= 0.15 and p1 >= 1.35 * p2)
+    kachi = kachi_prob or top_ev >= EV_KACHI
     haran = diff <= 0.02 and p1 < 0.14
     label = "勝負" if kachi else ("回避" if (unraced or haran) else "通常")
     # 超狙い馬（上位5頭×EV>=1.5）/ 穴馬（6位以下×EV>=1.5）: res_df の並び＝order
@@ -257,6 +258,10 @@ def _race_decision(g: pd.DataFrame, pcol: str, unraced: bool = False) -> dict:
         "choko": g[(ranks < 5) & (ev >= 1.5)],
         "ana": g[(ranks >= 5) & (ev >= 1.5)],
         "p1": p1,
+        # 勝負の根拠: 勝率条件で勝負か / ◎EV>=2.0 だけで勝負か（2026-10-10 追加）
+        "kachi_by": ("勝率" if kachi_prob else "EV") if kachi else "",
+        # ◎と2番手が同じ勝率＝勝率キャリブレータ(Isotonic)の段差に◎が埋もれている
+        "tied": n >= 2 and abs(p1 - p2) < 1e-4,
     }
 
 
@@ -332,6 +337,29 @@ def simulate_temperature_impact(df: pd.DataFrame, t: float) -> list:
         add(_row("超狙い馬(頭)", choko))
         add(_row("穴馬(頭)", ana))
         add("")
+
+    # 勝負の内訳と◎の同値（現状規則・2026-10-10 追加）
+    cur = dec["cur"]
+    hm_cur = _honmei_df(cur)
+    by = pd.Series([d["kachi_by"] for d in cur])
+    add("  ● 勝負の内訳（現状の規則）: 勝率条件で勝負 vs ◎EV>=2.0 だけで勝負")
+    add(hdr + f" {'◎人気中央':>8}")
+    for key, name in (("勝率", "勝負(勝率条件)"), ("EV", "勝負(EVのみ)")):
+        sub = hm_cur[(by == key).to_numpy()]
+        pop = (pd.to_numeric(sub["人気"], errors="coerce").median()
+               if len(sub) and "人気" in sub.columns else float("nan"))
+        add(_row(name, sub) + (f" {pop:8.0f}" if pop == pop else ""))
+    add("    → EVのみの勝負は『◎が人気薄でオッズ妙味だけ』の型。ここが勝率条件より明確に悪ければ")
+    add("      Phase 2b で EV条件（EV_KACHI）を外す／厳しくする根拠になる。")
+    tied = pd.Series([d["tied"] for d in cur])
+    add(f"  ● ◎と2番手が同じ勝率のレース（勝率キャリブレータの段差）: {int(tied.sum())}/{nr}R"
+        f"（{tied.mean()*100:.0f}%）")
+    add(hdr)
+    add(_row("◎ 同値あり", hm_cur[tied.to_numpy()]))
+    add(_row("◎ 同値なし", hm_cur[(~tied).to_numpy()]))
+    add("    → 同値レースの◎は元スコアの微差で決まっている。多ければ滑らかな較正への置き換えを検討")
+    add("      （ai_race_history の『AIスコア(較正前)』列が貯まれば効果を検証できる）。")
+    add("")
 
     # ◎が変わるレースだけを抜き出して、旧◎と新◎を直接比べる
     changed = [(c, n) for c, n in zip(dec["cur"], dec["new"])

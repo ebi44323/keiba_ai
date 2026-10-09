@@ -752,6 +752,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         # （補正後で判定すると勝負が 104→155R に急増。ラベル再設計は Phase 2b）。
         from src.config import apply_post_temperature
         df_test['勝率(補正前)'] = win_probs
+        # 較正前のレース内 softmax（勝率キャリブレータの段差で◎と2番手が同値になる問題の検証用・ログ専用）
+        df_test['AIスコア(較正前)'] = softmax_probs
         win_probs = apply_post_temperature(win_probs)
         df_test['勝率(AI予測)']   = win_probs
         # 複勝率(3着内): place_calibrator があれば学習済みIsotonicで算出（#5・データドリブン）。
