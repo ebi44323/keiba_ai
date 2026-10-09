@@ -324,6 +324,7 @@ git push origin main
 | health_check.yml | **毎日 21:30 JST** | 直近7日の「実際に開催があった日」の行が成績CSVに無ければDiscord警告（2026-09-25 に開催日ベースへ改修） |
 | discord_notify.yml | 5分ごと | HF Hub キューを読んで Discord に送信（app.py の手動投稿ボタン専用） |
 | weekly_update.yml | **水曜 6:00 JST** | 週次データ更新（火曜6:00→水曜6:00 2026-09-25。火曜開催を取りこぼさないため） |
+| horse_tables.yml | **push時（zip/血統/core_model等の変更）＋手動** | 馬の過去走テーブルを作り直し HF Hub `horse_tables.pkl` へ（再学習ではない。weekly_update.yml の最後でも実行） |
 | calibration_report.yml | **手動実行のみ** | 本番OOSの勝率キャリブレーション診断（測定専用・Phase2の判断材料） |
 
 ### ★ 直前予想は「1レース1回」（2026-09-25〜）
@@ -364,6 +365,8 @@ git push origin main
   中身は素の Python 型（CSV文字列・dict）なので pandas の版差で壊れない。
 - `_try_load_model_from_hub` が HF Hub の **`horse_tables.pkl`** を取得して差し替え（無ければ従来どおり）。
 - `build_horse_tables.py` を新設し、**weekly_update.yml の最後で毎週実行**（データ更新の直後）。
+  加えて `horse_tables.yml` が zip 等の push で自動実行（bot の push は GITHUB_TOKEN なので起動しないため両方必要）。
+  ⚠️ アプリ(HF Space)は起動時に1回だけ読む。表の更新がアプリ再起動より後なら、次の再起動まで旧い表。Actions の朝刊等は毎回読む。
 - ⚠️ 以後、**再学習を止めていても馬の情報は毎週更新される**。モデル本体・キャリブレータ・TE・騎手辞書は不変。
 
 ### 勝率キャリブレータの段差を補間（同値レースの解消・再学習不要）

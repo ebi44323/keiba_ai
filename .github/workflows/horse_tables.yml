@@ -1,0 +1,54 @@
+name: 馬テーブル更新（再学習ではない）
+
+# ================================================================
+# 推論が使う「馬ごとの過去走テーブル」だけを最新データで作り直して HF Hub に置く。
+# モデル本体は変えない。詳細は build_horse_tables.py の冒頭。
+#
+# 起動:
+#   - 学習データや馬テーブルの作り方を push で変えたとき（自動）
+#   - 手動
+#   ※ 週次データ更新(weekly_update.yml)の bot push は GITHUB_TOKEN のため
+#     このワークフローを起動しない → weekly_update.yml の最後のステップで同じ処理を実行している。
+# ================================================================
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - learning_data_perfect_tier.zip
+      - pedigree_master_all.csv
+      - build_horse_tables.py
+      - src/core_model.py
+      - src/features_engine.py
+  workflow_dispatch:
+
+concurrency:
+  group: horse-tables
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 依存パッケージインストール
+        run: |
+          pip install --quiet \
+            lightgbm==4.6.0 scikit-learn==1.8.0 pandas==2.3.3 numpy==2.4.2 \
+            requests==2.32.5 beautifulsoup4==4.14.3 \
+            pytz==2026.1 huggingface_hub==1.7.2 joblib==1.5.3 streamlit==1.60.0
+
+      - name: 馬テーブルを作って HF Hub にアップロード
+        env:
+          HF_TOKEN:   ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
+        run: python build_horse_tables.py
