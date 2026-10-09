@@ -19,6 +19,11 @@ _HF_TOKEN   = os.environ.get("HF_TOKEN", "")
 _HF_REPO_ID = os.environ.get("HF_REPO_ID", "")   
 _MODEL_FILE = "keiba_model.pkl"                    
 _META_FILE  = "keiba_model_meta.json"             
+# 馬ごとの過去走テーブル（モデルと切り離して週次更新する・2026-10-10）。
+# 再学習を止めている間も、馬の前走・脚質・スピード指数が古くならないようにする。
+_HORSE_TABLES_FILE = "horse_tables.pkl"
+# bundle 内の位置（prepare_model_and_data の bundle 定義と一致させること）
+_IDX_LATEST, _IDX_HORSE_COURSE, _IDX_PED, _IDX_HORSE_HEAVY = 7, 8, 9, 21
 
 def _get_zip_mtime():
     """学習データの識別子を返す（ファイルサイズ＋行数ハッシュ）
@@ -56,7 +61,98 @@ def _download_model_worker(hf_token, hf_repo_id, meta_file, model_file):
         repo_type="dataset", token=hf_token,
         cache_dir="/tmp/hf_cache", force_download=True,
     )
-    return joblib.load(model_path), meta
+    bundle = joblib.load(model_path)
+    # 週次更新の馬テーブル（無ければ従来どおりモデル内の表を使う）
+    tables = None
+    try:
+        tp = hf_hub_download(
+            repo_id=hf_repo_id, filename=_HORSE_TABLES_FILE,
+            repo_type="dataset", token=hf_token,
+            cache_dir="/tmp/hf_cache", force_download=True,
+        )
+        import pickle as _pickle
+        with open(tp, 'rb') as f:
+            tables = _pickle.load(f)
+    except Exception as _e:
+        logger.info(f"馬テーブル({_HORSE_TABLES_FILE})なし/取得失敗 → モデル内の表を使用: {_e}")
+    return bundle, meta, tables
+
+
+def build_horse_tables(df):
+    """create_features 済みの全データから、馬ごとの参照テーブル一式を作る。
+
+    pandas/numpy の版差で壊れないよう、中身はすべて素の Python 型（CSV文字列・dict・float）。
+    """
+    import io as _io
+    lhd = build_latest_horse_data(df)
+    _d = pd.to_datetime(df['日付'], errors='coerce')
+    hc = df.groupby(['馬ID', '競馬場', '芝/ダート'])['着順パーセント'].mean()
+    heavy = {}
+    _h = df[df['馬場'].isin(['重', '不良'])] if '馬場' in df.columns else df.iloc[0:0]
+    if len(_h) and '着順パーセント' in _h.columns:
+        heavy = {str(k): float(v) for k, v in _h.groupby('馬ID')['着順パーセント'].mean().items()}
+    ped = {}
+    try:
+        ped_df = pd.read_csv('pedigree_master_all.csv', dtype=str)
+        ped_df['馬ID'] = ped_df['馬ID'].astype(str).str.zfill(10)
+        ped = ped_df.set_index('馬ID')[['父','父系','母','母系','母父','母父系']].fillna('不明').to_dict('index')
+    except Exception as _e:
+        logger.warning(f'pedigree_master_all.csv 読み込み失敗: {_e}')
+    buf = _io.StringIO()
+    lhd.to_csv(buf, index=False)
+    return {
+        'version': 1,
+        'built_at': datetime.datetime.now().isoformat(),
+        'data_last_date': str(_d.max().date()),
+        'n_rows': int(len(df)),
+        'latest_horse_data_csv': buf.getvalue(),
+        'horse_course': [(str(a), str(b), str(c), float(v)) for (a, b, c), v in hc.items()],
+        'horse_heavy': heavy,
+        'ped': {str(k): {kk: str(vv) for kk, vv in v.items()} for k, v in ped.items()},
+    }
+
+
+def apply_horse_tables(bundle, tables):
+    """bundle の馬テーブル（最新走・コース適性・血統・重馬場）を週次更新版に差し替える。
+
+    モデル本体・キャリブレータ等は一切触らない（再学習ではない）。
+    差し替え後の表は、元の表と同じ列・同じ型にそろえる。新しくなければ差し替えない。
+    """
+    import io as _io
+    if not tables or len(bundle) <= _IDX_HORSE_HEAVY:
+        return bundle
+    try:
+        old = bundle[_IDX_LATEST]
+        new = pd.read_csv(_io.StringIO(tables['latest_horse_data_csv']), dtype={'馬ID': str})
+        new['馬ID'] = new['馬ID'].str.zfill(10)
+        old_last = pd.to_datetime(old['最新_日付'], errors='coerce').max() if '最新_日付' in old.columns else None
+        new_last = pd.to_datetime(tables.get('data_last_date'), errors='coerce')
+        if old_last is not None and pd.notna(old_last) and pd.notna(new_last) and new_last <= old_last:
+            logger.info(f"馬テーブルがモデル内より新しくない（{new_last.date()} <= {old_last.date()}）→ 差し替えなし")
+            return bundle
+        for c in old.columns:
+            if c not in new.columns:
+                new[c] = np.nan
+            elif pd.api.types.is_datetime64_any_dtype(old[c]):
+                new[c] = pd.to_datetime(new[c], errors='coerce')
+            elif pd.api.types.is_numeric_dtype(old[c]):
+                new[c] = pd.to_numeric(new[c], errors='coerce')
+            else:
+                new[c] = new[c].where(new[c].notna(), np.nan).astype(object)
+        new = new[list(old.columns)]
+        horse_course = {(a, b, c): v for a, b, c, v in tables['horse_course']}
+        b = list(bundle)
+        b[_IDX_LATEST] = new
+        b[_IDX_HORSE_COURSE] = horse_course
+        b[_IDX_PED] = {**(bundle[_IDX_PED] or {}), **tables.get('ped', {})}
+        b[_IDX_HORSE_HEAVY] = tables.get('horse_heavy', bundle[_IDX_HORSE_HEAVY])
+        logger.info(f"馬テーブルを週次更新版に差し替え: データ {tables.get('data_last_date')} まで"
+                    f"（モデル内 {old_last.date() if old_last is not None and pd.notna(old_last) else '?'}）"
+                    f" {len(old):,}頭 → {len(new):,}頭")
+        return tuple(b)
+    except Exception as _e:
+        logger.warning(f"馬テーブル差し替え失敗 → モデル内の表を使用: {_e}")
+        return bundle
 
 
 def _try_load_model_from_hub():
@@ -83,7 +179,7 @@ def _try_load_model_from_hub():
             _HF_TOKEN, _HF_REPO_ID, _META_FILE, _MODEL_FILE
         )
         try:
-            bundle, meta = future.result(timeout=90)
+            bundle, meta, tables = future.result(timeout=90)
         except FutureTimeout:
             logger.warning("HF Hubダウンロードが90秒でタイムアウト → スレッドを解放してフォールバック")
             executor.shutdown(wait=False)
@@ -102,6 +198,7 @@ def _try_load_model_from_hub():
                 " HF Hubのモデルで継続起動します。最新データで再学習する場合は retrain.yml を手動実行してください。"
             )
 
+        bundle = apply_horse_tables(bundle, tables)
         logger.info("HF Hub: モデルロード完了")
         return bundle
 
@@ -163,6 +260,37 @@ def _save_model_to_hub(bundle):
     except Exception:
         return False
 
+def build_latest_horse_data(df):
+    """create_features 済みの全データから「各馬の最新走」の表を作る（推論の過去走入力）。
+
+    学習(prepare_model_and_data)と、モデルと切り離した週次更新(build_horse_tables.py)の
+    両方がこれを使う。列の定義を一か所に保つため（2026-10-10）。
+    """
+    df_latest = df.groupby('馬ID').tail(1).copy()
+    rn = {'着順':'最新_着順','スピード指数':'最新_スピード指数','人気':'最新_人気','上り':'最新_上り',
+          '距離':'最新_距離','斤量':'最新_斤量','馬体重_num':'最新_馬体重','日付':'最新_日付','通過':'最新_通過',
+          '騎手':'最新_騎手','芝/ダート':'最新_芝ダート','着順パーセント':'最新_着順パーセント',
+          '出走頭数':'最新_出走頭数'}  # 前走頭数（通過順の正規化用・2026-08-16）
+    for src,dst in [('前走失速フラグ','最新_失速フラグ'),('失速フラグ','最新_失速フラグ'),
+                    ('前走上り偏差','最新_上り偏差'),('前走距離補正タイム差','最新_距離補正タイム差'),
+                    ('直近3走着順パーセント','最新_直近3走着順パーセント'),('馬体重増減','最新_馬体重増減')]:
+        if src in df_latest.columns: rn[src]=dst
+    df_latest = df_latest.rename(columns=rn)
+    ck = ['馬ID','父','父系','母','母系','母父','母父系',
+          '最新_着順','最新_スピード指数','最新_人気','最新_上り','最新_距離','最新_斤量','最新_馬体重','最新_日付','最新_通過',
+          '最新_騎手','最新_芝ダート','最新_着順パーセント',
+          '最新_失速フラグ','最新_上り偏差','最新_距離補正タイム差','最新_直近3走着順パーセント','最新_馬体重増減',
+          '前走_着順','2走前_着順','3走前_着順','過去3走平均着順',
+          '前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数',
+          '過去3走平均スピード指数','近5走_中央値スピード指数','近5走_最高スピード指数','上昇度_スピード指数',
+          '前走_通過','2走前_通過','前走_最終コーナー','2走前_最終コーナー','最新_出走頭数',
+          'キャリア数','前走_上り順位率',
+          '前走_レースクラスコード']  # レース格上挑戦フラグ計算用
+    ck = [c for c in ck if c in df_latest.columns]
+    latest_horse_data = df_latest[ck].copy()
+    return latest_horse_data
+
+
 @st.cache_resource
 def prepare_model_and_data(force_retrain=False):
     """
@@ -214,29 +342,8 @@ def prepare_model_and_data(force_retrain=False):
     from src.features_engine import create_features
     df, _ = create_features(df)
 
-    # latest_horse_data: ★修正 - 推論で必要な全列を保存
-    df_latest = df.groupby('馬ID').tail(1).copy()
-    rn = {'着順':'最新_着順','スピード指数':'最新_スピード指数','人気':'最新_人気','上り':'最新_上り',
-          '距離':'最新_距離','斤量':'最新_斤量','馬体重_num':'最新_馬体重','日付':'最新_日付','通過':'最新_通過',
-          '騎手':'最新_騎手','芝/ダート':'最新_芝ダート','着順パーセント':'最新_着順パーセント',
-          '出走頭数':'最新_出走頭数'}  # 前走頭数（通過順の正規化用・2026-08-16）
-    for src,dst in [('前走失速フラグ','最新_失速フラグ'),('失速フラグ','最新_失速フラグ'),
-                    ('前走上り偏差','最新_上り偏差'),('前走距離補正タイム差','最新_距離補正タイム差'),
-                    ('直近3走着順パーセント','最新_直近3走着順パーセント'),('馬体重増減','最新_馬体重増減')]:
-        if src in df_latest.columns: rn[src]=dst
-    df_latest = df_latest.rename(columns=rn)
-    ck = ['馬ID','父','父系','母','母系','母父','母父系',
-          '最新_着順','最新_スピード指数','最新_人気','最新_上り','最新_距離','最新_斤量','最新_馬体重','最新_日付','最新_通過',
-          '最新_騎手','最新_芝ダート','最新_着順パーセント',
-          '最新_失速フラグ','最新_上り偏差','最新_距離補正タイム差','最新_直近3走着順パーセント','最新_馬体重増減',
-          '前走_着順','2走前_着順','3走前_着順','過去3走平均着順',
-          '前走_スピード指数','2走前_スピード指数','3走前_スピード指数','4走前_スピード指数','5走前_スピード指数',
-          '過去3走平均スピード指数','近5走_中央値スピード指数','近5走_最高スピード指数','上昇度_スピード指数',
-          '前走_通過','2走前_通過','前走_最終コーナー','2走前_最終コーナー','最新_出走頭数',
-          'キャリア数','前走_上り順位率',
-          '前走_レースクラスコード']  # レース格上挑戦フラグ計算用
-    ck = [c for c in ck if c in df_latest.columns]
-    latest_horse_data = df_latest[ck].copy()
+    # latest_horse_data: ★修正 - 推論で必要な全列を保存（build_latest_horse_data に集約・2026-10-10）
+    latest_horse_data = build_latest_horse_data(df)
     horse_course_dict = df.groupby(['馬ID','競馬場','芝/ダート'])['着順パーセント'].mean().to_dict()
 
     df_valid = df.dropna(subset=['着順','単勝']).copy()

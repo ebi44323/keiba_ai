@@ -72,3 +72,17 @@ jobs:
           # 念のため --autostash も付け、追跡外の想定外変更が残っても rebase を止めないようにする
           git pull --rebase --autostash origin main
           git push
+
+      # ★2026-10-10: 馬ごとの過去走テーブル（前走・脚質・スピード指数）をモデルと切り離して更新する。
+      #   これまでは再学習しない限り古いままで、再学習を止めている間に新しくデビューした2歳馬の
+      #   脚質・スピード指数が空になっていた。モデル本体は変えない（再学習ではない）。
+      #   推論側は HF Hub の horse_tables.pkl があればモデル内の表と差し替える。
+      - name: 馬テーブルを作り直して HF Hub に置く（再学習ではない）
+        env:
+          HF_TOKEN:   ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
+        run: |
+          pip install --quiet \
+            lightgbm==4.6.0 scikit-learn==1.8.0 pandas==2.3.3 numpy==2.4.2 \
+            pytz==2026.1 huggingface_hub==1.7.2 joblib==1.5.3 streamlit==1.60.0
+          python build_horse_tables.py

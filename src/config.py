@@ -133,3 +133,41 @@ def apply_post_temperature(probs, t=None):
         return p / p.sum() if len(p) else p
     q = p ** (1.0 / t)
     return q / q.sum()
+
+
+def smooth_isotonic_predict(calibrator, x):
+    """IsotonicRegression の段差を補間して滑らかにした予測（2026-10-10）。
+
+    Isotonic は階段関数なので、近いスコアの馬が同じ勝率に潰れる（◎と2番手が同値になり、
+    ◎は 1e-9 のタイブレークで決まるだけ・勝率差=0 でラベルも拮抗に寄る）。
+    各段の「中心のx」と「段の値y」を結んだ折れ線で補間する（段の平均はほぼ保たれる）。
+      - 最下段より下: 原点へ比例で下げる（y0 × x/x0）
+      - 最上段より上: 最後の区間の傾きで延長（傾きの上限は原点比例 y/x・値の上限なし）
+    単調非減少を保つので順位は変わらない。fit 済み属性が無ければ従来の predict を返す。
+    """
+    import numpy as np
+    x = np.asarray(x, dtype=float)
+    try:
+        xt = np.asarray(calibrator.X_thresholds_, dtype=float)
+        yt = np.asarray(calibrator.y_thresholds_, dtype=float)
+    except AttributeError:
+        return calibrator.predict(x)
+    if len(xt) < 2:
+        return calibrator.predict(x)
+    uy, inv = np.unique(yt, return_inverse=True)
+    cx = np.array([xt[inv == k].mean() for k in range(len(uy))])
+    if len(cx) < 2:
+        return calibrator.predict(x)
+    out = np.interp(x, cx, uy)
+    lo = x < cx[0]
+    if lo.any() and cx[0] > 0:
+        out[lo] = uy[0] * np.clip(x[lo], 0, None) / cx[0]
+    hi = x > cx[-1]
+    if hi.any():
+        # 最後の区間の傾きで延長。ただし最上段はサンプルが少なく急になりがちなので、
+        # 原点比例の傾き(y/x)を上限にする。上限値(0.95等)で切ると強い馬同士が同値に戻るため切らない
+        # （呼び出し側はレース内で合計1に正規化するので、ここは相対的な重みとして使われる）。
+        slope = (uy[-1] - uy[-2]) / max(cx[-1] - cx[-2], 1e-12)
+        slope = min(slope, uy[-1] / max(cx[-1], 1e-12))
+        out[hi] = uy[-1] + slope * (x[hi] - cx[-1])
+    return out

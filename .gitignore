@@ -14,3 +14,4 @@ trained_assets.pkl
 validation_report.csv
 validation_run*.log
 *.log
+horse_tables.pkl

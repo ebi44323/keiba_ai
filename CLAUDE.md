@@ -9,7 +9,7 @@ HuggingFace Spaces にデプロイ。GitHub push → sync.yml → HF自動反映
 - 形式: `v年-月-日+アルファベット`（同日複数回は a→b→c と増やす）
 - 例: `v2026-03-28a`、`v2026-03-28b`
 - **用途**: HF Space Filesタブでコード到達確認・アプリ画面で起動確認に使う
-- 現在: `v2026-10-10b`
+- 現在: `v2026-10-10c`
 
 ---
 
@@ -22,6 +22,7 @@ update_data.py             週次データ更新スクリプト（python update_
 backfill_race_name.py      レース名補完スクリプト
 check_market_rate_auc.py   市場勝率のAUC寄与検証スクリプト
 train_and_push.py          ローカル再学習→HF Hub保存スクリプト（手動実行用）
+build_horse_tables.py      馬ごとの過去走テーブルだけを作り直し HF Hub に置く（再学習ではない・weekly_update.yml が実行）
 predict_auto.py            発走前自動予想スクリプト（GitHub Actions経由）
 auto_morning.py            朝刊 全レース予想→Discord投稿スクリプト（土日 7:00 JST）
 auto_review.py             当日振り返りスクリプト（土日 18:00 JST）
@@ -348,7 +349,42 @@ git push origin main
 
 ---
 
-## 現在の状況（2026-10-09 時点）★最新
+## 現在の状況（2026-10-10 時点）★最新
+
+### 馬の過去走テーブルをモデルから切り離した（★重要・再学習不要）
+**発覚**: 10/10 朝刊で **2歳未勝利の脚質不明 57%**（新馬100%は当然・古馬4%）。
+**原因**: 推論の過去走入力 `latest_horse_data`（前走着順・通過順＝脚質・スピード指数…）は
+**モデル bundle の中にしか無く、再学習しないと更新されなかった**。Phase 2 のため再学習を止めた結果、
+最終学習（8月末ごろ）以降にデビューした馬は空。当日スクレイプ `fetch_horse_last_race` は
+着順/日付/距離/芝ダ/騎手しか上書きしない → 古馬も「前走着順は最新・前走SIは8月以前」とずれていた。
+**対策**:
+- `src/core_model.py`: `build_latest_horse_data(df)`（学習と共通化）/ `build_horse_tables(df)` /
+  `apply_horse_tables(bundle, tables)`。差し替えるのは bundle の **7 latest_horse_data / 8 horse_course_dict /
+  9 ped_dict(追記マージ) / 21 horse_heavy_dict** のみ。列と型は元の表にそろえ、モデル内より新しい時だけ差し替える。
+  中身は素の Python 型（CSV文字列・dict）なので pandas の版差で壊れない。
+- `_try_load_model_from_hub` が HF Hub の **`horse_tables.pkl`** を取得して差し替え（無ければ従来どおり）。
+- `build_horse_tables.py` を新設し、**weekly_update.yml の最後で毎週実行**（データ更新の直後）。
+- ⚠️ 以後、**再学習を止めていても馬の情報は毎週更新される**。モデル本体・キャリブレータ・TE・騎手辞書は不変。
+
+### 勝率キャリブレータの段差を補間（同値レースの解消・再学習不要）
+- `src/config.py: smooth_isotonic_predict()`。Isotonic の各段の中心を折れ線で結ぶ。下端は原点比例、
+  上端は最後の区間の傾き（上限 y/x）で延長・**値の上限は付けない**（0.95で切ると強い馬同士が再び同値になる。
+  呼び出し側でレース内正規化するので重みとして使われる）。単調なので順位は不変。
+- 勝率・複勝率の両方のキャリブレータに適用（`inference.py`）。
+- 検証（5月の旧bundleのキャリブレータ・合成2000R）: ◎と2番手の同値 **397→0**。
+- `tests/test_smoke.py`: `test_smooth_isotonic` / `test_apply_horse_tables` / bundle 位置の契約。11/11 PASS。
+
+### データの取りこぼし
+- zip に **9/19〜9/22 の4日分が無かった**（祝日対応前の期間・通常更新では遡らない）。`update_data.py --from 20260919` で補填。
+
+### ⚠️ Phase 2 の測定は取り直し
+上の2つで入力（馬の過去走）と勝率の形がどちらも変わる。T*=0.65 は古い入力・階段較正で測った値。
+`AI勝率(補正前)` / `AIスコア(較正前)` の記録は続いているので、**新しい状態で2〜3開催週 貯めてから
+キャリブレーション診断を回し直す**。T は当面 0.65 のまま（極端にずれていれば POST_TEMPERATURE を更新）。
+
+---
+
+## 現在の状況（2026-10-09 時点）
 
 ### Phase 2a 導入: 事後温度 T=0.65（再学習不要）
 **診断（324R・2026-08-30〜10-04）**: ◎ AI予測16.4% vs 実28.1%（0.58倍）・市場比0.69倍。

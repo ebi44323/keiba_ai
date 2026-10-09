@@ -7,7 +7,7 @@ import re
 import datetime
 import logging
 import traceback
-from src.config import http_get
+from src.config import http_get, smooth_isotonic_predict
 from src.utils import get_headers, resolve_name, VENUE_MAWARI, VENUE_CHIKEI, TRACK_CONDITION_MAP, classify_race_class
 from src.scraper import fetch_horse_last_race, fetch_oikiri_data
 from src.gemini_utils import score_oikiri_comments, check_gemini_available
@@ -734,7 +734,9 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         softmax_probs = exp_scores / np.sum(exp_scores)
         if calibrator is not None:
             try:
-                calibrated = np.clip(calibrator.predict(softmax_probs), 1e-6, 1.0)
+                # 段差を補間した滑らかな較正（2026-10-10）。Isotonic のままだと近いスコアの馬が
+                # 同じ勝率に潰れ、◎と2番手が同値のレースが 7/24R あった。
+                calibrated = np.clip(smooth_isotonic_predict(calibrator, softmax_probs), 1e-6, None)
                 # calibrated は softmax に対し単調（Isotonic）。合計1へ定数割り正規化すれば
                 # 順序（=softmax順）を保てる。微小な softmax 項で同値を決定的にタイブレーク。
                 # ⚠️ 旧実装は同値グループを softmax 比で「分割」していたが、各馬の値が群サイズに
@@ -768,7 +770,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         _bt_place = np.clip((3.0 * win_probs) / (2.0 * win_probs + 1.0 + 1e-9), 0.0, 0.98)
         if place_calibrator is not None:
             try:
-                place_probs = np.clip(place_calibrator.predict(softmax_probs), 0.0, 0.95)
+                place_probs = np.clip(smooth_isotonic_predict(place_calibrator, softmax_probs), 0.0, 0.95)
             except Exception:
                 place_probs = _bt_place
         else:

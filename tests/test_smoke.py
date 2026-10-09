@@ -61,6 +61,12 @@ def test_bundle_field_contract():
     assert rest[4] == 'calibrator'
     assert rest[11] == 'score_norms', 'backtest の _rest[11] が score_norms からズレた'
     assert rest[12] == 'SOFTMAX_TEMPERATURE', 'backtest の _rest[12] がズレた'
+    # 馬テーブル差し替え（core_model.apply_horse_tables）が書き換える位置
+    src_cm = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               'src', 'core_model.py'), encoding='utf-8').read()
+    assert '_IDX_LATEST, _IDX_HORSE_COURSE, _IDX_PED, _IDX_HORSE_HEAVY = 7, 8, 9, 21' in src_cm
+    assert (order[7], order[8], order[9], order[21]) == (
+        'latest_horse_data', 'horse_course_dict', 'ped_dict', 'horse_heavy_dict'), '馬テーブルの位置がズレた'
 
 
 def test_create_features_smoke():
@@ -262,6 +268,47 @@ def test_post_temperature():
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src', 'inference.py'), encoding='utf-8').read()
     assert "p1,p2 = df_test.loc[0,'勝率(補正前)']" in src, 'ラベル判定が補正前の勝率になっていない'
     assert "(df_test['勝率(補正前)'] >= ev_win_floor)" in src, 'EV昇格のフロアが補正前の勝率になっていない'
+
+
+def test_smooth_isotonic():
+    """較正の段差補間: 単調・同値が出ない・fit 範囲内では段の値をおおむね保つ。"""
+    import numpy as np
+    from sklearn.isotonic import IsotonicRegression
+    from src.config import smooth_isotonic_predict
+    rng = np.random.default_rng(0)
+    x = rng.uniform(0.0, 0.3, 4000)
+    y = (rng.uniform(size=4000) < x * 1.2).astype(float)
+    cal = IsotonicRegression(out_of_bounds='clip').fit(x, y)
+    q = np.linspace(0.0, 0.6, 500)
+    s = smooth_isotonic_predict(cal, q)
+    assert np.all(np.diff(s) >= -1e-12), '単調でない'
+    inner = (q > 0.02) & (q < 0.28)
+    assert len(np.unique(np.round(s[inner], 9))) > 0.9 * inner.sum(), '補間後も同値が多い'
+    assert abs(s[inner].mean() - cal.predict(q[inner]).mean()) < 0.02, '段の値から大きくずれた'
+    assert np.all(np.diff(s[q > 0.3]) > 0), '最上段より上で同値になる'
+
+
+def test_apply_horse_tables():
+    """週次の馬テーブル差し替え: 新しい時だけ差し替え・列と型は元の表にそろう・他は不変。"""
+    import pandas as pd
+    from src.core_model import apply_horse_tables
+    old = pd.DataFrame({'馬ID': ['0000000001'], '最新_日付': pd.to_datetime(['2026-08-23']),
+                        '最新_着順': [3.0], '最新_通過': ['5-5']})
+    bundle = tuple(['x'] * 7 + [old, {('0000000001', '東京', '芝'): 0.4}, {'0000000001': {'父': 'A'}}]
+                   + ['y'] * 11 + [{'0000000001': 0.5}] + ['z'] * 9)
+    new_csv = '馬ID,最新_日付,最新_着順,最新_通過,余分\n0000000001,2026-10-04,1,2-2,9\n0000000002,2026-10-04,5,8-7,9\n'
+    tables = {'data_last_date': '2026-10-04', 'latest_horse_data_csv': new_csv,
+              'horse_course': [('0000000002', '京都', 'ダート', 0.3)],
+              'horse_heavy': {'0000000002': 0.2}, 'ped': {'0000000002': {'父': 'B'}}}
+    b2 = apply_horse_tables(bundle, tables)
+    lhd = b2[7]
+    assert list(lhd.columns) == list(old.columns), '列が元の表とそろっていない'
+    assert len(lhd) == 2 and lhd['最新_通過'].iloc[1] == '8-7'
+    assert pd.api.types.is_datetime64_any_dtype(lhd['最新_日付'])
+    assert b2[9]['0000000001']['父'] == 'A' and b2[9]['0000000002']['父'] == 'B', '血統は追記マージ'
+    assert b2[0] == 'x' and b2[18] == 'y' and b2[22] == 'z', '馬テーブル以外を触った'
+    # 新しくなければ差し替えない
+    assert apply_horse_tables(bundle, dict(tables, data_last_date='2026-08-01')) is bundle
 
 
 def _run_all():
