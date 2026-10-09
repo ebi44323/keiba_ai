@@ -110,3 +110,26 @@ def field_softmax_temperature(base_t, n_runners):
         return base_t
     factor = 0.75 + 0.25 * min(max((n - 6.0) / 10.0, 0.0), 1.0)
     return base_t * factor
+
+
+# ── 事後温度補正（Phase 2a・2026-10-09）────────────────────────────────
+# 本番OOS 324R（2026-08-30〜10-04）の診断で、◎の勝率が実勢の 0.58倍（市場比 0.69倍）と
+# 過小評価だった。レース内で p^(1/T) 再正規化して分布を尖らせる。
+# T* は 全データ/前半/後半 すべて 0.65 で一致（レースlogloss 1.5%改善・ECE 1.75→0.96pp）。
+# 順位は変えない＝◎選定に影響しない・再学習不要（キャリブレータの後段に置く事後変換）。
+# ⚠️ ◎のEV昇格と勝負/回避ラベルは「補正前の勝率」で判定する（inference.py の 勝率(補正前)）。
+#    絶対閾値なので、補正後の勝率で判定すると勝負が 104→155R(48%) に急増するため。
+#    ラベルの作り直しは Phase 2b で実ROIから行う。
+# 1.0 にすると補正前と完全に同じ挙動に戻る（ロールバック用）。
+POST_TEMPERATURE = 0.65
+
+
+def apply_post_temperature(probs, t=None):
+    """1レース分の勝率に p^(1/T) をかけて合計1に再正規化する（順位は不変）。"""
+    import numpy as np
+    t = POST_TEMPERATURE if t is None else float(t)
+    p = np.clip(np.asarray(probs, dtype=float), 1e-9, None)
+    if t == 1.0 or len(p) == 0:
+        return p / p.sum() if len(p) else p
+    q = p ** (1.0 / t)
+    return q / q.sum()

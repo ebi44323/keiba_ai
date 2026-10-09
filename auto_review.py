@@ -561,6 +561,8 @@ def run(date_str: str = None):
                 "脚質": _hr.get("脚質カテゴリ", ""), "枠番": _g_int(_hr, "枠番"),
                 "単勝オッズ": round(float(_hr.get("単勝オッズ", 0) or 0), 1), "人気": _ninki,
                 "AI勝率": round(float(_hr.get("勝率(AI予測)", 0) or 0), 4),
+                # Phase2a: 事後温度補正の前の勝率（ラベル/EV昇格の判定値・キャリブ診断の基準）
+                "AI勝率(補正前)": round(float(_hr.get("勝率(補正前)", _hr.get("勝率(AI予測)", 0)) or 0), 4),
                 "複勝率": round(float(_hr.get("複勝率(AI予測)", 0) or 0), 4),
                 "EV": round(float(_hr.get("期待値", 0) or 0), 2),
                 "複勝EV": round(float(_hr.get("複勝期待値", 0) or 0), 2),

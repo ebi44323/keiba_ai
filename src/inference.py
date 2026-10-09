@@ -746,6 +746,13 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                 win_probs = softmax_probs
         else:
             win_probs = softmax_probs
+        # ── 事後温度補正（Phase 2a・2026-10-09）─────────────────────────────
+        # 本番OOSで◎が実勢の0.58倍と過小評価 → p^(1/T)(T=0.65) で尖らせる。順位は不変。
+        # ◎のEV昇格と勝負/回避ラベルは絶対閾値なので「補正前」の勝率で判定し、挙動を保つ
+        # （補正後で判定すると勝負が 104→155R に急増。ラベル再設計は Phase 2b）。
+        from src.config import apply_post_temperature
+        df_test['勝率(補正前)'] = win_probs
+        win_probs = apply_post_temperature(win_probs)
         df_test['勝率(AI予測)']   = win_probs
         # 複勝率(3着内): place_calibrator があれば学習済みIsotonicで算出（#5・データドリブン）。
         # 無い旧bundleは従来のBradley-Terry式 3p/(2p+1) にフォールバック。
@@ -833,10 +840,11 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             # ◎昇格の判定でのみオッズに上限(EV_ODDS_CAP)を課す（表示の期待値は実値のまま）。
             EV_ODDS_CAP = 40.0
             _promo_odds = pd.to_numeric(df_test['単勝オッズ'], errors='coerce').clip(upper=EV_ODDS_CAP)
-            df_test['_promo_ev'] = df_test['勝率(AI予測)'] * _promo_odds
+            # 勝率は補正前で判定（Phase 2a: 事後温度で昇格が動き出さないように）
+            df_test['_promo_ev'] = df_test['勝率(補正前)'] * _promo_odds
             ev_cands = df_test[
                 (df_test['_promo_ev'] >= ev_threshold) &
-                (df_test['勝率(AI予測)'] >= ev_win_floor) &
+                (df_test['勝率(補正前)'] >= ev_win_floor) &
                 (_ev_ok)
             ]
             if not ev_cands.empty:
@@ -851,7 +859,9 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
                     df_test.loc[0, '印'] = '◎'
                     df_test.loc[1, '印'] = old_ev_mark if old_ev_mark else '〇'
 
-        p1,p2 = df_test.loc[0,'勝率(AI予測)'],df_test.loc[1,'勝率(AI予測)']
+        # ラベル判定は補正前の勝率で行う（Phase 2a）。表示用の◎勝率は補正後（p1_disp）。
+        p1,p2 = df_test.loc[0,'勝率(補正前)'],df_test.loc[1,'勝率(補正前)']
+        p1_disp = float(df_test.loc[0,'勝率(AI予測)'])
         score_diff = p1-p2
         top1_umaban = df_test.loc[0,'馬番']
         himo_umabans = df_test.loc[1:4,'馬番'].astype(str).tolist() if len(df_test)>=5 else df_test.loc[1:,'馬番'].astype(str).tolist()
@@ -875,7 +885,8 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
         #         (B) 本命の期待値が大きい＝妙味大（勝率が高くなくてもオッズ妙味で勝負）
         # ⚠️回避: 未出走混在 or 決め手のない低確率混戦（EVも小さい）
         # 期待値 = 勝率×オッズ。EV優先で◎が入替わった後の◎の期待値を見る。
-        top_ev = float(df_test.loc[0, '期待値'])
+        # 期待値列は補正後の勝率ベース。ラベルの EV 条件は補正前の勝率で見る（Phase 2a）。
+        top_ev = min(float(df_test.loc[0, '勝率(補正前)']) * float(df_test.loc[0, '単勝オッズ']), 50.0)
         EV_KACHI = 2.0   # ◎EVがこの値以上なら勝率が高くなくても🔥勝負（オッズ妙味）
         # ── ラベル閾値（2026-08-29 再調整）──────────────────────────────────
         # 複勝率/勝率タイブレーク修正(2026-08-29)で◎の過信が是正され、◎勝率の上限が
@@ -893,7 +904,7 @@ def run_real_prediction(race_id, race_date_str, bundle, skip_live_scrape=False, 
             race_grade = "🟡 通常レース"
 
         if is_tekkan:
-            confidence_text = f"💎 【鉄板レース】 ◎が抜けた存在({p1*100:.1f}%)！ 軸は不動です。"
+            confidence_text = f"💎 【鉄板レース】 ◎が抜けた存在({p1_disp*100:.1f}%)！ 軸は不動です。"
             reco = f"🎯 【本命・単勝勝負】 ◎ {top1_umaban}番 の単勝。\n  🔗 馬単・3連単: {top1_umaban}着固定 → 相手: {himo_str}"
             if ana_str: reco += f"\n  💣 余裕があれば穴馬({ana_str}番)へのヒモ流しも推奨。"
         elif is_haran:

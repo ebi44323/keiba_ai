@@ -41,6 +41,13 @@ WEBHOOK    = (os.environ.get("DISCORD_REVIEW_WEBHOOK_URL", "").strip()
 
 EPS = 1e-9
 
+# 本番で効いている事後温度（Phase 2a・2026-10-09 導入）。このレポートは常に「補正前」の
+# 勝率で測るので、推定した T* はそのまま本番の T と比べられる。
+try:
+    from src.config import POST_TEMPERATURE
+except Exception:
+    POST_TEMPERATURE = 1.0
+
 
 # ──────────────────────────────────────────────────────────────
 # データ取得
@@ -58,6 +65,11 @@ def load_history(days: int) -> pd.DataFrame:
     for c in ("AI勝率", "複勝率", "単勝オッズ", "EV", "市場勝率"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+    # Phase 2a 以降の行は AI勝率 が事後温度の補正後。診断は補正前の勝率で行う
+    # （古い行は列が無い＝もともと補正前）。こうすると導入前後で T* の物差しが変わらない。
+    if "AI勝率(補正前)" in df.columns:
+        raw = pd.to_numeric(df["AI勝率(補正前)"], errors="coerce")
+        df["AI勝率"] = raw.fillna(df["AI勝率"])
     for c in ("1着", "複勝内", "頭数", "AI順位", "人気"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
@@ -483,6 +495,8 @@ def build_report(df: pd.DataFrame, sim_t: float = None) -> str:
     add("【3. 事後の温度補正 T* の推定】")
     add("  レース内で p^(1/T) 再正規化。T>1で過信を緩和・T<1で尖らせる。純AI順位は不変だが、")
     add("  EV優先の◎昇格と勝負/回避ラベルは絶対閾値なので動く（→【7】で影響を再現）。")
+    add(f"  ※ 本番の事後温度 T={POST_TEMPERATURE:.2f}。ここでは補正前の勝率で測るので、")
+    add("    T* が本番の T と一致していれば補正は今も妥当（±0.1以上ずれたら更新を検討）。")
 
     # 2026-09-25: 旧実装は下限0.60で、実データの最適値がちょうど0.60＝探索範囲の端で
     # 止まっていた（本当の最適はもっと下かもしれず、値を信用できない）。範囲を広げ、
@@ -644,10 +658,15 @@ def build_report(df: pd.DataFrame, sim_t: float = None) -> str:
         add("  → やること: データを貯める。上の【2b】市場との比（実績の当たり外れに依存しない）")
         add("     だけは今でも読める指標なので、方向性の確認にはそちらを使う。")
     else:
-        add(f"  ✅ 採用条件を満たしている。事後温度 T={best_t:.2f} の導入を検討してよい。")
-        add("     （再学習は不要。ただし【7】のとおり EV昇格の◎とラベルが動くので、")
-        add("       EVの勝率フロア・ラベル閾値の見直しと同じ変更でまとめて入れること）")
-        add("  → 次に p1/p2 比・AI勝率バケットの実ROIから 🔥勝負/⚠️回避 の閾値を引き直す。")
+        if POST_TEMPERATURE != 1.0 and abs(best_t - POST_TEMPERATURE) <= 0.1:
+            add(f"  ✅ 本番の事後温度 T={POST_TEMPERATURE:.2f} は今も妥当（推定 T*={best_t:.2f}）。変更不要。")
+        elif POST_TEMPERATURE != 1.0:
+            add(f"  🔁 推定 T*={best_t:.2f} が本番の T={POST_TEMPERATURE:.2f} からずれている。")
+            add("     src/config.py の POST_TEMPERATURE の更新を検討（再学習不要）。")
+        else:
+            add(f"  ✅ 採用条件を満たしている。事後温度 T={best_t:.2f} の導入を検討してよい。")
+        add("  ※ ◎のEV昇格とラベルは補正前の勝率で判定している（Phase 2a）。")
+        add("  → ラベルの作り直し（Phase 2b）は p1/p2 比・AI勝率バケットの実ROIが固まってから。")
     add("=" * 62)
     return "\n".join(L)
 

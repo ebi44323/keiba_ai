@@ -246,6 +246,24 @@ def test_morning_html_js_syntax():
             raise AssertionError(f'script[{i}] JS構文エラー: {e}')
 
 
+def test_post_temperature():
+    """Phase 2a 事後温度: 順位不変・合計1・T<1で◎が上がる・T=1で恒等・判定は補正前で行う。"""
+    import numpy as np
+    from src.config import apply_post_temperature, POST_TEMPERATURE
+    p = np.array([0.16, 0.14, 0.12, 0.10, 0.09, 0.08, 0.07, 0.06, 0.05, 0.05, 0.04, 0.04])
+    p = p / p.sum()
+    q = apply_post_temperature(p)
+    assert abs(q.sum() - 1.0) < 1e-9, '合計が1でない'
+    assert (np.argsort(-q, kind='stable') == np.argsort(-p, kind='stable')).all(), '順位が変わった'
+    if POST_TEMPERATURE < 1.0:
+        assert q[0] > p[0] and q[-1] < p[-1], 'T<1 なのに尖っていない'
+    assert np.allclose(apply_post_temperature(p, 1.0), p), 'T=1 で恒等にならない'
+    # inference.py はラベル/EV昇格を補正前の勝率で判定する（勝負の急増を防ぐ契約）
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src', 'inference.py'), encoding='utf-8').read()
+    assert "p1,p2 = df_test.loc[0,'勝率(補正前)']" in src, 'ラベル判定が補正前の勝率になっていない'
+    assert "(df_test['勝率(補正前)'] >= ev_win_floor)" in src, 'EV昇格のフロアが補正前の勝率になっていない'
+
+
 def _run_all():
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]
     failed = 0
