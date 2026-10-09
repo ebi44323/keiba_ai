@@ -366,7 +366,7 @@ git push origin main
 - `_try_load_model_from_hub` が HF Hub の **`horse_tables.pkl`** を取得して差し替え（無ければ従来どおり）。
 - `build_horse_tables.py` を新設し、**weekly_update.yml の最後で毎週実行**（データ更新の直後）。
   加えて `horse_tables.yml` が zip 等の push で自動実行（bot の push は GITHUB_TOKEN なので起動しないため両方必要）。
-  ⚠️ アプリ(HF Space)は起動時に1回だけ読む。表の更新がアプリ再起動より後なら、次の再起動まで旧い表。Actions の朝刊等は毎回読む。
+  アプリ(HF Space)は起動時に1回だけ読むため、build_horse_tables.py がアップロード後に Space を再起動する（`--no-restart` で抑止）。Actions の朝刊等は毎回読む。
 - ⚠️ 以後、**再学習を止めていても馬の情報は毎週更新される**。モデル本体・キャリブレータ・TE・騎手辞書は不変。
 
 ### 勝率キャリブレータの段差を補間（同値レースの解消・再学習不要）

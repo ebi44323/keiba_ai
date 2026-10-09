@@ -11,7 +11,7 @@ build_horse_tables.py — 馬ごとの過去走テーブルを最新データで
 HF Hub に置く。推論側（src/core_model._try_load_model_from_hub）はこれがあればモデル内の表と
 差し替える。**再学習ではない**（モデル・キャリブレータ・各種辞書は不変）。
 
-    python build_horse_tables.py            # 作成して HF Hub にアップロード
+    python build_horse_tables.py            # 作成して HF Hub にアップロード → HF Space を再起動
     python build_horse_tables.py --no-upload # 作成のみ（horse_tables.pkl をローカルに保存）
 
 weekly_update.yml がデータ更新の直後に実行する。
@@ -40,6 +40,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-upload", action="store_true", help="HF Hub にアップロードしない")
     ap.add_argument("--out", default="horse_tables.pkl")
+    ap.add_argument("--no-restart", action="store_true", help="アップロード後に HF Space を再起動しない")
     args = ap.parse_args()
 
     from src.features_engine import create_features
@@ -73,6 +74,16 @@ def main():
         commit_message=f"馬テーブル更新（データ {tables['data_last_date']} まで）",
     )
     logger.info(f"HF Hub {repo}/{_HORSE_TABLES_FILE} にアップロードしました")
+
+    # アプリ(HF Space)は起動時に1回だけ表を読むので、再起動して新しい表を読ませる。
+    # 失敗しても表のアップロード自体は済んでいるので致命ではない（次の再起動で反映）。
+    space = os.environ.get("HF_SPACE_ID", "ebi44323/keiba-ebye")
+    if space and not args.no_restart:
+        try:
+            HfApi(token=token).restart_space(space)
+            logger.info(f"HF Space {space} を再起動しました（新しい馬テーブルを読み込ませるため）")
+        except Exception as e:
+            logger.warning(f"HF Space の再起動に失敗（次の再起動で反映）: {e}")
 
 
 if __name__ == "__main__":
