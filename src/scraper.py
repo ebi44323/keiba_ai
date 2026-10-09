@@ -11,6 +11,28 @@ from src.config import PLACE_DICT, get_headers, http_get
 
 logger = logging.getLogger('keiba_ebye')
 
+# netkeiba レース一覧の格アイコン番号 → 格（2026-10-10 の一覧で実物確認:
+# サウジRC=3 / 御陵S=16 / 紫菊賞=18 / 3歳以上障害OP=5）。不明な番号は付記しない。
+_GRADE_ICON = {1: 'G1', 2: 'G2', 3: 'G3', 5: 'OP', 15: 'L',
+               16: '3勝クラス', 17: '2勝クラス', 18: '1勝クラス'}
+
+
+def _grade_from_icon(parent):
+    """レース一覧の1行から、レース名横の格アイコンを読んで格の文字を返す（無ければ ''）。"""
+    try:
+        box = parent.find(class_='RaceList_ItemTitle') if parent else None
+        if box is None:
+            return ''
+        for sp in box.find_all('span', class_=re.compile(r'Icon_GradeType\d+')):
+            for c in sp.get('class', []):
+                m = re.fullmatch(r'Icon_GradeType(\d+)', c)
+                if m and int(m.group(1)) in _GRADE_ICON:
+                    return _GRADE_ICON[int(m.group(1))]
+    except Exception:
+        pass
+    return ''
+
+
 def get_todays_races(date_str=None):
     races = []
     tokyo_tz = pytz.timezone('Asia/Tokyo')
@@ -50,6 +72,12 @@ def get_todays_races(date_str=None):
                         start_dt = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} {time_str}", "%Y%m%d %H:%M"))
                     except: start_dt = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} 12:00", "%Y%m%d %H:%M"))
                     title = title_span.text.strip()
+                    # 一覧のレース名は「サウジRC」のような略称で格が入らない。格はレース名横の
+                    # アイコン(Icon_GradeTypeN)にしか無いので、文字にしてレース名へ付記する。
+                    # → 朝刊のレース格バッジ・classify_race_class のフォールバックで効く（2026-10-10）
+                    _gl = _grade_from_icon(parent)
+                    if _gl and _gl not in title:
+                        title = f"{title}({_gl})"
                 else:
                     start_dt = tokyo_tz.localize(datetime.datetime.strptime(f"{target_date_str} 12:00", "%Y%m%d %H:%M"))
                     title = f"{place} {r_num}R"
