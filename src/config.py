@@ -180,7 +180,7 @@ def smooth_isotonic_predict(calibrator, x):
 # （2026-11-01 / 11-07 で発生）。そこで「いつ動いたか」ではなく
 # 「履歴にまだ無い開催日はどれか」で対象を決める。何度動いても同じ日は重複しない。
 REVIEW_CUTOFF_HOUR = 18   # この時刻（JST）より前は当日を対象にしない（結果が未確定）
-REVIEW_LOOKBACK_DAYS = 21
+REVIEW_LOOKBACK_DAYS = 35
 REVIEW_MAX_CATCHUP = 4    # 1回の実行で処理する上限（Discord の連投とジョブ時間を抑える）
 
 
