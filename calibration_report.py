@@ -726,6 +726,8 @@ def post_discord(text: str):
 def main():
     ap = argparse.ArgumentParser(description="勝率キャリブレーション診断（測定専用）")
     ap.add_argument("--days", type=int, default=120, help="直近何日分を対象にするか（0=全期間）")
+    ap.add_argument("--since", type=str, default="",
+                    help="この日付以降だけを対象にする YYYY-MM-DD（馬テーブル分離・較正補間の後を測る用）")
     ap.add_argument("--discord", action="store_true", help="結果を Discord に投稿する")
     ap.add_argument("--sim-t", type=float, default=0.0,
                     help="【7】の影響シミュレーションに使う T（0=推定した T* を使う）")
@@ -738,6 +740,8 @@ def main():
         sys.exit(1)
 
     df = load_history(args.days)
+    if args.since:
+        df = df[df["日付"] >= pd.Timestamp(args.since)]
     if df.empty:
         logger.error("ai_race_history.csv にデータがありません。")
         sys.exit(1)

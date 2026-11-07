@@ -52,10 +52,17 @@ with mock.patch("streamlit.cache_resource", _passthrough), \
     from src.scraper import get_todays_races
     from src.inference import run_real_prediction
     from src.reports import generate_pdf_report, generate_txt_report
+    from src.discord_utils import posted_races_get, posted_races_mark
     if GEMINI_API_KEY:
         from src.gemini_utils import generate_two_analysts
 
 JST = pytz.timezone("Asia/Tokyo")
+
+# 朝刊の投稿済み記録（posted_races.json に直前予想のレースIDと同居させる目印）。
+# 外部クロックの起動と cron の起動が重なっても、1日1回しか投稿しない。
+MORNING_MARK = "morning"
+MORNING_LATEST_HOUR = 15   # これ以降に動いても朝刊としての意味がないので投稿しない
+MORNING_OUT_DIR = "morning_out"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -384,7 +391,18 @@ def _send_alert(text: str) -> bool:
 # メイン処理
 # ─────────────────────────────────────────────────────────────
 
-def run(date_str: str = None, budget_min: float = 0):
+def export_for_artifact(html: str, date_str8: str, races: int):
+    """朝刊HTMLを書き出す。ワークフローが公開ブランチへ置き、アーティファクト更新に使う。"""
+    os.makedirs(MORNING_OUT_DIR, exist_ok=True)
+    with open(os.path.join(MORNING_OUT_DIR, "latest.html"), "w", encoding="utf-8") as f:
+        f.write(html)
+    meta = {"date": date_str8, "races": races,
+            "generated_at": datetime.datetime.now(JST).isoformat(timespec="seconds")}
+    with open(os.path.join(MORNING_OUT_DIR, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False)
+
+
+def run(date_str: str = None, budget_min: float = 0, force: bool = False):
     started = datetime.datetime.now(JST)
     now = started
     target_dt = datetime.datetime.strptime(date_str, "%Y%m%d").replace(tzinfo=JST) if date_str else now
@@ -393,6 +411,14 @@ def run(date_str: str = None, budget_min: float = 0):
     date_hf    = target_dt.strftime("%Y-%m-%d")
 
     logger.info(f"朝刊予想 対象日: {date_label}（時間予算 {budget_min or '無制限'} 分）")
+
+    if not force:
+        if MORNING_MARK in posted_races_get(date_hf):
+            logger.info("本日の朝刊は投稿済み。終了。")
+            return
+        if now.date() == target_dt.date() and now.hour >= MORNING_LATEST_HOUR:
+            logger.info(f"{MORNING_LATEST_HOUR}時を過ぎたため朝刊は投稿しません。")
+            return
 
     races = get_todays_races(date_str8)
     if not races:
@@ -507,8 +533,11 @@ def run(date_str: str = None, budget_min: float = 0):
     )
 
     ok = post_files_to_discord(DISCORD_WEBHOOK_URL, summary, full_txt, full_html, date_label)
+    if full_html:
+        export_for_artifact(full_html, date_str8, ok_count)
     if ok:
         logger.info(f"Discord投稿完了 ({ok_count}レース分)")
+        posted_races_mark(MORNING_MARK, date_hf)
     else:
         # ファイル投稿失敗時はテキストのみ送信
         logger.warning("ファイル投稿失敗。テキストのみ送信します。")
@@ -520,9 +549,11 @@ if __name__ == "__main__":
     parser.add_argument("--date", type=str, default=None, help="対象日 YYYYMMDD（省略時は本日）")
     parser.add_argument("--budget-min", type=float, default=0,
                         help="推論の時間予算（分）。超過したらそこまでの結果で投稿する。0=無制限")
+    parser.add_argument("--force", action="store_true",
+                        help="投稿済みでも実行する（日付を指定した手動実行用）")
     args = parser.parse_args()
     try:
-        run(args.date, args.budget_min)
+        run(args.date, args.budget_min, args.force)
     except Exception as e:
         # モデルロード/依存関係などでの異常終了も検知して通知（通知後 exit 1 でActionsは🔴）。
         logger.exception("朝刊実行が異常終了しました")

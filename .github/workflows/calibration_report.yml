@@ -10,14 +10,22 @@ name: キャリブレーション診断 → Discord
 # 【必要な GitHub Secrets】
 #   HF_TOKEN / HF_REPO_ID
 #   DISCORD_REVIEW_WEBHOOK_URL（無ければ DISCORD_WEBHOOK_URL）
+# calibration_report.py を変更して push したときも自動で走る（集計ロジックの確認用）。
 # ================================================================
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'calibration_report.py'
   workflow_dispatch:
     inputs:
       days:
         description: '直近何日分を対象にするか（0=全期間）'
         default: '120'
+      since:
+        description: 'この日付以降だけを対象にする YYYY-MM-DD（既定: 2026-10-10 の入力変更後）'
+        default: '2026-10-10'
       discord:
         description: 'Discordにも投稿する (yes/no)'
         default: 'yes'
@@ -56,7 +64,8 @@ jobs:
           DISCORD_REVIEW_WEBHOOK_URL: ${{ secrets.DISCORD_REVIEW_WEBHOOK_URL }}
         run: |
           DAYS="${{ github.event.inputs.days || '120' }}"
-          ARGS="--days $DAYS --save-csv calibration_data.csv"
+          SINCE="${{ github.event.inputs.since || '2026-10-10' }}"
+          ARGS="--days $DAYS --since $SINCE --save-csv calibration_data.csv"
           SIM_T="${{ github.event.inputs.sim_t }}"
           if [ -n "$SIM_T" ]; then
             ARGS="$ARGS --sim-t $SIM_T"
@@ -65,6 +74,7 @@ jobs:
             ARGS="$ARGS --discord"
           fi
           python calibration_report.py $ARGS | tee calibration_report.txt
+          { echo '```'; cat calibration_report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: レポートを成果物として保存
         if: always()

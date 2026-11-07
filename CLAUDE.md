@@ -9,7 +9,7 @@ HuggingFace Spaces にデプロイ。GitHub push → sync.yml → HF自動反映
 - 形式: `v年-月-日+アルファベット`（同日複数回は a→b→c と増やす）
 - 例: `v2026-03-28a`、`v2026-03-28b`
 - **用途**: HF Space Filesタブでコード到達確認・アプリ画面で起動確認に使う
-- 現在: `v2026-10-10c`
+- 現在: `v2026-11-08a`
 
 ---
 
@@ -317,9 +317,9 @@ git push origin main
 ### ワークフロー一覧
 | ワークフロー | トリガー | 内容 |
 |---|---|---|
-| auto_morning.yml | **毎日 5:40 JST** | 全レース予想を .txt/.html で投稿（7:00→5:40 前倒し 2026-09-25。`--budget-min 60` で打ち切り投稿） |
+| auto_morning.yml | **外部クロック 7:50 JST**（cron 5:40 は保険） | 全レース予想を .txt/.html で投稿し、HTML を `morning-report` ブランチへ置く。投稿済みなら何もしない |
 | auto_predict.yml | **毎日** 9:00〜16:45 JST 15分ごと | 発走10〜60分前のレースを自動予想 |
-| auto_review.yml | **毎日 18:00 JST** | 当日振り返りを投稿。**日曜は続けて土日合算まとめも投稿**（2026-09-25）。⚠️真夏は最終18:30で未確定リスクあり |
+| auto_review.yml | **外部クロック 18:30 JST**（cron 18:00 は保険） | 履歴に無い開催日を振り返って投稿。**日曜分を処理したら土日合算まとめも投稿** |
 | auto_weekend_summary.yml | **手動実行のみ** | 土日合算まとめ（定期実行は auto_review.yml の最終ステップへ移管 2026-09-25。cronを戻すと二重投稿） |
 | health_check.yml | **毎日 21:30 JST** | 直近7日の「実際に開催があった日」の行が成績CSVに無ければDiscord警告（2026-09-25 に開催日ベースへ改修） |
 | discord_notify.yml | 5分ごと | HF Hub キューを読んで Discord に送信（app.py の手動投稿ボタン専用） |
@@ -350,7 +350,38 @@ git push origin main
 
 ---
 
-## 現在の状況（2026-10-10 時点）★最新
+## 現在の状況（2026-11-08 時点）★最新
+
+### ★ GitHub の cron は定時に動かない（2026-11-08 実測）
+| ワークフロー | cron | 実際の起動 |
+|---|---|---|
+| auto_review | 18:00 | 21:30〜翌4:00（10月上旬から） |
+| auto_morning | 5:40 | 7:30〜11:37 |
+| auto_predict | 15分ごと | **1日2回**（13〜15時台と20〜23時台）＝直前予想はほぼ止まっている |
+| discord_notify | 5分ごと | 1日4〜5回 |
+- ⚠️ cron の時刻をずらしても直らない。**定時性が要るものは外部クロックから `workflow_dispatch` で起動する**。
+  cron は保険として残す（朝刊・振り返りは二重投稿しない作り）。
+- 振り返りが0時を越えて動くと「実行時刻の当日」が翌日になり、**土日の振り返りが丸ごと抜けていた**
+  （run の時刻から 11/01・11/07 が該当の見込み。HF の履歴は未確認）。
+- 対策: `src/config.py: pending_review_dates()` で「履歴に無い開催日」を対象にする。直近21日を見て
+  1回最大4日。18時前は当日を含めない。**次に動いたときに欠落日が自動で埋まる**。
+  手動の `--date` は従来どおり（その日を必ず処理）。まとめは「処理を終えた日曜」を基準に出す。
+- 朝刊: `posted_races.json` に `morning` の目印で1日1回。15時以降は投稿しない。`--date` 指定の手動実行は `--force`。
+
+### 朝刊の公開先
+`auto_morning.yml` が `morning_out/latest.html` と `meta.json` を **`morning-report` ブランチ**へ force push する
+（main ではないので HF 同期は走らない）。取得元:
+`https://raw.githubusercontent.com/ebi44323/keiba_ai/morning-report/latest.html`
+アーティファクトの更新は Claude からしかできない（Actions に API が無い）。
+URL: https://claude.ai/artifact/V3nFuiatYm2NGbnGJBPutf
+
+### 診断の見方
+`calibration_report.yml` は結果を Actions の実行ページ（Summary）にも出す。`--since` の既定は 2026-10-10
+（入力が変わった後だけを測る）。`calibration_report.py` を push しても自動で走る。
+
+---
+
+## 現在の状況（2026-10-10 時点）
 
 ### 馬の過去走テーブルをモデルから切り離した（★重要・再学習不要）
 **発覚**: 10/10 朝刊で **2歳未勝利の脚質不明 57%**（新馬100%は当然・古馬4%）。

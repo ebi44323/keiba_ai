@@ -6,6 +6,7 @@ get_headers(), safe_sleep() を一元管理する。
 各モジュールからはここを import すること（重複定義を防ぐ）。
 """
 
+import datetime
 import random
 import time
 
@@ -171,3 +172,33 @@ def smooth_isotonic_predict(calibrator, x):
         slope = min(slope, uy[-1] / max(cx[-1], 1e-12))
         out[hi] = uy[-1] + slope * (x[hi] - cx[-1])
     return out
+
+
+# ── 振り返りの対象日 ──────────────────────────────────────────────
+# GitHub の cron は数時間遅れて動くことがあり、18:00 の予定が翌 0〜4 時に回ると
+# 「実行時刻の当日」が翌日になって、本来の開催日の振り返りが丸ごと抜けていた
+# （2026-11-01 / 11-07 で発生）。そこで「いつ動いたか」ではなく
+# 「履歴にまだ無い開催日はどれか」で対象を決める。何度動いても同じ日は重複しない。
+REVIEW_CUTOFF_HOUR = 18   # この時刻（JST）より前は当日を対象にしない（結果が未確定）
+REVIEW_LOOKBACK_DAYS = 21
+REVIEW_MAX_CATCHUP = 4    # 1回の実行で処理する上限（Discord の連投とジョブ時間を抑える）
+
+
+def pending_review_dates(now, have, has_races,
+                         days=REVIEW_LOOKBACK_DAYS, cap=REVIEW_MAX_CATCHUP):
+    """振り返りが必要な日付（datetime.date）を古い順で返す。
+
+    now: JST の現在時刻 / have: 履歴に記録済みの date 集合 /
+    has_races: date を受け取り開催があれば True を返す関数。
+    件数が cap を超えるときは新しい日を優先する。
+    """
+    start = 0 if now.hour >= REVIEW_CUTOFF_HOUR else 1
+    found = []
+    for i in range(start, days):
+        d = now.date() - datetime.timedelta(days=i)
+        if d in have or not has_races(d):
+            continue
+        found.append(d)
+        if len(found) >= cap:
+            break
+    return sorted(found)

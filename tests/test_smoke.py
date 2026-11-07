@@ -288,6 +288,25 @@ def test_smooth_isotonic():
     assert np.all(np.diff(s[q > 0.3]) > 0), '最上段より上で同値になる'
 
 
+def test_pending_review_dates():
+    """cron が遅れても開催日の振り返りが抜けず、記録済みの日は再度処理しないこと。"""
+    import datetime as dt
+    from src.config import pending_review_dates
+    sat, sun = dt.date(2026, 11, 7), dt.date(2026, 11, 8)
+    held = {sat, sun}
+    # 土曜の振り返りが日曜 0:20 に動いた: 翌日ではなく土曜が対象になる
+    assert pending_review_dates(dt.datetime(2026, 11, 8, 0, 20), set(), lambda d: d in held) == [sat]
+    # 18時前は当日を対象にしない
+    assert pending_review_dates(dt.datetime(2026, 11, 8, 17, 59), {sat}, lambda d: d in held) == []
+    # 18時以降は当日も対象。古い順に返す
+    assert pending_review_dates(dt.datetime(2026, 11, 8, 18, 30), set(), lambda d: d in held) == [sat, sun]
+    # 記録済みなら何度動いても対象なし（二重投稿しない）
+    assert pending_review_dates(dt.datetime(2026, 11, 8, 19, 0), held, lambda d: d in held) == []
+    # 上限を超えたら新しい日を優先する
+    many = pending_review_dates(dt.datetime(2026, 11, 8, 19, 0), set(), lambda d: True, cap=2)
+    assert many == [sat, sun]
+
+
 def test_apply_horse_tables():
     """週次の馬テーブル差し替え: 新しい時だけ差し替え・列と型は元の表にそろう・他は不変。"""
     import pandas as pd

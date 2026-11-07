@@ -61,6 +61,7 @@ with mock.patch("streamlit.cache_resource", _passthrough), \
     from src.scraper import get_todays_races, get_all_payouts
     from src.inference import run_real_prediction
     from src.utils import classify_race_class
+from src.config import pending_review_dates, REVIEW_CUTOFF_HOUR
 
 JST = pytz.timezone("Asia/Tokyo")
 
@@ -870,13 +871,60 @@ def run(date_str: str = None):
             logger.warning(f"ai_race_history.csv 保存失敗（スキップ）: {e}")
 
 
+def _reviewed_dates():
+    """ai_daily_history.csv に記録済みの日付を返す。読めなければ None。"""
+    try:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(HF_REPO_ID, "ai_daily_history.csv", repo_type="dataset",
+                               token=HF_TOKEN, force_download=True)
+        dates = pd.to_datetime(pd.read_csv(path)["日付"], errors="coerce").dropna()
+        return set(dates.dt.date)
+    except Exception as e:
+        logger.warning(f"ai_daily_history.csv を読めませんでした: {e}")
+        return None
+
+
+def resolve_targets() -> list:
+    """対象日（YYYYMMDD）を古い順に返す。履歴に無い開催日をさかのぼって拾う。"""
+    now = datetime.datetime.now(JST)
+    have = _reviewed_dates()
+    if have is None:
+        # 履歴が読めないときは二重投稿を避けるため直近の1日だけにする
+        recent = now if now.hour >= REVIEW_CUTOFF_HOUR else now - datetime.timedelta(days=1)
+        return [recent.strftime("%Y%m%d")]
+
+    def has_races(d):
+        return bool(get_todays_races(d.strftime("%Y%m%d")))
+
+    return [d.strftime("%Y%m%d") for d in pending_review_dates(now, have, has_races)]
+
+
+def _write_sundays_output(done: list):
+    """振り返りを終えた日曜を次のステップ（土日合算まとめ）へ渡す。"""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    sundays = [d for d in done
+               if datetime.datetime.strptime(d, "%Y%m%d").weekday() == 6]
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"sundays={' '.join(sundays)}\n")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="振り返り自動集計 → Discord 通知")
-    parser.add_argument("--date", type=str, default=None, help="対象日 YYYYMMDD（省略時は本日）")
+    parser.add_argument("--date", type=str, default=None,
+                        help="対象日 YYYYMMDD（省略時は履歴に無い直近の開催日）")
     args = parser.parse_args()
+    done = []
     try:
-        run(args.date)
+        targets = [args.date] if args.date else resolve_targets()
+        logger.info(f"振り返り対象: {targets or 'なし'}")
+        for target in targets:
+            run(target)
+            done.append(target)
+        _write_sundays_output(done)
     except Exception as e:
+        _write_sundays_output(done)
         # モデルロード/依存関係/特徴量不整合などでの異常終了も検知して通知。
         # 通知後に exit 1 で終わるので Actions 上は🔴（赤）のまま = ログも残る。
         logger.exception("振り返り実行が異常終了しました")

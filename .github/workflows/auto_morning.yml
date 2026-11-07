@@ -1,8 +1,14 @@
 name: 朝刊予想 → Discord 投稿
 
 # ================================================================
-# 毎日 5:40 JST（前日 20:40 UTC）に実行し、当日の全開催レース予想を
-# .txt と .html ファイルとして Discord に投稿する。
+# 8:00 JST までに当日の全開催レース予想を .txt と .html で Discord に投稿し、
+# HTML を morning-report ブランチへ置く（アーティファクト更新の取得元）。
+#
+# ★ 2026-11-08: 発行は外部クロックが 7:50 JST に workflow_dispatch で起動する。
+#   GitHub の cron はこのリポジトリでは 3〜6 時間遅れるため定時には使えない。
+#   下の cron は外部クロックが止まった時の保険で、投稿済みなら何もせず終わる。
+#   推論は実測 5 分前後（以下の 2026-09-25 時点の「30〜40分」は当時の値）。
+#
 # GitHub Actions は Discord への直接通信が可能なため、キュー経由ではなく直接送信。
 #
 # ★ 2026-09-25 の変更点:
@@ -32,6 +38,9 @@ on:
       date:
         description: '対象日 YYYYMMDD（省略時は実行日の翌日 JST）'
         default: ''
+
+permissions:
+  contents: write   # morning-report ブランチへの push に必要
 
 jobs:
   morning-predict:
@@ -73,9 +82,22 @@ jobs:
           # --budget-min: ジョブの timeout(75分) より手前で推論を打ち切り、必ず投稿する
           DATE_ARG="${{ github.event.inputs.date }}"
           if [ -n "$DATE_ARG" ]; then
-            python auto_morning.py --date "$DATE_ARG" --budget-min 60
+            python auto_morning.py --date "$DATE_ARG" --budget-min 60 --force
           else
             # UTC+9h（=JSTの当日）をYYYYMMDD形式で渡す
             NEXT_DAY=$(date -u -d "+9 hours" +%Y%m%d)
             python auto_morning.py --date "$NEXT_DAY" --budget-min 60
           fi
+
+      - name: 朝刊HTMLを公開ブランチへ
+        if: hashFiles('morning_out/latest.html') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd morning_out
+          git init -q -b morning-report
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add latest.html meta.json
+          git commit -q -m "朝刊 $(date -u -d '+9 hours' +%Y-%m-%d)"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" morning-report

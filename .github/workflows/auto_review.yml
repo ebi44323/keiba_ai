@@ -1,9 +1,14 @@
 name: 自動振り返り → Discord 通知
 
 # ================================================================
-# 毎日 18:00 JST（UTC 9:00）に当日の全レースを振り返り、
+# 開催日の 18:30 JST に当日の全レースを振り返り、
 # 本命◎・期待値馬の成績を集計して Discord に送信する。
-# さらに日曜は、振り返りに続けて「土日合算まとめ」も同じジョブで送信する。
+# さらに日曜の分を処理したら「土日合算まとめ」も同じジョブで送信する。
+#
+# ★ 2026-11-08: 発行は外部クロックが 18:30 JST に workflow_dispatch で起動する。
+#   GitHub の cron はこのリポジトリでは 4〜10 時間遅れ、0時を過ぎると対象日が翌日に
+#   ずれて土日の振り返りが抜けていた。今は auto_review.py が「履歴に無い開催日」を
+#   対象にするので、いつ何度動いても抜けず、二重にもならない。下の cron は保険。
 #
 # ※ 2026-09-25: 土日のみ（cron '0 9 * * 0,6'）→ 毎日に変更。
 #   祝日の月曜開催・火曜開催（例: 2026-09-21/22）で振り返りが一切走らず、
@@ -66,6 +71,7 @@ jobs:
             streamlit==1.60.0
 
       - name: 自動振り返り実行
+        id: review
         env:
           HF_TOKEN:                  ${{ secrets.HF_TOKEN }}
           HF_REPO_ID:                ${{ secrets.HF_REPO_ID }}
@@ -91,18 +97,18 @@ jobs:
         run: |
           MODE="${{ github.event.inputs.weekend_summary }}"
           MODE="${MODE:-auto}"
-          DATE_ARG="${{ github.event.inputs.date }}"
-          # 対象日の曜日（1=月 … 7=日）。--date 指定時はその日付を基準にする。
-          if [ -n "$DATE_ARG" ]; then
-            DOW=$(date -u -d "${DATE_ARG:0:4}-${DATE_ARG:4:2}-${DATE_ARG:6:2}" +%u)
-          else
-            DOW=$(TZ=Asia/Tokyo date +%u)
-          fi
+          # 実行時刻の曜日ではなく、振り返りを終えた日曜を見る（cron遅延で月曜に回っても出す）
+          SUNDAYS="${{ steps.review.outputs.sundays }}"
           if [ "$MODE" = "no" ]; then
             echo "weekend_summary=no のためスキップ"
-          elif [ "$MODE" = "yes" ] || [ "$DOW" = "7" ]; then
-            echo "土日合算まとめを送信します (DOW=$DOW, MODE=$MODE)"
+          elif [ "$MODE" = "yes" ]; then
             python auto_weekend_summary.py
+          elif [ -z "$SUNDAYS" ]; then
+            echo "今回は日曜分の振り返りが無いためスキップ"
           else
-            echo "日曜ではないためスキップ (DOW=$DOW)"
+            for SUN in $SUNDAYS; do
+              SAT=$(date -u -d "$SUN -1 day" +%Y%m%d)
+              echo "土日合算まとめを送信します ($SAT / $SUN)"
+              python auto_weekend_summary.py --sat "$SAT" --sun "$SUN"
+            done
           fi
