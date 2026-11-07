@@ -318,7 +318,7 @@ git push origin main
 | ワークフロー | トリガー | 内容 |
 |---|---|---|
 | auto_morning.yml | **外部クロック 7:50 JST**（cron 5:40 は保険） | 全レース予想を .txt/.html で投稿し、HTML を `morning-report` ブランチへ置く。投稿済みなら何もしない |
-| auto_predict.yml | **毎日** 9:00〜16:45 JST 15分ごと | 発走10〜60分前のレースを自動予想 |
+| auto_predict.yml | **外部クロック 9:00〜16:45 JST 15分ごと**（cron は保険） | 発走**8〜28分前**の未投稿レースを1レース1回予想。`concurrency` で同時実行を直列化 |
 | auto_review.yml | **外部クロック 18:30 JST**（cron 18:00 は保険） | 履歴に無い開催日を振り返って投稿。**日曜分を処理したら土日合算まとめも投稿** |
 | auto_weekend_summary.yml | **手動実行のみ** | 土日合算まとめ（定期実行は auto_review.yml の最終ステップへ移管 2026-09-25。cronを戻すと二重投稿） |
 | health_check.yml | **毎日 21:30 JST** | 直近7日の「実際に開催があった日」の行が成績CSVに無ければDiscord警告（2026-09-25 に開催日ベースへ改修） |
@@ -368,12 +368,50 @@ git push origin main
   手動の `--date` は従来どおり（その日を必ず処理）。まとめは「処理を終えた日曜」を基準に出す。
 - 朝刊: `posted_races.json` に `morning` の目印で1日1回。15時以降は投稿しない。`--date` 指定の手動実行は `--force`。
 
+### 外部クロック（cron-job.org）★2026-11-08 導入
+GitHub の cron は当てにならないので、cron-job.org から `workflow_dispatch` を叩く。**Asia/Tokyo**・3ジョブ:
+| ジョブ | 対象ワークフロー | スケジュール |
+|---|---|---|
+| 直前予想 | `auto_predict.yml` | 9〜16時の0/15/30/45分 |
+| 朝刊予想 | `auto_morning.yml` | 毎日 7:50 |
+| 振り返り | `auto_review.yml` | 毎日 18:30 |
+- 共通: POST `https://api.github.com/repos/ebi44323/keiba_ai/actions/workflows/<ファイル名>/dispatches`、
+  本文 `{"ref":"main"}`、ヘッダー `Authorization: Bearer <PAT>` / `Accept: application/vnd.github+json` /
+  `User-Agent: keiba-cron` / `Content-Type: application/json`。「Requires HTTP authentication」は**オフ**。
+- ⚠️ **PAT（fine-grained・Actions の Read and write のみ・このリポジトリ限定）は 2027-11-07 に失効**。
+  期限前に作り直して3ジョブの Authorization を差し替えること。失効するとジョブが 401 で失敗する。
+- ⚠️ **cron-job.org の Test run は本当にワークフローを起動する**。朝刊・振り返りは実際に Discord へ投稿される。
+  確認は直前予想（夜間は何も投稿されない）だけでする。朝刊を試すと `morning` が投稿済みになり、
+  その日の本番 7:50 は何もしない（11/8 に発生）。
+- 動作確認済み: 3ジョブとも HTTP 204（2026-11-08）。GitHub 側の cron は保険として残してあり、
+  朝刊は `morning` の目印・直前予想は投稿済みレジストリ・振り返りは履歴で二重投稿しない。
+
+### 朝刊アーティファクトの自動更新
+- アーティファクトのページから外部へは通信できない（実測: raw.githubusercontent / api.github.com / jsDelivr は全て
+  ブロック）。そのため **Claude のアプリ側の定期タスク** `update-keiba-morning-artifact`
+  （毎日 8〜12時台の毎時20分）が `morning-report` ブランチの `latest.html` を取って同じURLへ publish する。
+- ⚠️ **アプリが開いている間だけ動く**（閉じていれば次回起動時）。meta.json の日付とタイトルの日付が同じなら何もしない。
+- 振り返り・朝刊の遅延が解消されたので、タスクの時刻は必要なら前倒ししてよい（朝刊 8:00 の後なら 8:20 で足りる）。
+
+### 振り返りの補完（2026-11-08）
+- 対象は直近**35日**・1回最大4日（新しい日を優先）。**抜けが多いときは手動実行を繰り返すと4日ずつ進む**。
+- 補完中は過去の日の振り返りが Discord にまとめて流れる（日曜分は土日まとめも出る）。
+- 診断(`calibration_report`)は 10/10 以降だけを測る。抜けがあるとレース数不足で「まだ溜まっていない」と出る。
+
 ### 朝刊の公開先
 `auto_morning.yml` が `morning_out/latest.html` と `meta.json` を **`morning-report` ブランチ**へ force push する
 （main ではないので HF 同期は走らない）。取得元:
 `https://raw.githubusercontent.com/ebi44323/keiba_ai/morning-report/latest.html`
 アーティファクトの更新は Claude からしかできない（Actions に API が無い）。
 URL: https://claude.ai/artifact/V3nFuiatYm2NGbnGJBPutf
+
+### ★次にやること（2026-11-08 時点）
+1. 振り返りの補完を、新しい投稿が来なくなるまで手動で繰り返す → **診断を回し直して④（予想改善）へ**。
+   **④は未着手**: 診断結果をまだ読んでいない。見るもの: ◎の過信度、T\*=0.65 が今も妥当か、勝負ラベルの実ROI、
+   EV_KACHI（◎EV≥2.0 のみの勝負）を外す/厳しくするか（Phase 2b）。
+2. 明日以降の実動作を確認: 朝刊が8時前に届く / アーティファクトが更新される / 18:30台に振り返りが届く /
+   直前予想が3場開催でも1レース1回になる。cron-job.org の HISTORY に 401/404 が出ていないか。
+3. 再学習は引き続き凍結（診断結果が出るまで）。
 
 ### 診断の見方
 `calibration_report.yml` は結果を Actions の実行ページ（Summary）にも出す。`--since` の既定は 2026-10-10
