@@ -2,7 +2,13 @@ name: 自動予想 → Discord 通知
 
 # ================================================================
 # 開催時間帯（JST 9:00〜16:45 ≒ UTC 0:00〜7:45）に15分ごとに実行し、
-# 発走 5〜25 分前の「まだ投稿していない」レースを自動予想する。
+# 発走 8〜28 分前の「まだ投稿していない」レースを自動予想する。
+#
+# ★ 2026-11-08: ウィンドウを 5〜25 → 8〜28 分前にずらした。外部クロックの起動から
+#   Discord 投稿まで実測 2〜3 分かかるため、旧設定だと発走 5 分前のレースは
+#   投稿が発走 2 分前になっていた。幅20分は変えていないので取りこぼしはない。
+#   3場開催（1日36R）でも1回の対象は多くて3〜4R・推論は1R数秒で、20分の上限に余裕がある。
+#   同時に2つ走って同じレースを二重投稿しないよう concurrency で直列化した。
 #
 # ★ 2026-09-25: ウィンドウを 10〜60分前 → 5〜25分前 に変更し、
 #   HF Hub の投稿済みレジストリ(posted_races.json)で重複投稿を防ぐようにした。
@@ -30,10 +36,14 @@ on:
     inputs:
       window_min:
         description: '予想対象: 発走まで最低何分前か'
-        default: '5'
+        default: '8'
       window_max:
         description: '予想対象: 発走まで最大何分前か'
-        default: '25'
+        default: '28'
+
+concurrency:
+  group: auto-predict
+  cancel-in-progress: false
 
 jobs:
   predict:
@@ -71,6 +81,6 @@ jobs:
           DISCORD_WEBHOOK_URL:       ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_REVIEW_WEBHOOK_URL: ${{ secrets.DISCORD_REVIEW_WEBHOOK_URL }}
         run: |
-          WMIN=${{ github.event.inputs.window_min || '5' }}
-          WMAX=${{ github.event.inputs.window_max || '25' }}
+          WMIN=${{ github.event.inputs.window_min || '8' }}
+          WMAX=${{ github.event.inputs.window_max || '28' }}
           python predict_auto.py --window-min $WMIN --window-max $WMAX

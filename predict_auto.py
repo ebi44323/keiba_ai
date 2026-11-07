@@ -8,7 +8,7 @@
   重複を防ぐ。アプリからの投稿とも共有されるため「1レース1回」になる。
 
 使い方:
-  python predict_auto.py [--window-min 5] [--window-max 25]
+  python predict_auto.py [--window-min 8] [--window-max 28]
 
 必要な環境変数:
   HF_TOKEN             - HuggingFace API トークン（read権限）
@@ -154,7 +154,7 @@ def _send_alert(text: str) -> bool:
         return False
 
 
-def run(window_min: int = 5, window_max: int = 25):
+def run(window_min: int = 8, window_max: int = 28):
     now = datetime.datetime.now(JST)
     date_str = now.strftime("%Y-%m-%d")
     logger.info(f"実行日時: {now.strftime('%Y-%m-%d %H:%M')} JST")
@@ -244,8 +244,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="自動予想 → Discord 通知")
     # 既定は 5〜25分前。幅20分 > ポーリング間隔15分 なので、cronが多少ずれても
     # 各レースは必ず1回はウィンドウ内で観測される（投稿済みレジストリで重複は防ぐ）。
-    parser.add_argument("--window-min", type=int, default=5, help="発走まで何分以上のレースを対象にするか")
-    parser.add_argument("--window-max", type=int, default=25, help="発走まで何分以内のレースを対象にするか")
+    parser.add_argument("--window-min", type=int, default=8, help="発走まで何分以上のレースを対象にするか")
+    parser.add_argument("--window-max", type=int, default=28, help="発走まで何分以内のレースを対象にするか")
     args = parser.parse_args()
     try:
         run(args.window_min, args.window_max)
