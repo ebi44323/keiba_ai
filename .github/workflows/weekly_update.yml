@@ -55,7 +55,7 @@ jobs:
             python update_data.py --all
           else
             WEEKS="${{ github.event.inputs.weeks_back }}"
-            python update_data.py ${WEEKS:-1}
+            python update_data.py ${WEEKS:-2}
           fi
 
       - name: 更新データをコミット＆プッシュ

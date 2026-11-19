@@ -167,17 +167,35 @@ def get_race_ids_for_date(date_str):
 # ================================================================
 # レース結果スクレイプ（1レース分）
 # ================================================================
+# スクレイプ失敗の理由を数える（「0件でした」だけでは原因が分からなかったため 2026-11-19 追加）
+SCRAPE_FAILS = {}
+
+
+def _note_fail(reason):
+    SCRAPE_FAILS[reason] = SCRAPE_FAILS.get(reason, 0) + 1
+
+
+def _fail_summary():
+    """失敗理由の内訳を1行にする。例: 'HTTP503 ×72'"""
+    return ' / '.join(f"{k} ×{v}" for k, v in sorted(SCRAPE_FAILS.items(), key=lambda x: -x[1]))
+
+
 def scrape_one_race(rid, date_str):
     rows = []
     try:
         r = http_get(f"https://db.netkeiba.com/race/{rid}/", headers=get_headers(), timeout=15, retries=2)
         r.encoding = 'euc-jp'
+        if r.status_code != 200:
+            _note_fail(f"HTTP{r.status_code}")
+            return []
         soup = BeautifulSoup(r.text, 'html.parser')
 
         table = (soup.find('table', class_='race_table_01') or
                  soup.select_one('#All_Result_Table') or
                  soup.select_one('.RaceTable01'))
-        if not table: return []
+        if not table:
+            _note_fail("結果テーブルなし（構造変更/ブロック/未確定）")
+            return []
 
         data_box = (soup.find('div',class_='data_intro') or
                     soup.find('div',class_='RaceData01') or
@@ -308,6 +326,7 @@ def scrape_one_race(rid, date_str):
                 })
             except: continue
     except Exception as e:
+        _note_fail(f"例外 {type(e).__name__}")
         print(f"  スクレイプエラー {rid}: {e}")
     return rows
 
@@ -460,7 +479,7 @@ def main():
     print("="*60)
     _init_ped_cache()
 
-    weeks_back = 1
+    weeks_back = 2   # 1週の取りこぼしを次回に自動で拾う（既存IDはスキップされる）
     fetch_all  = False
     from_date  = None   # --from YYYYMMDD で指定
     if len(sys.argv) > 1:
@@ -595,11 +614,16 @@ def main():
             )
             print("⚠️ 土日対象なのにレースID 0件。アラート送信。")
         elif n_unscraped > 0:
+            _why = _fail_summary() or "不明"
+            _hint = ("netkeibaがメンテナンス中・一時停止の可能性があります。復旧後に"
+                     "Actions「週次データ更新」を from_date 付きで手動実行してください。"
+                     if "HTTP5" in _why else
+                     "ブロックやページ構造変更の可能性があります。"
+                     "`python update_data.py --test` で確認してください。")
             _alert_discord(
                 "🛑 **週次データ取得が0件でした**\n"
                 f"未取得のレースが {n_unscraped}R あったのに、1件もスクレイプできませんでした。\n"
-                "netkeibaのブロックやページ構造変更の可能性があります。"
-                "`python update_data.py --test` で確認してください。"
+                f"失敗の内訳: {_why}\n" + _hint
             )
             print("⚠️ 未取得レースがあるのに0件。異常の可能性ありアラート送信。")
         else:
